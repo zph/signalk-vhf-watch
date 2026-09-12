@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07121c" />
+  <title>VHF Watch</title>
+  <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">SIGNAL K · RECEIVE ONLY</p>
+        <h1>VHF Watch</h1>
+      </div>
+      <div id="connection" class="connection waiting"><span></span>Connecting</div>
+    </header>
+
+    <section class="radio-card" aria-labelledby="receiver-title">
+      <div class="channel-block">
+        <label id="receiver-title" for="channel">Receive channel</label>
+        <select id="channel" aria-describedby="channel-purpose"></select>
+        <p id="channel-purpose">—</p>
+      </div>
+      <div class="meter-block">
+        <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
+        <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
+        <p id="receiver-state">Receiver stopped</p>
+      </div>
+    </section>
+
+    <section class="listen-card" aria-labelledby="live-title">
+      <div>
+        <p class="eyebrow">PRIVATE ONBOARD AUDIO</p>
+        <h2 id="live-title">Live receiver</h2>
+        <p>The browser will only connect after you press Listen.</p>
+      </div>
+      <button id="listen" class="primary" type="button">Listen live</button>
+      <audio id="live-audio" preload="none"></audio>
+    </section>
+
+    <section class="replay-section" aria-labelledby="replay-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ROLLING BUFFER</p>
+          <h2 id="replay-title">Recent radio</h2>
+        </div>
+        <div class="section-actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="clear" class="danger" type="button">Clear</button>
+        </div>
+      </div>
+      <p id="retention" class="muted">Audio remains in this Signal K process only.</p>
+      <div id="empty" class="empty">Waiting for the first replay segment…</div>
+      <ol id="replay-list" class="replay-list" aria-live="polite"></ol>
+    </section>
+
+    <aside class="hardware-note">
+      <strong>Using an AIS-Catcher RTL-SDR?</strong>
+      Stop AIS-Catcher before enabling the RTL-SDR receiver here. A single USB tuner cannot be owned
+      by both applications at once.
+    </aside>
+
+    <footer>
+      <strong>No transmit controls exist in this application.</strong>
+      Channel 70 is intentionally unavailable for voice reception.
+    </footer>
+  </main>
+  <script src="./main.js"></script>
+</body>
+</html>
