@@ -12,6 +12,8 @@
   const listenButton = $('#listen')
   const liveAudio = $('#live-audio')
   const replayList = $('#replay-list')
+  const dscList = $('#dsc-list')
+  const dscEmpty = $('#dsc-empty')
   const empty = $('#empty')
   const retention = $('#retention')
   let channels = []
@@ -44,7 +46,8 @@
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
-    receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'RTL-SDR'}`
+    const dsc = status.dscWatch?.continuous ? ' · DSC 70 continuous' : ''
+    receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB private buffer · ${status.replaySegments} segments · ${status.liveListeners} live listener${status.liveListeners === 1 ? '' : 's'}`
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
   }
@@ -57,6 +60,7 @@
       const option = document.createElement('option')
       option.value = channel.id
       option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}`
+      option.disabled = channel.available === false
       return option
     }))
   }
@@ -94,6 +98,32 @@
     } catch (error) {
       empty.hidden = false
       empty.textContent = error.message
+    }
+  }
+
+  function dscRow(message) {
+    const item = document.createElement('li')
+    item.className = `replay-item dsc-${message.category}`
+    const time = document.createElement('div')
+    time.className = 'replay-time'
+    time.textContent = new Date(message.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const detail = document.createElement('div')
+    detail.className = 'replay-detail'
+    const source = message.selfMmsi ? `MMSI ${message.selfMmsi}` : 'unknown station'
+    const position = message.position ? ` · ${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}` : ''
+    detail.textContent = `${message.category.toUpperCase()} · ${message.format} · ${source}${message.nature ? ` · ${message.nature}` : ''}${position}${message.validCharacters ? '' : ' · CHECK DECODE'}`
+    item.append(time, detail)
+    return item
+  }
+
+  async function updateDsc() {
+    try {
+      const { messages } = await request('dsc')
+      dscList.replaceChildren(...messages.map(dscRow))
+      dscEmpty.hidden = messages.length > 0
+    } catch (error) {
+      dscEmpty.hidden = false
+      dscEmpty.textContent = error.message
     }
   }
 
@@ -168,12 +198,23 @@
     }
   }
 
+  async function clearDsc() {
+    if (!window.confirm('Clear decoded DSC calls from memory?')) return
+    try {
+      await request('dsc', { method: 'DELETE' })
+      await updateDsc()
+    } catch (error) {
+      setConnection('error', error.message)
+    }
+  }
+
   async function initialize() {
     try {
       await loadChannels()
-      await Promise.all([updateStatus(), updateReplay()])
+      await Promise.all([updateStatus(), updateReplay(), updateDsc()])
       poll = window.setInterval(updateStatus, 1000)
       window.setInterval(updateReplay, 5000)
+      window.setInterval(updateDsc, 5000)
     } catch (error) {
       setConnection('error', error.message)
     }
@@ -184,6 +225,8 @@
   listenButton.addEventListener('click', toggleListen)
   $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', clearReplay)
+  $('#refresh-dsc').addEventListener('click', updateDsc)
+  $('#clear-dsc').addEventListener('click', clearDsc)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
     liveAudio.pause()

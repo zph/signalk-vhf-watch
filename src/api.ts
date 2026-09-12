@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 import type { PluginRouter } from '@signalk/server-api'
 import type { ChannelRegion } from './channels'
+import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
 import { wavHeader } from './wav'
 
@@ -18,11 +19,21 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
   })
   read.get('/api/channels', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
-    if (runtime) response.set('Cache-Control', 'no-store').json({ region: runtime.region(), channels: runtime.channels() })
+    if (runtime) response.set('Cache-Control', 'no-store').json({
+      region: runtime.region(),
+      channels: runtime.channels().map((channel) => ({
+        ...channel,
+        available: runtime.config.receiverMode !== 'rtl_sdr' || canChannelize(channel.frequencyHz)
+      }))
+    })
   })
   read.get('/api/replay', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (runtime) response.set('Cache-Control', 'no-store').json({ segments: runtime.segments() })
+  })
+  read.get('/api/dsc', (_request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (runtime) response.set('Cache-Control', 'no-store').json({ messages: runtime.dscMessages() })
   })
   read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -87,18 +98,28 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     runtime.replay.clear()
     response.status(204).end()
   })
+  write.delete('/api/dsc', (_request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    runtime.clearDscMessages()
+    response.status(204).end()
+  })
 }
 
 export function openApi(): object {
   return {
     openapi: '3.0.3',
-    info: { title: 'Signal K VHF Watch API', version: '0.1.0' },
+    info: { title: 'Signal K VHF Watch API', version: '0.2.0' },
     paths: {
       '/api/status': { get: { summary: 'Get receiver status', responses: { '200': { description: 'Status' } } } },
       '/api/channels': { get: { summary: 'List supported receive channels', responses: { '200': { description: 'Channels' } } } },
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
+      '/api/dsc': {
+        get: { summary: 'List decoded DSC Channel 70 calls', responses: { '200': { description: 'DSC calls' } } },
+        delete: { summary: 'Clear decoded DSC calls', responses: { '204': { description: 'Cleared' } } }
+      },
       '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
       '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } }
     }

@@ -12,8 +12,8 @@ the receiver tunes the coast-station frequency that a vessel radio hears.
 - Canada: <https://www.canada.ca/en/canadian-coast-guard/corporate/publications/radio-aids-marine-navigation/foreword.html#toc3>
 
 VHF Watch deliberately contains **no transmitter or push-to-talk implementation**. It is not a
-substitute for a certified marine VHF radio or required watchkeeping equipment. Voice channel 70 is
-not offered because channel 70 is reserved for Digital Selective Calling.
+substitute for a certified marine VHF radio or required watchkeeping equipment. Channel 70 is
+continuously decoded as Digital Selective Calling data and is never offered as voice audio.
 
 ## First run without hardware
 
@@ -23,20 +23,25 @@ without radio hardware.
 
 ## RTL-SDR receiver
 
-Install `rtl_fm` on the Signal K host and make the SDR USB device visible to the Signal K container.
-Choose `RTL-SDR using rtl_fm` in the plugin configuration and restart the plugin. VHF Watch invokes
-`rtl_fm` directly without a shell and demodulates one selected channel at a time to 16-bit mono PCM.
+Install the `rtl_sdr` utility on the Signal K host and make the SDR USB device visible to the Signal K
+container. Choose `RTL-SDR wideband` in the plugin configuration and restart the plugin. VHF Watch
+opens the tuner once at 2.4 MS/s and sends its IQ stream to a worker-backed channelizer. Independent
+NFM streams provide the selected voice channel and an uninterrupted 24 kHz Channel 70 DSC decoder.
+Changing voice channels inside the capture window does not restart or retune the hardware.
+
+The shared capture is centered at 156.750 MHz. It covers Channel 70 and the nearby simplex marine
+voice channels simultaneously. Duplex coast-side and weather channels around 160–162 MHz are
+outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those
+while retaining continuous DSC requires a second SDR; demo mode continues to expose the full plan.
 
 An RTL-SDR Blog V4 already used by AIS-Catcher is valid prototype hardware, but the two programs
-cannot own the same USB tuner at the same time. Stop AIS-Catcher before selecting the `rtl_fm`
-receiver source. AIS at 161.975/162.025 MHz and voice channel 16 at 156.800 MHz also do not fit in
-the V4's approximately 2.56 MHz instantaneous capture window. Use a second receiver when continuous
-AIS and marine voice monitoring are both required. NOAA weather channels near 162 MHz fit near AIS,
-but concurrent decoding would still require one shared channelizer rather than two processes opening
-the dongle; that is intentionally outside this first reliable prototype.
+cannot own the same USB tuner at the same time. Stop AIS-Catcher before selecting the wideband
+receiver source. AIS at 161.975/162.025 MHz and Channel 70/voice near 156–157 MHz do not fit in one
+instantaneous capture window. Use a second receiver when continuous AIS and marine voice/DSC are
+both required.
 
 When Signal K runs in Podman, pass the SDR through to the container, preferably by stable USB path or
-device identity rather than a changing bus number. The container image must include `rtl_fm`.
+device identity rather than a changing bus number. The container image must include `rtl_sdr`.
 
 Do not connect an SDR to the same coax as a transmitting VHF with a passive tee. Use a separate
 receive antenna or a marine transmit-rated active splitter with a protected and muted receiver port.
@@ -50,6 +55,8 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `POST /api/region` — select `US_CA`, `US`, or `CA`
 - `POST /api/channel` — tune the receiver; body `{ "channel": "16" }`
 - `GET /api/live.wav` — private live streaming WAV
+- `GET /api/dsc` — decoded Channel 70 calls (MMSI/category/position when present)
+- `DELETE /api/dsc` — clear decoded calls
 - `GET /api/replay` — replay segment metadata
 - `GET /api/replay/:id.wav` — one replay segment
 - `DELETE /api/replay` — clear the rolling buffer

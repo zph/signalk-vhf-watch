@@ -27,3 +27,14 @@ test('demo runtime produces bounded replay audio and can retune', async () => {
     runtime.stop()
   }
 })
+
+test('wideband runtime keeps startup and tuning inside continuous DSC coverage', () => {
+  const runtime = new VhfRuntime(normalizeConfig({
+    enabled: false,
+    receiverMode: 'rtl_sdr',
+    initialChannel: 'WX2'
+  }))
+  assert.equal(runtime.status().channel.id, '16')
+  assert.equal(runtime.tune('68').channel.id, '68')
+  assert.throws(() => runtime.tune('WX2'), /continuous DSC Channel 70/)
+})

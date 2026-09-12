@@ -1,6 +1,6 @@
 import { channelById, type ChannelRegion } from './channels'
 
-export type ReceiverMode = 'demo' | 'rtl_fm'
+export type ReceiverMode = 'demo' | 'rtl_sdr'
 
 export interface VhfWatchConfig {
   enabled: boolean
@@ -37,7 +37,10 @@ function finiteNumber(value: unknown, fallback: number): number {
 export function normalizeConfig(raw: unknown): VhfWatchConfig {
   const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   const requestedChannel = String(value.initialChannel ?? DEFAULT_CONFIG.initialChannel).toUpperCase()
-  const receiverMode: ReceiverMode = value.receiverMode === 'rtl_fm' ? 'rtl_fm' : 'demo'
+  // Migrate the original one-channel rtl_fm setting to the shared wideband receiver.
+  const receiverMode: ReceiverMode = value.receiverMode === 'rtl_sdr' || value.receiverMode === 'rtl_fm'
+    ? 'rtl_sdr'
+    : 'demo'
   const channelRegion: ChannelRegion = value.channelRegion === 'US' || value.channelRegion === 'CA'
     ? value.channelRegion
     : 'US_CA'
@@ -68,8 +71,8 @@ export const pluginSchema = {
     receiverMode: {
       type: 'string',
       title: 'Receiver source',
-      enum: ['demo', 'rtl_fm'],
-      enumNames: ['Demo audio (no hardware)', 'RTL-SDR using rtl_fm'],
+      enum: ['demo', 'rtl_sdr'],
+      enumNames: ['Demo audio (no hardware)', 'RTL-SDR wideband (voice + continuous DSC watch)'],
       default: 'demo'
     },
     channelRegion: {
@@ -82,7 +85,7 @@ export const pluginSchema = {
     initialChannel: { type: 'string', title: 'Channel at startup', default: '16' },
     deviceIndex: { type: 'integer', title: 'RTL-SDR device index', minimum: 0, default: 0 },
     gainDb: { type: 'number', title: 'Manual tuner gain (dB; blank for automatic)', minimum: 0, maximum: 49.6 },
-    squelch: { type: 'integer', title: 'rtl_fm squelch level', minimum: 0, maximum: 100, default: 20 },
+    squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
     replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 30 },
     segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },

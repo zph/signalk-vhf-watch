@@ -1,7 +1,16 @@
 import { EventEmitter } from 'node:events'
 import { channelById, channelPlan, type ChannelRegion, type VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
-import { DemoReceiver, RtlFmReceiver, type AudioReceiver } from './receiver'
+import { DscAudioDecoder, type DscMessage } from './dsc'
+import {
+  canChannelize,
+  DemoReceiver,
+  DSC_CHANNEL_HZ,
+  WIDEBAND_CENTER_HZ,
+  WIDEBAND_SAMPLE_RATE,
+  WidebandRtlReceiver,
+  type AudioReceiver
+} from './receiver'
 import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
 
@@ -19,6 +28,20 @@ export interface RuntimeStatus {
   replaySegments: number
   liveListeners: number
   lastAudioAt?: string
+  dscWatch: {
+    enabled: boolean
+    frequencyHz: number
+    continuous: boolean
+    level: number
+    lastSignalAt?: string
+    messages: number
+  }
+  wideband?: {
+    centerHz: number
+    sampleRate: number
+    minimumHz: number
+    maximumHz: number
+  }
   error?: string
   receiveOnly: true
 }
@@ -34,12 +57,20 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   #lastAudioAt?: string
   #error?: string
   #liveListeners = 0
+  #dscLevel = 0
+  #lastDscSignalAt?: string
+  #dscContinuous = false
+  readonly #dscDecoder = new DscAudioDecoder()
+  readonly #dscMessages: DscMessage[] = []
 
   constructor(config: VhfWatchConfig) {
     super()
     this.config = config
     this.#channelRegion = config.channelRegion
-    this.#channel = channelById(config.initialChannel, this.#channelRegion)!
+    const configuredChannel = channelById(config.initialChannel, this.#channelRegion)!
+    this.#channel = config.receiverMode === 'rtl_sdr' && !canChannelize(configuredChannel.frequencyHz)
+      ? channelById('16', this.#channelRegion)!
+      : configuredChannel
     this.replay = new RollingReplay(
       config.sampleRate,
       config.segmentSeconds,
@@ -69,12 +100,14 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     const channel = channelById(channelId, this.#channelRegion)
     if (!channel) throw new Error(`Unknown VHF channel: ${channelId}`)
     if (channel.id === this.#channel.id) return this.status()
-    this.#stopReceiver()
+    if (this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)) {
+      throw new Error(`${channel.label} cannot share this RTL-SDR with continuous DSC Channel 70; use a second receiver`)
+    }
     this.#channel = channel
     this.replay.setChannel(channel.id)
     this.#level = 0
     this.#error = undefined
-    if (this.config.enabled) this.#startReceiver()
+    if (this.#receiver instanceof WidebandRtlReceiver) this.#receiver.tune(channel)
     return this.status()
   }
 
@@ -83,10 +116,9 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     this.#channelRegion = region
     const channel = channelById(this.#channel.id, region) ?? channelById('16', region)!
     if (channel.id !== this.#channel.id || channel.frequencyHz !== this.#channel.frequencyHz) {
-      this.#stopReceiver()
       this.#channel = channel
       this.replay.setChannel(channel.id)
-      if (this.config.enabled) this.#startReceiver()
+      if (this.#receiver instanceof WidebandRtlReceiver) this.#receiver.tune(channel)
     } else {
       this.#channel = channel
     }
@@ -118,6 +150,22 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       replaySegments: segments.length,
       liveListeners: this.#liveListeners,
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),
+      dscWatch: {
+        enabled: this.config.receiverMode === 'rtl_sdr' && this.config.enabled,
+        frequencyHz: DSC_CHANNEL_HZ,
+        continuous: this.#dscContinuous,
+        level: this.#dscLevel,
+        messages: this.#dscMessages.length,
+        ...(this.#lastDscSignalAt ? { lastSignalAt: this.#lastDscSignalAt } : {})
+      },
+      ...(this.config.receiverMode === 'rtl_sdr' ? {
+        wideband: {
+          centerHz: WIDEBAND_CENTER_HZ,
+          sampleRate: WIDEBAND_SAMPLE_RATE,
+          minimumHz: WIDEBAND_CENTER_HZ - WIDEBAND_SAMPLE_RATE / 2,
+          maximumHz: WIDEBAND_CENTER_HZ + WIDEBAND_SAMPLE_RATE / 2
+        }
+      } : {}),
       ...(this.#error ? { error: this.#error } : {}),
       receiveOnly: true
     }
@@ -125,6 +173,15 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
 
   segments(): ReplaySegmentSummary[] {
     return this.replay.list()
+  }
+
+  dscMessages(): DscMessage[] {
+    return [...this.#dscMessages]
+  }
+
+  clearDscMessages(): void {
+    this.#dscMessages.length = 0
+    this.#emitStatus()
   }
 
   listenerJoined(): void {
@@ -138,8 +195,8 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   }
 
   #startReceiver(): void {
-    const receiver = this.config.receiverMode === 'rtl_fm'
-      ? new RtlFmReceiver(this.config, this.#channel)
+    const receiver = this.config.receiverMode === 'rtl_sdr'
+      ? new WidebandRtlReceiver(this.config, this.#channel)
       : new DemoReceiver(this.config.sampleRate)
     this.#receiver = receiver
     receiver.on('audio', (chunk) => {
@@ -152,7 +209,20 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       this.#receiverState = state
       this.#emitStatus()
     })
+    receiver.on('dscAudio', (chunk) => {
+      this.#dscContinuous = true
+      const level = rmsLevel(chunk)
+      this.#dscLevel = this.#dscLevel * 0.8 + level * 0.2
+      if (level > 0.01) this.#lastDscSignalAt = new Date().toISOString()
+      const messages = this.#dscDecoder.push(chunk)
+      if (messages.length > 0) {
+        this.#dscMessages.unshift(...messages.reverse())
+        this.#dscMessages.splice(100)
+        this.#emitStatus()
+      }
+    })
     receiver.on('error', (error) => {
+      this.#dscContinuous = false
       this.#error = error.message
       this.#receiverState = 'Receiver unavailable'
       this.#emitStatus()
@@ -163,10 +233,11 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   #stopReceiver(): void {
     const receiver = this.#receiver
     this.#receiver = undefined
-    // rtl_fm exits asynchronously. Detach it before starting the next channel so a late exit from
-    // the old process cannot overwrite the new receiver's state.
+    // The capture process exits asynchronously. Detach it before shutdown so a late exit cannot
+    // overwrite the final receiver state.
     receiver?.removeAllListeners()
     receiver?.stop()
+    this.#dscContinuous = false
   }
 
   #emitStatus(): void {

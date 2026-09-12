@@ -47,6 +47,21 @@
       <audio id="live-audio" preload="none"></audio>
     </section>
 
+    <section class="replay-section" aria-labelledby="dsc-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">CHANNEL 70 · CONTINUOUS</p>
+          <h2 id="dsc-title">Digital selective calls</h2>
+        </div>
+        <div class="section-actions">
+          <button id="refresh-dsc" type="button">Refresh</button>
+          <button id="clear-dsc" class="danger" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="dsc-empty" class="empty">Waiting for a decoded DSC call…</div>
+      <ol id="dsc-list" class="replay-list" aria-live="polite"></ol>
+    </section>
+
     <section class="replay-section" aria-labelledby="replay-title">
       <div class="section-heading">
         <div>
@@ -66,12 +81,13 @@
     <aside class="hardware-note">
       <strong>Using an AIS-Catcher RTL-SDR?</strong>
       Stop AIS-Catcher before enabling the RTL-SDR receiver here. A single USB tuner cannot be owned
-      by both applications at once.
+      by both applications at once. The wideband receiver continuously watches DSC Channel 70 while
+      demodulating the selected nearby voice channel. Channels outside its capture window are disabled.
     </aside>
 
     <footer>
       <strong>No transmit controls exist in this application.</strong>
-      Channel 70 is intentionally unavailable for voice reception.
+      Channel 70 is continuously reserved for DSC and unavailable as voice audio.
     </footer>
   </main>
   <script src="./main.js"></script>

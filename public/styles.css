@@ -87,6 +87,9 @@ button.danger { color: var(--red); }
 .replay-time { font-variant-numeric: tabular-nums; font-weight: 800; }
 .replay-detail { color: var(--muted); font-size: .86rem; }
 .replay-item audio { width: min(360px, 38vw); height: 38px; }
+.dsc-distress { border-color: var(--red); background: rgba(255, 117, 108, .1); }
+.dsc-urgency { border-color: var(--orange); background: rgba(255, 174, 87, .08); }
+.dsc-safety { border-color: var(--cyan); }
 footer { margin-top: 24px; color: var(--muted); font-size: .82rem; text-align: center; }
 footer strong { color: var(--green); }
 .hardware-note {
