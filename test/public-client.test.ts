@@ -9,6 +9,7 @@ test('dedicated web client exposes live listening and replay without transmit co
   const script = readFileSync(path.join(root, 'public/main.js'), 'utf8')
   assert.match(html, /Listen live/)
   assert.match(html, /Recent radio/)
+  assert.match(html, /United States \+ Canada/)
   assert.match(html, /No transmit controls exist/)
   assert.match(script, /live\.wav/)
   assert.match(script, /replay/)

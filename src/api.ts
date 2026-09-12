@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 import type { PluginRouter } from '@signalk/server-api'
-import { VHF_CHANNELS } from './channels'
+import type { ChannelRegion } from './channels'
 import type { VhfRuntime } from './runtime'
 import { wavHeader } from './wav'
 
@@ -17,7 +17,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     if (runtime) response.set('Cache-Control', 'no-store').json(runtime.status())
   })
   read.get('/api/channels', (_request: Request, response: Response) => {
-    response.set('Cache-Control', 'private, max-age=3600').json({ channels: VHF_CHANNELS })
+    const runtime = runtimeOr503(getRuntime, response)
+    if (runtime) response.set('Cache-Control', 'no-store').json({ region: runtime.region(), channels: runtime.channels() })
   })
   read.get('/api/replay', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -70,6 +71,16 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
+  write.post('/api/region', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    try {
+      const region = String((request.body as { region?: unknown } | undefined)?.region ?? '') as ChannelRegion
+      response.json(runtime.setRegion(region))
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
   write.delete('/api/replay', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -88,7 +99,8 @@ export function openApi(): object {
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
-      '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } }
+      '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
+      '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } }
     }
   }
 }

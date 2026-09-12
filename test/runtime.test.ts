@@ -18,6 +18,11 @@ test('demo runtime produces bounded replay audio and can retune', async () => {
     assert.equal(runtime.segments().length, 1)
     assert.equal(runtime.tune('WX2').channel.id, 'WX2')
     assert.equal(runtime.segments()[0]?.channel, '16')
+    assert.equal(runtime.setRegion('CA').channelRegion, 'CA')
+    assert.equal(runtime.tune('04A').channel.id, '04A')
+    const usStatus = runtime.setRegion('US')
+    assert.equal(usStatus.channelRegion, 'US')
+    assert.equal(usStatus.channel.id, '16')
   } finally {
     runtime.stop()
   }

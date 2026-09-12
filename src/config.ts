@@ -1,10 +1,11 @@
-import { channelById } from './channels'
+import { channelById, type ChannelRegion } from './channels'
 
 export type ReceiverMode = 'demo' | 'rtl_fm'
 
 export interface VhfWatchConfig {
   enabled: boolean
   receiverMode: ReceiverMode
+  channelRegion: ChannelRegion
   initialChannel: string
   deviceIndex: number
   gainDb?: number
@@ -18,6 +19,7 @@ export interface VhfWatchConfig {
 export const DEFAULT_CONFIG: VhfWatchConfig = {
   enabled: true,
   receiverMode: 'demo',
+  channelRegion: 'US_CA',
   initialChannel: '16',
   deviceIndex: 0,
   squelch: 20,
@@ -36,13 +38,17 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
   const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   const requestedChannel = String(value.initialChannel ?? DEFAULT_CONFIG.initialChannel).toUpperCase()
   const receiverMode: ReceiverMode = value.receiverMode === 'rtl_fm' ? 'rtl_fm' : 'demo'
+  const channelRegion: ChannelRegion = value.channelRegion === 'US' || value.channelRegion === 'CA'
+    ? value.channelRegion
+    : 'US_CA'
   const gain = value.gainDb === undefined || value.gainDb === null || value.gainDb === ''
     ? undefined
     : Math.min(49.6, Math.max(0, finiteNumber(value.gainDb, 0)))
   return {
     enabled: value.enabled !== false,
     receiverMode,
-    initialChannel: channelById(requestedChannel)?.id ?? DEFAULT_CONFIG.initialChannel,
+    channelRegion,
+    initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
     deviceIndex: Math.max(0, Math.floor(finiteNumber(value.deviceIndex, DEFAULT_CONFIG.deviceIndex))),
     ...(gain === undefined ? {} : { gainDb: gain }),
     squelch: Math.min(100, Math.max(0, Math.floor(finiteNumber(value.squelch, DEFAULT_CONFIG.squelch)))),
@@ -65,6 +71,13 @@ export const pluginSchema = {
       enum: ['demo', 'rtl_fm'],
       enumNames: ['Demo audio (no hardware)', 'RTL-SDR using rtl_fm'],
       default: 'demo'
+    },
+    channelRegion: {
+      type: 'string',
+      title: 'Marine channel plan',
+      enum: ['US_CA', 'US', 'CA'],
+      enumNames: ['United States + Canada', 'United States', 'Canada'],
+      default: 'US_CA'
     },
     initialChannel: { type: 'string', title: 'Channel at startup', default: '16' },
     deviceIndex: { type: 'integer', title: 'RTL-SDR device index', minimum: 0, default: 0 },

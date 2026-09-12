@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { channelById, type VhfChannel } from './channels'
+import { channelById, channelPlan, type ChannelRegion, type VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
 import { DemoReceiver, RtlFmReceiver, type AudioReceiver } from './receiver'
 import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
@@ -8,6 +8,7 @@ import { rmsLevel } from './wav'
 export interface RuntimeStatus {
   enabled: boolean
   mode: VhfWatchConfig['receiverMode']
+  channelRegion: ChannelRegion
   channel: VhfChannel
   receiverState: string
   receiving: boolean
@@ -26,6 +27,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   readonly config: VhfWatchConfig
   readonly replay: RollingReplay
   #channel: VhfChannel
+  #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
   #receiverState = 'Stopped'
   #level = 0
@@ -36,7 +38,8 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   constructor(config: VhfWatchConfig) {
     super()
     this.config = config
-    this.#channel = channelById(config.initialChannel)!
+    this.#channelRegion = config.channelRegion
+    this.#channel = channelById(config.initialChannel, this.#channelRegion)!
     this.replay = new RollingReplay(
       config.sampleRate,
       config.segmentSeconds,
@@ -63,7 +66,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   }
 
   tune(channelId: string): RuntimeStatus {
-    const channel = channelById(channelId)
+    const channel = channelById(channelId, this.#channelRegion)
     if (!channel) throw new Error(`Unknown VHF channel: ${channelId}`)
     if (channel.id === this.#channel.id) return this.status()
     this.#stopReceiver()
@@ -75,11 +78,36 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     return this.status()
   }
 
+  setRegion(region: ChannelRegion): RuntimeStatus {
+    if (!['US', 'CA', 'US_CA'].includes(region)) throw new Error(`Unknown channel plan: ${region}`)
+    this.#channelRegion = region
+    const channel = channelById(this.#channel.id, region) ?? channelById('16', region)!
+    if (channel.id !== this.#channel.id || channel.frequencyHz !== this.#channel.frequencyHz) {
+      this.#stopReceiver()
+      this.#channel = channel
+      this.replay.setChannel(channel.id)
+      if (this.config.enabled) this.#startReceiver()
+    } else {
+      this.#channel = channel
+    }
+    this.#emitStatus()
+    return this.status()
+  }
+
+  region(): ChannelRegion {
+    return this.#channelRegion
+  }
+
+  channels(): VhfChannel[] {
+    return channelPlan(this.#channelRegion)
+  }
+
   status(): RuntimeStatus {
     const segments = this.replay.list()
     return {
       enabled: this.config.enabled,
       mode: this.config.receiverMode,
+      channelRegion: this.#channelRegion,
       channel: this.#channel,
       receiverState: this.#receiverState,
       receiving: this.#level > 0.003,

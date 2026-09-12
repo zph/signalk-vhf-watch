@@ -3,6 +3,14 @@
 Receive-only marine VHF monitoring for Signal K with a dedicated touch-friendly web interface,
 authenticated live audio, and a private rolling replay buffer.
 
+The default channel plan covers both the United States and Canada. The web interface can switch
+between the combined plan, US-only channels from the US Coast Guard table, and Canadian channels
+from the Canadian Coast Guard's current Radio Aids to Marine Navigation table. For duplex channels,
+the receiver tunes the coast-station frequency that a vessel radio hears.
+
+- US: <https://navcen.uscg.gov/us-vhf-channel-information>
+- Canada: <https://www.canada.ca/en/canadian-coast-guard/corporate/publications/radio-aids-marine-navigation/foreword.html#toc3>
+
 VHF Watch deliberately contains **no transmitter or push-to-talk implementation**. It is not a
 substitute for a certified marine VHF radio or required watchkeeping equipment. Voice channel 70 is
 not offered because channel 70 is reserved for Digital Selective Calling.
@@ -39,6 +47,7 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 
 - `GET /api/status` — receiver and buffer state
 - `GET /api/channels` — supported receive channels
+- `POST /api/region` — select `US_CA`, `US`, or `CA`
 - `POST /api/channel` — tune the receiver; body `{ "channel": "16" }`
 - `GET /api/live.wav` — private live streaming WAV
 - `GET /api/replay` — replay segment metadata

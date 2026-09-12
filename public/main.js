@@ -3,6 +3,7 @@
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
+  const regionSelect = $('#region')
   const channelSelect = $('#channel')
   const purpose = $('#channel-purpose')
   const signalBar = $('#signal-bar')
@@ -37,6 +38,7 @@
   }
 
   function renderStatus(status) {
+    regionSelect.value = status.channelRegion
     if (channelSelect.value !== status.channel.id) channelSelect.value = status.channel.id
     purpose.textContent = status.channel.purpose
     const percentage = Math.min(100, Math.round(status.level * 650))
@@ -45,6 +47,18 @@
     receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'RTL-SDR'}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB private buffer · ${status.replaySegments} segments · ${status.liveListeners} live listener${status.liveListeners === 1 ? '' : 's'}`
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
+  }
+
+  async function loadChannels() {
+    const response = await request('channels')
+    channels = response.channels
+    regionSelect.value = response.region
+    channelSelect.replaceChildren(...channels.map((channel) => {
+      const option = document.createElement('option')
+      option.value = channel.id
+      option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}`
+      return option
+    }))
   }
 
   async function updateStatus() {
@@ -104,6 +118,25 @@
     }
   }
 
+  async function changeRegion() {
+    regionSelect.disabled = true
+    channelSelect.disabled = true
+    try {
+      const status = await request('region', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region: regionSelect.value })
+      })
+      await loadChannels()
+      renderStatus(status)
+    } catch (error) {
+      setConnection('error', error.message)
+    } finally {
+      regionSelect.disabled = false
+      channelSelect.disabled = false
+    }
+  }
+
   async function toggleListen() {
     if (listening) {
       liveAudio.pause()
@@ -137,14 +170,7 @@
 
   async function initialize() {
     try {
-      const channelResponse = await request('channels')
-      channels = channelResponse.channels
-      channelSelect.replaceChildren(...channels.map((channel) => {
-        const option = document.createElement('option')
-        option.value = channel.id
-        option.textContent = `${channel.label} — ${channel.purpose}`
-        return option
-      }))
+      await loadChannels()
       await Promise.all([updateStatus(), updateReplay()])
       poll = window.setInterval(updateStatus, 1000)
       window.setInterval(updateReplay, 5000)
@@ -154,6 +180,7 @@
   }
 
   channelSelect.addEventListener('change', tune)
+  regionSelect.addEventListener('change', changeRegion)
   listenButton.addEventListener('click', toggleListen)
   $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', clearReplay)
