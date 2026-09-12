@@ -56,8 +56,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   }
 
   stop(): void {
-    this.#receiver?.stop()
-    this.#receiver = undefined
+    this.#stopReceiver()
     this.replay.flush()
     this.#receiverState = 'Stopped'
     this.#emitStatus()
@@ -67,8 +66,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     const channel = channelById(channelId)
     if (!channel) throw new Error(`Unknown VHF channel: ${channelId}`)
     if (channel.id === this.#channel.id) return this.status()
-    this.#receiver?.stop()
-    this.#receiver = undefined
+    this.#stopReceiver()
     this.#channel = channel
     this.replay.setChannel(channel.id)
     this.#level = 0
@@ -132,6 +130,15 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       this.#emitStatus()
     })
     receiver.start()
+  }
+
+  #stopReceiver(): void {
+    const receiver = this.#receiver
+    this.#receiver = undefined
+    // rtl_fm exits asynchronously. Detach it before starting the next channel so a late exit from
+    // the old process cannot overwrite the new receiver's state.
+    receiver?.removeAllListeners()
+    receiver?.stop()
   }
 
   #emitStatus(): void {
