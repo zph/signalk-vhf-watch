@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeConfig } from '../src/config'
+import { defaultSidecarPath, normalizeConfig } from '../src/config'
 
 test('normalizes safe defaults and rejects channel 70', () => {
   const config = normalizeConfig({ initialChannel: '70', replayMinutes: 999, segmentSeconds: 1 })
@@ -10,7 +10,11 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.replayMinutes, 120)
   assert.equal(config.segmentSeconds, 2)
   assert.equal(config.maxBufferMiB, 64)
-  assert.equal(config.sidecarPath, '/usr/local/bin/vhf-watch-sidecar')
+  assert.equal(config.sidecarPath, defaultSidecarPath())
+})
+
+test('selects a prebuilt sidecar by host platform and architecture', () => {
+  assert.match(defaultSidecarPath('linux', 'arm64'), /bin\/linux-arm64\/vhf-watch-sidecar$/)
 })
 
 test('validates the startup channel against its regional plan', () => {

@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { channelById, type ChannelRegion } from './channels'
 
 export type ReceiverMode = 'demo' | 'rtl_sdr'
@@ -18,13 +19,17 @@ export interface VhfWatchConfig {
   maxBufferMiB: number
 }
 
+export function defaultSidecarPath(platform = process.platform, architecture = process.arch): string {
+  return path.join(__dirname, '..', 'bin', `${platform}-${architecture}`, 'vhf-watch-sidecar')
+}
+
 export const DEFAULT_CONFIG: VhfWatchConfig = {
   enabled: true,
   receiverMode: 'demo',
   channelRegion: 'US_CA',
   initialChannel: '16',
   device: '0',
-  sidecarPath: '/usr/local/bin/vhf-watch-sidecar',
+  sidecarPath: defaultSidecarPath(),
   ppm: 0,
   squelch: 20,
   sampleRate: 16_000,
@@ -97,7 +102,7 @@ export const pluginSchema = {
     sidecarPath: {
       type: 'string',
       title: 'Native receiver sidecar path',
-      default: '/usr/local/bin/vhf-watch-sidecar'
+      default: DEFAULT_CONFIG.sidecarPath
     },
     ppm: {
       type: 'integer',

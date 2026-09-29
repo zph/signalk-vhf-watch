@@ -25,9 +25,10 @@ without radio hardware.
 
 ## RTL-SDR receiver
 
-Install the `rtl_sdr` utility and the static `vhf-watch-sidecar` binary on the Signal K host, then make
-the SDR USB device visible to Signal K. Choose `RTL-SDR wideband` in the plugin configuration and
-restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs both channelizers;
+Install the `rtl_sdr` utility on the Signal K host, then make the SDR USB device visible to Signal K.
+The npm package includes a statically linked `linux-arm64` sidecar, so Go is not required on the Pi;
+the configurable sidecar path supports development builds and future platforms. Choose `RTL-SDR
+wideband` in the plugin configuration and restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs both channelizers;
 only low-rate PCM crosses into JavaScript. Independent NFM streams provide the selected voice
 channel and an uninterrupted 24 kHz Channel 70 DSC decoder. Changing voice channels inside the
 capture window does not restart or retune the hardware.
