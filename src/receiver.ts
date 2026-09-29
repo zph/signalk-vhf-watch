@@ -50,15 +50,22 @@ export function canChannelize(frequencyHz: number): boolean {
   return Math.abs(frequencyHz - WIDEBAND_CENTER_HZ) <= WIDEBAND_SAMPLE_RATE / 2 - CHANNEL_GUARD_HZ
 }
 
-export function nativeSidecarArgs(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70'): string[] {
+export function nativeSidecarArgs(
+  config: VhfWatchConfig,
+  channel: VhfChannel,
+  slotB: VhfChannel | '70' = '70',
+  singleFrequency = false
+): string[] {
+  const centerHz = singleFrequency ? channel.frequencyHz : WIDEBAND_CENTER_HZ
+  const secondaryHz = singleFrequency ? channel.frequencyHz : slotB === '70' ? DSC_CHANNEL_HZ : slotB.frequencyHz
   return [
     '--mode', 'stream',
     '--device', config.device,
     '--sample-rate', String(WIDEBAND_SAMPLE_RATE),
-    '--center', String(WIDEBAND_CENTER_HZ),
+    '--center', String(centerHz),
     '--voice', String(channel.frequencyHz),
-    '--dsc', String(DSC_CHANNEL_HZ),
-    '--slot-b', String(slotB === '70' ? DSC_CHANNEL_HZ : slotB.frequencyHz),
+    '--dsc', String(singleFrequency ? channel.frequencyHz : DSC_CHANNEL_HZ),
+    '--slot-b', String(secondaryHz),
     '--audio-rate', String(config.sampleRate),
     '--ppm', String(config.ppm),
     '--squelch', String(config.squelch),
@@ -88,6 +95,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
   readonly #config: VhfWatchConfig
   #channel: VhfChannel
   #slotB: VhfChannel | '70'
+  readonly #singleFrequency: boolean
   #process?: ReturnType<typeof spawn>
   #active = false
   #restartTimer?: ReturnType<typeof setTimeout>
@@ -95,16 +103,17 @@ export class NativeSidecarReceiver extends AudioReceiver {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   #metrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
 
-  constructor(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70') {
+  constructor(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70', singleFrequency = false) {
     super()
     this.#config = config
     this.#channel = channel
     this.#slotB = slotB
+    this.#singleFrequency = singleFrequency
   }
 
   start(): void {
     if (this.#active) return
-    if (!canChannelize(this.#channel.frequencyHz)) {
+    if (!this.#singleFrequency && !canChannelize(this.#channel.frequencyHz)) {
       this.emit('error', new Error(`${this.#channel.label} is outside the continuous DSC capture window`))
       return
     }
@@ -114,8 +123,8 @@ export class NativeSidecarReceiver extends AudioReceiver {
 
   #startCapture(): void {
     if (!this.#active || this.#process) return
-    this.emit('state', 'Starting native wideband receiver')
-    const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel, this.#slotB), {
+    this.emit('state', this.#singleFrequency ? `Starting single-frequency receiver on ${this.#channel.label}` : 'Starting native wideband receiver')
+    const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel, this.#slotB, this.#singleFrequency), {
       stdio: ['pipe', 'pipe', 'pipe']
     })
     this.#process = child
@@ -157,7 +166,9 @@ export class NativeSidecarReceiver extends AudioReceiver {
             this.#metrics.slotBDiscriminatorNoise = state.slot_b_level
             this.#metrics.dscDiscriminatorNoise = state.dsc_level
             this.emit('metrics', { ...this.#metrics })
-            this.emit('state', `Wideband capture · Slot A ${this.#channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
+            this.emit('state', this.#singleFrequency
+              ? `Single-frequency capture · Slot A ${this.#channel.label} · Slot B + DSC paused`
+              : `Wideband capture · Slot A ${this.#channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
           }
         }
       } catch (error) {
@@ -198,6 +209,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
   }
 
   tune(channel: VhfChannel): void {
+    if (this.#singleFrequency) throw new Error('Single-frequency capture must restart before retuning')
     if (!canChannelize(channel.frequencyHz)) {
       throw new Error(`${channel.label} is outside the ${WIDEBAND_SAMPLE_RATE / 1_000_000} MHz continuous DSC capture window; use a second SDR for this channel`)
     }
