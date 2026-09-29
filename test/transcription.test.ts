@@ -13,6 +13,53 @@ test('reconciles fuzzy text repeated by overlapping transcription windows', () =
   assert.equal(reconcileTranscriptOverlap(previous, current), 'Rough to very rough seas through Wednesday.')
 })
 
+test('reconciles a full minute repeated by a long overlap window', () => {
+  const previous = [
+    'In the morning then becoming sunny. Highs in the lower 80s by the bay to the lower 90s inland.',
+    'Southeast winds up to five miles per hour becoming west in the afternoon. Thursday night mostly clear.',
+    'Friday and Friday night partly cloudy. Highs from the lower 80s to mid 90s with lows near 60.',
+    'Saturday through Sunday mostly clear. Monday mostly sunny in the morning then becoming sunny.',
+    'San Jose 84 and 59, Mountain View 80 and 58, Morgan Hill 88 and 57.',
+    'The weather overview for the Bay Area and central coast follows.'
+  ].join(' ')
+  const current = `${previous.replace('central coast follows', 'federal coast follows')} Elevated fire weather conditions continue through Wednesday.`
+  assert.equal(reconcileTranscriptOverlap(previous, current), 'Elevated fire weather conditions continue through Wednesday.')
+})
+
+test('repairs long duplicate prefixes already stored in consecutive archive records', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-repair-'))
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const previous = Array.from({ length: 80 }, (_value, index) => `forecast${index}`).join(' ')
+  archive.add({
+    startedAt: new Date(Date.UTC(2026, 8, 29, 20, 45, 26)).toISOString(),
+    endedAt: new Date(Date.UTC(2026, 8, 29, 20, 46, 26)).toISOString(),
+    channel: 'WX4',
+    durationSeconds: 60,
+    sampleRate: 16_000,
+    transcript: previous,
+    wav: Buffer.alloc(100)
+  })
+  archive.add({
+    startedAt: new Date(Date.UTC(2026, 8, 29, 20, 46, 26)).toISOString(),
+    endedAt: new Date(Date.UTC(2026, 8, 29, 20, 47, 26)).toISOString(),
+    channel: 'WX4',
+    durationSeconds: 60,
+    sampleRate: 16_000,
+    transcript: `${previous} elevated fire weather conditions continue`,
+    wav: Buffer.alloc(100)
+  })
+
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), path.join(directory, 'missing'), {
+    archive,
+    modelsDir: directory
+  })
+  assert.deepEqual(archive.list().slice().reverse().map((record) => record.transcript), [
+    previous,
+    'elevated fire weather conditions continue'
+  ])
+  manager.close()
+})
+
 test('allows decoding to run longer than its one-minute audio window', () => {
   assert.equal(transcriptionTimeoutMs(15), 90_000)
   assert.equal(transcriptionTimeoutMs(60), 120_000)
@@ -145,5 +192,39 @@ test('reuses audio overlap between windows without duplicating text or archived 
     'alpha bravo charlie delta echo foxtrot golf hotel',
     'india juliet'
   ])
+  manager.close()
+})
+
+test('trims overlap audio to ten seconds when replay slices are a full minute', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-long-slices-'))
+  const settings = path.join(directory, 'settings.json')
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
+  chmodSync(command, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(settings, command, {
+    batchSeconds: 60,
+    overlapSeconds: 10,
+    idleMs: 1_000,
+    archive,
+    modelsDir: directory
+  })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(16_000, 60, 120, 'WX4')
+  const first = replay.append(Buffer.alloc(1_920_000, 1), Date.UTC(2026, 8, 29, 20, 45, 26), 0.05)[0]!
+  const second = replay.append(Buffer.alloc(1_920_000, 2), Date.UTC(2026, 8, 29, 20, 46, 26), 0.05)[0]!
+  manager.enqueue(first, 20)
+  for (let attempt = 0; attempt < 100 && first.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  manager.enqueue(second, 20)
+  for (let attempt = 0; attempt < 100 && second.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+
+  assert.equal(first.transcription?.text, '1920044')
+  assert.equal(second.transcription?.text, '2240044')
+  assert.deepEqual(archive.list().slice().reverse().map((record) => record.durationSeconds), [60, 60])
   manager.close()
 })

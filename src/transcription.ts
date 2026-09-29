@@ -61,8 +61,16 @@ interface TranscriptionOptions {
   modelsDir?: string
 }
 
-function normalizedWords(text: string): string[] {
-  return text.split(/\s+/).map((word) => word.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean)
+interface TranscriptWord {
+  original: string
+  normalized: string
+}
+
+function transcriptWords(text: string): TranscriptWord[] {
+  return text.split(/\s+/).flatMap((original) => {
+    const normalized = original.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
+    return normalized ? [{ original, normalized }] : []
+  })
 }
 
 function wordEditDistance(left: string[], right: string[]): number {
@@ -82,28 +90,66 @@ function wordEditDistance(left: string[], right: string[]): number {
 }
 
 export function reconcileTranscriptOverlap(previousText: string, currentText: string): string {
-  const previous = normalizedWords(previousText)
-  const currentOriginal = currentText.trim().split(/\s+/).filter(Boolean)
-  const current = normalizedWords(currentOriginal.join(' '))
-  const maximum = Math.min(50, previous.length, current.length)
+  const previousWords = transcriptWords(previousText)
+  const currentWords = transcriptWords(currentText)
+  const previous = previousWords.map((word) => word.normalized)
+  const current = currentWords.map((word) => word.normalized)
+  const maximum = Math.min(previous.length, current.length)
   let removeWords = 0
+  let bestMatchedWords = 0
   let bestScore = Number.POSITIVE_INFINITY
-  for (let previousCount = 4; previousCount <= maximum; previousCount += 1) {
+  const compare = (previousCount: number, currentCount: number): void => {
     const suffix = previous.slice(-previousCount)
+    const prefix = current.slice(0, currentCount)
+    const distance = wordEditDistance(suffix, prefix)
+    const score = distance / Math.max(suffix.length, prefix.length)
+    const matchedWords = Math.min(suffix.length, prefix.length) - distance
+    if (score <= 0.34 && (matchedWords > bestMatchedWords || (matchedWords === bestMatchedWords && score < bestScore))) {
+      removeWords = currentCount
+      bestMatchedWords = matchedWords
+      bestScore = score
+    }
+  }
+
+  // Normal capture windows overlap by ten seconds, so exhaustively check the
+  // short suffix where minor Whisper wording changes are expected.
+  const shortMaximum = Math.min(50, maximum)
+  for (let previousCount = 4; previousCount <= shortMaximum; previousCount += 1) {
     const minimumCurrent = Math.max(4, previousCount - 5)
     const maximumCurrent = Math.min(maximum, previousCount + 5)
     for (let currentCount = minimumCurrent; currentCount <= maximumCurrent; currentCount += 1) {
-      const prefix = current.slice(0, currentCount)
-      const score = wordEditDistance(suffix, prefix) / Math.max(suffix.length, prefix.length)
-      const meaningfullyBetter = score < bestScore - 0.03
-      const comparableAndLonger = Math.abs(score - bestScore) <= 0.03 && currentCount > removeWords
-      if (score <= 0.34 && (meaningfullyBetter || comparableAndLonger)) {
-        removeWords = currentCount
-        bestScore = score
+      compare(previousCount, currentCount)
+    }
+  }
+
+  // Older builds retained an entire long replay slice as overlap. Find long
+  // suffix candidates from matching three-word anchors near the start of the
+  // current transcript instead of doing an expensive all-pairs comparison.
+  const longCandidates = new Set<number>([previous.length])
+  for (let currentOffset = 0; currentOffset <= Math.min(8, current.length - 3); currentOffset += 1) {
+    for (let previousOffset = 0; previousOffset <= previous.length - 3; previousOffset += 1) {
+      if (
+        current[currentOffset] === previous[previousOffset] &&
+        current[currentOffset + 1] === previous[previousOffset + 1] &&
+        current[currentOffset + 2] === previous[previousOffset + 2]
+      ) {
+        const overlapStart = previousOffset - currentOffset
+        if (overlapStart >= 0) longCandidates.add(previous.length - overlapStart)
       }
     }
   }
-  return currentOriginal.slice(removeWords).join(' ').trim()
+  for (const previousCount of longCandidates) {
+    if (previousCount <= shortMaximum || previousCount > maximum) continue
+    const variance = Math.max(12, Math.ceil(previousCount * 0.12))
+    for (
+      let currentCount = Math.max(4, previousCount - variance);
+      currentCount <= Math.min(maximum, previousCount + variance);
+      currentCount += 1
+    ) {
+      compare(previousCount, currentCount)
+    }
+  }
+  return currentWords.slice(removeWords).map((word) => word.original).join(' ').trim()
 }
 
 export function transcriptionTimeoutMs(durationSeconds: number): number {
@@ -158,6 +204,7 @@ export class TranscriptionManager {
     this.#enabled = settings.enabled
     this.#model = settings.model
     this.#threads = settings.threads
+    this.#repairArchivedTranscriptOverlap()
   }
 
   status(): TranscriptionStatus {
@@ -320,7 +367,7 @@ export class TranscriptionManager {
       }
     }
     this.#pending = retained
-    this.#pendingSeconds = retainedSeconds
+    this.#pendingSeconds = Math.min(retainedSeconds, this.#overlapSeconds)
     this.#pendingOverlapCount = retained.length
     while (this.#queue.length > 8) {
       const dropped = this.#queue.shift()
@@ -378,7 +425,13 @@ export class TranscriptionManager {
     const lastSegment = batch.segments.at(-1)!
     const wavPath = path.join(os.tmpdir(), `vhf-watch-${process.pid}-${lastSegment.id}.wav`)
     const sampleRate = batch.segments[0]!.wav.readUInt32LE(24)
-    const pcm = Buffer.concat(batch.segments.map((segment) => segment.wav.subarray(44)))
+    const overlapPcm = Buffer.concat(batch.segments.slice(0, batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44)))
+    const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
+    const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
+    const pcm = Buffer.concat([
+      retainedOverlap,
+      ...batch.segments.slice(batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44))
+    ])
     writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
     return new Promise((resolve, reject) => {
       const child = spawn(this.#command, [wavPath, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -421,6 +474,23 @@ export class TranscriptionManager {
       transcript,
       wav: pcmToWav(pcm, sampleRate)
     })
+  }
+
+  #repairArchivedTranscriptOverlap(): void {
+    if (!this.#archive) return
+    const records = this.#archive.list(2_000).reverse()
+    let previous: TranscriptArchiveRecord | undefined
+    for (const record of records) {
+      if (previous && previous.channel === record.channel &&
+        Math.abs(Date.parse(record.startedAt) - Date.parse(previous.endedAt)) <= 1_500) {
+        const reconciled = reconcileTranscriptOverlap(previous.transcript, record.transcript)
+        if (reconciled !== record.transcript) {
+          record.transcript = reconciled
+          this.#archive.updateTranscript(record.id, reconciled)
+        }
+      }
+      previous = record
+    }
   }
 
   #load(): PersistedSettings {
