@@ -85,6 +85,7 @@
   function renderStatus(status) {
     singleFrequencyActive = status.captureMode === 'single_frequency'
     const activeSlotAChannel = status.slots.A.currentChannel.id
+    const hadActiveSlotAChannel = Boolean(timelineActiveSlotAChannel)
     if (timelineActiveSlotAChannel && timelineActiveSlotAChannel !== activeSlotAChannel) {
       timelineAwaitingChannel = activeSlotAChannel
       timelineFollowingLive = true
@@ -97,6 +98,7 @@
       timelineOffset.textContent = channelFrequencyDisplay(activeSlotAChannel)
     }
     timelineActiveSlotAChannel = activeSlotAChannel
+    if (!hadActiveSlotAChannel && replayTimeline.length > 0) selectLatestActiveTimeline()
     regionSelect.value = status.channelRegion
     slotAMode.value = status.slots.A.mode
     slotAChannel.value = status.slots.A.configuredChannel.id
@@ -453,6 +455,11 @@
   }
 
   function selectLatestActiveTimeline(autoplay = false) {
+    if (!timelineActiveSlotAChannel) {
+      timelineTime.textContent = 'Waiting for receiver status…'
+      timelineOffset.textContent = 'Starting receiver…'
+      return
+    }
     const index = latestActiveTimelineIndex()
     if (index < 0) {
       timelineAwaitingChannel = timelineActiveSlotAChannel

@@ -58,6 +58,8 @@ test('dedicated web client exposes dual receiver slots and continuous replay wit
   assert.doesNotMatch(script, /confirm\('Clear the private rolling VHF replay buffer/)
   assert.match(script, /timelineWaitingAtEdge/)
   assert.match(script, /selectLatestActiveTimeline/)
+  assert.match(script, /Waiting for receiver status/)
+  assert.match(script, /if \(!timelineActiveSlotAChannel\)/)
   assert.match(script, /segment\.channel === timelineActiveSlotAChannel/)
   assert.match(html, /Transcribe voice/)
   assert.match(html, /transcription-model/)
