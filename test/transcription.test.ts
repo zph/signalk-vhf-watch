@@ -4,8 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
-import { TranscriptionManager } from '../src/transcription'
+import { reconcileTranscriptOverlap, TranscriptionManager } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
+
+test('reconciles fuzzy text repeated by overlapping transcription windows', () => {
+  const previous = 'Conditions improve Wednesday night with locally hazardous conditions across the northern outer waters likely to continue.'
+  const current = 'With local hazardous conditions across northern outer waters likely to continue. Rough to very rough seas through Wednesday.'
+  assert.equal(reconcileTranscriptOverlap(previous, current), 'Rough to very rough seas through Wednesday.')
+})
 
 test('transcription defaults off, requires its runtime, and persists explicit activation', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-'))
@@ -66,5 +72,53 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   assert.equal(archive.list()[0]?.transcript, '96044')
   assert.equal(archive.list()[0]?.channel, '16')
   assert.equal(archive.wav(archive.list()[0]!.id)?.length, 96_044)
+  manager.close()
+})
+
+test('reuses audio overlap between windows without duplicating text or archived audio', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-overlap-'))
+  const settings = path.join(directory, 'settings.json')
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(command, [
+    '#!/bin/sh',
+    'state="$0.state"',
+    'if test -e "$state"; then',
+    '  printf "echo foxtrot golf hotel india juliet\\n"',
+    'else',
+    '  : > "$state"',
+    '  printf "alpha bravo charlie delta echo foxtrot golf hotel\\n"',
+    'fi'
+  ].join('\n'))
+  chmodSync(command, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(settings, command, {
+    batchSeconds: 6,
+    overlapSeconds: 2,
+    idleMs: 1_000,
+    archive
+  })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const segments = [0, 1, 2, 3, 4].map((index) => replay.append(
+    Buffer.alloc(32_000, index + 1),
+    Date.UTC(2026, 8, 29, 0, 0, index * 2),
+    0.1
+  )[0]!)
+  for (const segment of segments) manager.enqueue(segment, 20)
+  for (let attempt = 0; attempt < 100 && segments[4]!.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.deepEqual(segments[2]!.transcription, {
+    status: 'complete',
+    text: 'alpha bravo charlie delta echo foxtrot golf hotel'
+  })
+  assert.deepEqual(segments[4]!.transcription, { status: 'complete', text: 'india juliet' })
+  const records = archive.list().slice().reverse()
+  assert.equal(records.length, 2)
+  assert.deepEqual(records.map((record) => record.durationSeconds), [6, 4])
+  assert.deepEqual(records.map((record) => record.transcript), [
+    'alpha bravo charlie delta echo foxtrot golf hotel',
+    'india juliet'
+  ])
   manager.close()
 })

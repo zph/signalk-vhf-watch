@@ -14,10 +14,11 @@ Base.en Q5 improved some proper names but retained its higher resource cost. A 1
 preprocessing dependency. The production recommendation is therefore tiny.en Q5, two threads, and
 the default audio context, with transcription still explicitly opt-in.
 
-The plugin's five-second replay slices were also tested independently. Most were partially useful,
-but one returned only a single token and sentence boundaries were frequently lost. Fifteen-second
-windows retained recognizable continuous sentences, so transcription now batches three adjacent
-five-second replay slices without changing the responsiveness of the replay timeline.
+The plugin's five-second replay slices were also tested independently. They fragmented sentences,
+lost words at boundaries, and one returned only a single token. Fifteen-second windows still omitted
+substantial context; a 30-second window improved continuous speech, and the uninterrupted 44.3-second
+capture was markedly better. Transcription therefore targets 60-second windows, reuses 10 seconds of
+audio in the next window, and reconciles the repeated transcript prefix with the preceding result.
 
 Measured on `boat-pi` on 2026-09-29 while VHF Watch continued its 2.4 MS/s RTL-SDR capture of
 Channel 16 plus continuous DSC Channel 70.

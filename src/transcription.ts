@@ -10,7 +10,8 @@ import { pcmToWav } from './wav'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
 export const MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS = 0.35
-export const TRANSCRIPTION_BATCH_SECONDS = 15
+export const TRANSCRIPTION_BATCH_SECONDS = 60
+export const TRANSCRIPTION_OVERLAP_SECONDS = 10
 export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
 
 export interface TranscriptionStatus {
@@ -31,34 +32,86 @@ interface PersistedSettings {
 interface TranscriptionBatch {
   segments: ReplaySegment[]
   durationSeconds: number
+  overlapSegmentCount: number
+  channel: string
 }
 
 interface TranscriptionOptions {
   batchSeconds?: number
+  overlapSeconds?: number
   idleMs?: number
   archive?: TranscriptArchive
+}
+
+function normalizedWords(text: string): string[] {
+  return text.split(/\s+/).map((word) => word.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean)
+}
+
+function wordEditDistance(left: string[], right: string[]): number {
+  let previous = Array.from({ length: right.length + 1 }, (_value, index) => index)
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex]
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        previous[rightIndex]! + 1,
+        current[rightIndex - 1]! + 1,
+        previous[rightIndex - 1]! + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      )
+    }
+    previous = current
+  }
+  return previous[right.length]!
+}
+
+export function reconcileTranscriptOverlap(previousText: string, currentText: string): string {
+  const previous = normalizedWords(previousText)
+  const currentOriginal = currentText.trim().split(/\s+/).filter(Boolean)
+  const current = normalizedWords(currentOriginal.join(' '))
+  const maximum = Math.min(50, previous.length, current.length)
+  let removeWords = 0
+  let bestScore = Number.POSITIVE_INFINITY
+  for (let previousCount = 4; previousCount <= maximum; previousCount += 1) {
+    const suffix = previous.slice(-previousCount)
+    const minimumCurrent = Math.max(4, previousCount - 5)
+    const maximumCurrent = Math.min(maximum, previousCount + 5)
+    for (let currentCount = minimumCurrent; currentCount <= maximumCurrent; currentCount += 1) {
+      const prefix = current.slice(0, currentCount)
+      const score = wordEditDistance(suffix, prefix) / Math.max(suffix.length, prefix.length)
+      const meaningfullyBetter = score < bestScore - 0.03
+      const comparableAndLonger = Math.abs(score - bestScore) <= 0.03 && currentCount > removeWords
+      if (score <= 0.34 && (meaningfullyBetter || comparableAndLonger)) {
+        removeWords = currentCount
+        bestScore = score
+      }
+    }
+  }
+  return currentOriginal.slice(removeWords).join(' ').trim()
 }
 
 export class TranscriptionManager {
   readonly #settingsPath: string
   readonly #command: string
   readonly #batchSeconds: number
+  readonly #overlapSeconds: number
   readonly #idleMs: number
   readonly #archive?: TranscriptArchive
   #enabled: boolean
   #queue: TranscriptionBatch[] = []
   #pending: ReplaySegment[] = []
   #pendingSeconds = 0
+  #pendingOverlapCount = 0
   #pendingTimer?: ReturnType<typeof setTimeout>
   #running = false
   #child?: ChildProcess
   #error?: string
   #closed = false
+  #previousTranscript = new Map<string, string>()
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
     this.#command = command
     this.#batchSeconds = options.batchSeconds ?? TRANSCRIPTION_BATCH_SECONDS
+    this.#overlapSeconds = Math.min(options.overlapSeconds ?? TRANSCRIPTION_OVERLAP_SECONDS, this.#batchSeconds / 2)
     this.#idleMs = options.idleMs ?? TRANSCRIPTION_BATCH_IDLE_MS
     this.#archive = options.archive
     this.#enabled = this.#load().enabled
@@ -127,7 +180,7 @@ export class TranscriptionManager {
     segment.transcription = { status: 'queued', text: '' }
     this.#pending.push(segment)
     this.#pendingSeconds += segment.durationSeconds
-    if (this.#pendingSeconds >= this.#batchSeconds) this.#flushPending()
+    if (this.#pendingSeconds >= this.#batchSeconds) this.#flushPending(true)
     else this.#schedulePending()
   }
 
@@ -165,16 +218,35 @@ export class TranscriptionManager {
     this.#pendingTimer.unref()
   }
 
-  #flushPending(): void {
+  #flushPending(retainOverlap = false): void {
     if (this.#pendingTimer) clearTimeout(this.#pendingTimer)
     this.#pendingTimer = undefined
     if (this.#pending.length === 0) return
-    this.#queue.push({ segments: this.#pending, durationSeconds: this.#pendingSeconds })
-    this.#pending = []
-    this.#pendingSeconds = 0
+    if (this.#pending.length <= this.#pendingOverlapCount) {
+      this.#clearPending()
+      return
+    }
+    const segments = this.#pending
+    this.#queue.push({
+      segments,
+      durationSeconds: this.#pendingSeconds,
+      overlapSegmentCount: this.#pendingOverlapCount,
+      channel: segments.at(-1)!.channel
+    })
+    const retained: ReplaySegment[] = []
+    let retainedSeconds = 0
+    if (retainOverlap && this.#overlapSeconds > 0) {
+      for (let index = segments.length - 1; index >= 0 && retainedSeconds < this.#overlapSeconds; index -= 1) {
+        retained.unshift(segments[index]!)
+        retainedSeconds += segments[index]!.durationSeconds
+      }
+    }
+    this.#pending = retained
+    this.#pendingSeconds = retainedSeconds
+    this.#pendingOverlapCount = retained.length
     while (this.#queue.length > 8) {
       const dropped = this.#queue.shift()
-      for (const segment of dropped?.segments ?? []) {
+      for (const segment of dropped?.segments.slice(dropped.overlapSegmentCount) ?? []) {
         segment.transcription = { status: 'error', text: '', error: 'Transcription queue full' }
       }
     }
@@ -186,6 +258,7 @@ export class TranscriptionManager {
     this.#pendingTimer = undefined
     this.#pending = []
     this.#pendingSeconds = 0
+    this.#pendingOverlapCount = 0
   }
 
   async #drain(): Promise<void> {
@@ -194,11 +267,17 @@ export class TranscriptionManager {
     try {
       while (this.#enabled && this.#queue.length > 0) {
         const batch = this.#queue.shift()!
-        for (const segment of batch.segments) segment.transcription = { status: 'transcribing', text: '' }
+        const outputSegments = batch.segments.slice(batch.overlapSegmentCount)
+        for (const segment of outputSegments) segment.transcription = { status: 'transcribing', text: '' }
         try {
-          const text = await this.#transcribe(batch)
-          for (const segment of batch.segments) segment.transcription = { status: 'complete', text: '' }
-          batch.segments.at(-1)!.transcription = { status: 'complete', text }
+          const rawText = await this.#transcribe(batch)
+          const previousText = this.#previousTranscript.get(batch.channel)
+          const text = batch.overlapSegmentCount > 0 && previousText
+            ? reconcileTranscriptOverlap(previousText, rawText)
+            : rawText
+          for (const segment of outputSegments) segment.transcription = { status: 'complete', text: '' }
+          outputSegments.at(-1)!.transcription = { status: 'complete', text }
+          this.#previousTranscript.set(batch.channel, rawText)
           this.#error = undefined
           try {
             this.#archiveBatch(batch, text)
@@ -207,7 +286,7 @@ export class TranscriptionManager {
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          for (const segment of batch.segments) segment.transcription = { status: 'error', text: '', error: message }
+          for (const segment of outputSegments) segment.transcription = { status: 'error', text: '', error: message }
           this.#error = message
         }
       }
@@ -246,18 +325,19 @@ export class TranscriptionManager {
 
   #archiveBatch(batch: TranscriptionBatch, transcript: string): void {
     if (!this.#archive) return
-    const first = batch.segments[0]!
-    const last = batch.segments.at(-1)!
-    const measuredNoise = batch.segments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
+    const archivedSegments = batch.segments.slice(batch.overlapSegmentCount)
+    const first = archivedSegments[0]!
+    const last = archivedSegments.at(-1)!
+    const measuredNoise = archivedSegments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
       span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise]
     )))
     const sampleRate = first.wav.readUInt32LE(24)
-    const pcm = Buffer.concat(batch.segments.map((segment) => segment.wav.subarray(44)))
+    const pcm = Buffer.concat(archivedSegments.map((segment) => segment.wav.subarray(44)))
     this.#archive.add({
       startedAt: first.startedAt,
       endedAt: last.endedAt,
       channel: first.channel,
-      durationSeconds: batch.durationSeconds,
+      durationSeconds: archivedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0),
       sampleRate,
       ...(measuredNoise.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measuredNoise) }),
       transcript,

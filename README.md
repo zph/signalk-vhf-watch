@@ -102,9 +102,10 @@ enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses
 `whisper.cpp` `tiny.en-q5_1` model with two CPU threads and its normal audio context. An off-air NOAA
 marine forecast showed that the smaller 768-token audio context could be faster but failed badly on
 continuous radio speech, so the packaged runtime deliberately keeps the model default. Adjacent
-five-second replay slices are combined into a 15-second recognition window to avoid cutting radio
-sentences into unusably short fragments. Batches that pass the configured RF squelch are processed
-one at a time; audio is not uploaded.
+five-second replay slices are combined into one-minute recognition windows. Successive windows reuse
+ten seconds of audio for linguistic context, then reconcile the repeated text with the preceding
+result so it is not shown twice. A shorter final window runs after the channel has been quiet for six
+seconds. Batches that pass the configured RF squelch are processed one at a time; audio is not uploaded.
 
 Completed batches are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
