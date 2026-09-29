@@ -61,3 +61,15 @@ test('parses non-distress address, category, and sender fields', () => {
   assert.equal(message.targetMmsi, '366012345')
   assert.equal(message.selfMmsi, '316098765')
 })
+
+test('parses the repeated format symbol in the Signal Identification Wiki VHF sample', () => {
+  const message = decodeDscSymbols([
+    120, 120, 24, 73, 65, 0, 0, 100, 24, 73, 65, 0, 0, 100, 126, 90, 0, 6,
+    126, 126, 126, 117
+  ])
+  assert.equal(message.format, 'individual')
+  assert.equal(message.category, 'routine')
+  assert.equal(message.targetMmsi, '247365000')
+  assert.equal(message.selfMmsi, '247365000')
+  assert.equal(message.eos, 117)
+})

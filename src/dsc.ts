@@ -103,6 +103,9 @@ function decodePosition(symbols: number[]): DscPosition | undefined {
 
 export function decodeDscSymbols(symbols: number[], validCharacters = true, id = 0): DscMessage {
   const formatCode = symbols[0] ?? 0
+  // M.493 transmits the format specifier twice at the transition from phasing into the call.
+  // Retain support for older synthetic fixtures that supplied only one copy.
+  const payloadOffset = symbols[1] === formatCode ? 2 : 1
   const message: DscMessage = {
     id,
     receivedAt: new Date().toISOString(),
@@ -113,19 +116,19 @@ export function decodeDscSymbols(symbols: number[], validCharacters = true, id =
     rawSymbols: [...symbols]
   }
   if (formatCode === 112) {
-    message.selfMmsi = decodeMmsi(symbols.slice(1, 6))
-    message.nature = NATURE_NAMES[symbols[6] ?? 0]
-    message.position = decodePosition(symbols.slice(7, 12))
-    const hours = symbols[12]
-    const minutes = symbols[13]
+    message.selfMmsi = decodeMmsi(symbols.slice(payloadOffset, payloadOffset + 5))
+    message.nature = NATURE_NAMES[symbols[payloadOffset + 5] ?? 0]
+    message.position = decodePosition(symbols.slice(payloadOffset + 6, payloadOffset + 11))
+    const hours = symbols[payloadOffset + 11]
+    const minutes = symbols[payloadOffset + 12]
     if (hours !== undefined && minutes !== undefined && hours <= 23 && minutes <= 59) {
       message.timeUtc = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
     }
     return message
   }
-  message.targetMmsi = decodeMmsi(symbols.slice(1, 6))
-  message.category = CATEGORY_NAMES[symbols[6] ?? 0] ?? 'unknown'
-  message.selfMmsi = decodeMmsi(symbols.slice(7, 12))
+  message.targetMmsi = decodeMmsi(symbols.slice(payloadOffset, payloadOffset + 5))
+  message.category = CATEGORY_NAMES[symbols[payloadOffset + 5] ?? 0] ?? 'unknown'
+  message.selfMmsi = decodeMmsi(symbols.slice(payloadOffset + 6, payloadOffset + 11))
   return message
 }
 
