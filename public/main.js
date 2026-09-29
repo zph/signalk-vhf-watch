@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 32
+  const CLIENT_BUILD = 33
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -257,19 +257,38 @@
     const response = await request('channels')
     channels = response.channels
     regionSelect.value = response.region
-    const voiceOptions = (slot) => channels.map((channel) => {
+    const optionFor = (channel, slot) => {
       const option = document.createElement('option')
       option.value = channel.id
       const singleFrequency = slot === 'A' && channel.requiresSingleFrequency ? ' · single-frequency; pauses Slot B + DSC' : ''
       option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}${singleFrequency}`
       option.disabled = slot === 'B' ? channel.availableSlotB === false : channel.availableSlotA === false
       return option
-    })
-    slotAChannel.replaceChildren(...voiceOptions('A'))
+    }
+    const optionGroup = (label, entries, slot) => {
+      const group = document.createElement('optgroup')
+      group.label = label
+      group.append(...entries.map((channel) => optionFor(channel, slot)))
+      return group
+    }
+    const primary = channels.filter((channel) => channel.id === '16')
+    const marine = channels.filter((channel) => channel.id !== '16' && !channel.weather && !channel.requiresSingleFrequency)
+    const coast = channels.filter((channel) => !channel.weather && channel.requiresSingleFrequency)
+    const weather = channels.filter((channel) => channel.weather)
+    slotAChannel.replaceChildren(
+      optionGroup('Primary watch', primary, 'A'),
+      optionGroup('Marine voice · numeric order', marine, 'A'),
+      ...(coast.length > 0 ? [optionGroup('Coast / duplex · pauses Slot B', coast, 'A')] : []),
+      ...(weather.length > 0 ? [optionGroup('Weather · pauses Slot B', weather, 'A')] : [])
+    )
     const dscOption = document.createElement('option')
     dscOption.value = '70'
     dscOption.textContent = '70 · US+CA — Digital selective calling'
-    slotBChannel.replaceChildren(dscOption, ...voiceOptions('B'))
+    const dscGroup = document.createElement('optgroup')
+    dscGroup.label = 'Digital watch'
+    dscGroup.append(dscOption)
+    const slotBVoice = channels.filter((channel) => channel.availableSlotB !== false)
+    slotBChannel.replaceChildren(dscGroup, optionGroup('Marine voice · numeric order', slotBVoice, 'B'))
   }
 
   async function updateStatus() {

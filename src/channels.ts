@@ -162,7 +162,17 @@ export function channelPlan(region: ChannelRegion): VhfChannel[] {
     existing.countries.push(entry.country)
     if (existing.purpose !== entry.purpose) existing.purpose = `US: ${existing.purpose} · Canada: ${entry.purpose}`
   }
-  return [...merged.values()].sort((left, right) => left.frequencyHz - right.frequencyHz || left.id.localeCompare(right.id))
+  return [...merged.values()].sort((left, right) => {
+    if (Boolean(left.weather) !== Boolean(right.weather)) return left.weather ? 1 : -1
+    const leftNumber = /^(\d+)([A-Z]*)$/.exec(left.id)
+    const rightNumber = /^(\d+)([A-Z]*)$/.exec(right.id)
+    if (leftNumber && rightNumber) {
+      const numberDifference = Number(leftNumber[1]) - Number(rightNumber[1])
+      if (numberDifference !== 0) return numberDifference
+      return leftNumber[2]!.localeCompare(rightNumber[2]!)
+    }
+    return left.id.localeCompare(right.id, undefined, { numeric: true })
+  })
 }
 
 export function channelById(id: string, region: ChannelRegion = 'US_CA'): VhfChannel | undefined {

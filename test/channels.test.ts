@@ -28,3 +28,10 @@ test('uses coast receive frequencies for Canadian duplex channels', () => {
   assert.equal(channelById('20', 'CA')?.frequencyHz, 161_600_000)
   assert.equal(channelById('84', 'CA')?.frequencyHz, 161_825_000)
 })
+
+test('orders marine channels numerically and weather channels last', () => {
+  const ids = channelPlan('US_CA').map((channel) => channel.id)
+  assert.deepEqual(ids.slice(0, 7), ['01', '01A', '02', '03', '04A', '05A', '06'])
+  assert.ok(ids.indexOf('16') < ids.indexOf('61A'))
+  assert.deepEqual(ids.slice(-7), ['WX1', 'WX2', 'WX3', 'WX4', 'WX5', 'WX6', 'WX7'])
+})
