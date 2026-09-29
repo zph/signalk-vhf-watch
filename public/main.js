@@ -43,6 +43,7 @@
   let timelineFollowingLive = true
   let timelineWaitingAtEdge = false
   let timelineWindowMinutes = 120
+  let timelineReceiverRows = []
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -86,6 +87,21 @@
     receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB per voice slot · ${status.replaySegments} private segments across both slots`
     timelineWindowMinutes = status.replayMinutes
+    const receiverRows = [{
+      slot: 'A',
+      channel: status.slots.A.currentChannel.id,
+      frequencyHz: status.slots.A.currentChannel.frequencyHz
+    }]
+    if (status.slots.B.kind === 'voice') {
+      receiverRows.push({
+        slot: 'B',
+        channel: status.slots.B.channel.id,
+        frequencyHz: status.slots.B.channel.frequencyHz
+      })
+    }
+    const receiverRowsChanged = JSON.stringify(receiverRows) !== JSON.stringify(timelineReceiverRows)
+    timelineReceiverRows = receiverRows
+    if (receiverRowsChanged) renderFrequencyMap()
     const transcription = status.transcription
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
@@ -181,6 +197,10 @@
     const timeSpan = endTime - startTime
     const rows = new Map()
 
+    for (const receiver of timelineReceiverRows) {
+      rows.set(`${receiver.slot}:${receiver.frequencyHz || receiver.channel}`, { ...receiver, marks: [] })
+    }
+
     for (const [segmentIndex, segment] of replayTimeline.entries()) {
       const frequencyHz = channelFrequency(segment.channel)
       const key = `${segment.slot}:${frequencyHz || segment.channel}`
@@ -195,11 +215,10 @@
       }
     }
 
-    const populatedRows = [...rows.values()]
-      .filter((row) => row.marks.length > 0)
+    const visibleRows = [...rows.values()]
       .sort((left, right) => (left.frequencyHz || Number.MAX_SAFE_INTEGER) - (right.frequencyHz || Number.MAX_SAFE_INTEGER) || left.slot.localeCompare(right.slot))
 
-    const rowElements = populatedRows.map((row) => {
+    const rowElements = visibleRows.map((row) => {
       const wrapper = document.createElement('div')
       wrapper.className = 'frequency-row'
       const label = document.createElement('div')
@@ -211,6 +230,7 @@
       label.append(channel, frequency)
       const track = document.createElement('div')
       track.className = 'frequency-track'
+      track.setAttribute('aria-label', row.marks.length > 0 ? `${row.marks.length} detected activity bursts` : 'Listening; no activity bursts above squelch yet')
       for (const mark of row.marks) {
         const left = Math.max(0, Math.min(100, (mark.runStart - startTime) / timeSpan * 100))
         const right = Math.max(left, Math.min(100, (mark.runEnd - startTime) / timeSpan * 100))
@@ -237,8 +257,12 @@
       return wrapper
     })
     frequencyMap.replaceChildren(...rowElements)
-    frequencyMap.hidden = populatedRows.length === 0
-    frequencyEmpty.hidden = populatedRows.length > 0
+    const hasActivity = visibleRows.some((row) => row.marks.length > 0)
+    frequencyMap.hidden = visibleRows.length === 0
+    frequencyEmpty.hidden = hasActivity
+    frequencyEmpty.textContent = visibleRows.length === 0
+      ? 'Starting receiver…'
+      : 'Listening — no bursts above squelch yet.'
     highlightFrequencyBurst()
   }
 
