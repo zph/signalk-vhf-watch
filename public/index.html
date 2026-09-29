@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=30" />
+  <link rel="stylesheet" href="./styles.css?v=32" />
 </head>
 <body>
   <main class="app-shell">
@@ -29,16 +29,35 @@
         <div class="channel-heading"><span>Voice watch · Slot A</span><strong id="slot-a-mode-label">Fixed</strong></div>
         <div class="channel-number"><span id="slot-a-display">16</span><small id="slot-a-frequency">156.800 MHz</small></div>
         <p id="slot-a-purpose">International distress, safety and calling</p>
+        <div class="channel-controls">
+          <label for="slot-a-mode"><span>Mode</span>
+            <select id="slot-a-mode"><option value="fixed">Fixed</option><option value="scan">Scan</option></select>
+          </label>
+          <label for="slot-a-channel"><span>Channel</span>
+            <select id="slot-a-channel" aria-describedby="slot-a-purpose"></select>
+          </label>
+        </div>
       </article>
       <article class="channel-status">
         <div class="channel-heading"><span>Digital watch · Slot B</span><strong id="slot-b-mode-label">Continuous</strong></div>
         <div class="channel-number"><span id="slot-b-display">70</span><small id="slot-b-frequency">156.525 MHz</small></div>
         <p id="slot-b-purpose">Digital selective calling</p>
+        <div class="channel-controls single-control">
+          <label for="slot-b-channel"><span>Channel</span>
+            <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
+          </label>
+        </div>
       </article>
       <div class="meter-block">
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
+      </div>
+      <div class="receiver-presets" aria-label="Quick channel selection">
+        <strong>Quick watch</strong>
+        <button id="preset-standard" class="button preset-primary" type="button">16 + DSC 70</button>
+        <button id="preset-slot-a-16" class="button" type="button">Slot A · 16</button>
+        <button id="preset-slot-b-70" class="button" type="button">Slot B · 70</button>
       </div>
     </section>
 
@@ -129,15 +148,6 @@
                 <option value="CA">Canada</option>
               </select>
             </label>
-            <label for="slot-a-mode">Slot A mode
-              <select id="slot-a-mode"><option value="fixed">Fixed</option><option value="scan">Scan</option></select>
-            </label>
-            <label for="slot-a-channel">Slot A voice channel
-              <select id="slot-a-channel" aria-describedby="slot-a-purpose"></select>
-            </label>
-            <label for="slot-b-channel">Slot B voice or DSC
-              <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
-            </label>
             <hr />
             <label for="replay-squelch">Activity / playback squelch
               <select id="replay-squelch">
@@ -189,6 +199,6 @@
 
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
-  <script src="./main.js?v=31"></script>
+  <script src="./main.js?v=32"></script>
 </body>
 </html>

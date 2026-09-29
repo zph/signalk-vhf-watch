@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 31
+  const CLIENT_BUILD = 32
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -16,6 +16,9 @@
   const slotBDisplay = $('#slot-b-display')
   const slotBFrequency = $('#slot-b-frequency')
   const slotBModeLabel = $('#slot-b-mode-label')
+  const presetStandard = $('#preset-standard')
+  const presetSlotA16 = $('#preset-slot-a-16')
+  const presetSlotB70 = $('#preset-slot-b-70')
   const signalBar = $('#signal-bar')
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
@@ -1011,6 +1014,9 @@
     slotAMode.disabled = true
     slotAChannel.disabled = true
     slotBChannel.disabled = true
+    presetStandard.disabled = true
+    presetSlotA16.disabled = true
+    presetSlotB70.disabled = true
     try {
       const status = await request('slots', {
         method: 'POST',
@@ -1025,7 +1031,27 @@
       slotAMode.disabled = singleFrequencyActive
       slotAChannel.disabled = false
       slotBChannel.disabled = singleFrequencyActive
+      presetStandard.disabled = false
+      presetSlotA16.disabled = false
+      presetSlotB70.disabled = false
     }
+  }
+
+  function applyChannelPreset(slot) {
+    if (slot === 'standard' || slot === 'A') {
+      slotAMode.value = 'fixed'
+      slotAChannel.value = '16'
+      if (slotBChannel.value === '16') slotBChannel.value = '70'
+    }
+    if (slot === 'standard' || slot === 'B') {
+      slotBChannel.value = '70'
+      const selectedA = channels.find((channel) => channel.id === slotAChannel.value)
+      if (selectedA?.requiresSingleFrequency) {
+        slotAMode.value = 'fixed'
+        slotAChannel.value = '16'
+      }
+    }
+    void configureSlots()
   }
 
   async function changeRegion() {
@@ -1088,6 +1114,9 @@
   slotAMode.addEventListener('change', configureSlots)
   slotAChannel.addEventListener('change', configureSlots)
   slotBChannel.addEventListener('change', configureSlots)
+  presetStandard.addEventListener('click', () => applyChannelPreset('standard'))
+  presetSlotA16.addEventListener('click', () => applyChannelPreset('A'))
+  presetSlotB70.addEventListener('click', () => applyChannelPreset('B'))
   regionSelect.addEventListener('change', changeRegion)
   $('#clear').addEventListener('click', () => clearReplayDialog.showModal())
   clearReplayDialog.addEventListener('close', () => {
