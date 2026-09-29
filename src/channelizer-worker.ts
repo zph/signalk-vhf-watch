@@ -25,11 +25,9 @@ class NfmChannelizer {
   readonly #firstDecimation: number
   readonly #secondDecimation: number
   readonly #squelch: number
-  #oscillatorI = 1
-  #oscillatorQ = 0
-  #stepI = 1
-  #stepQ = 0
-  #oscillatorSamples = 0
+  #oscillatorI = new Float64Array([1])
+  #oscillatorQ = new Float64Array([0])
+  #oscillatorIndex = 0
   #mixI = 0
   #mixQ = 0
   #mixCount = 0
@@ -49,7 +47,10 @@ class NfmChannelizer {
   constructor(inputRate: number, outputRate: number, offsetHz: number, squelch: number) {
     this.#inputRate = inputRate
     this.#outputRate = outputRate
-    this.#firstDecimation = 10
+    // All supported audio rates divide 96 kHz. Decimating to that rate cuts the expensive
+    // filtering and FM discrimination work by 60% while retaining enough bandwidth to isolate a
+    // 25 kHz marine channel.
+    this.#firstDecimation = 25
     const intermediateRate = inputRate / this.#firstDecimation
     this.#secondDecimation = intermediateRate / outputRate
     if (!Number.isInteger(this.#secondDecimation)) throw new Error(`Unsupported audio rate ${outputRate}`)
@@ -58,9 +59,17 @@ class NfmChannelizer {
   }
 
   tune(offsetHz: number): void {
-    const step = -2 * Math.PI * offsetHz / this.#inputRate
-    this.#stepI = Math.cos(step)
-    this.#stepQ = Math.sin(step)
+    const integerOffset = Math.round(offsetHz)
+    const divisor = integerOffset === 0 ? this.#inputRate : gcd(this.#inputRate, Math.abs(integerOffset))
+    const period = this.#inputRate / divisor
+    this.#oscillatorI = new Float64Array(period)
+    this.#oscillatorQ = new Float64Array(period)
+    for (let index = 0; index < period; index += 1) {
+      const phase = -2 * Math.PI * integerOffset * index / this.#inputRate
+      this.#oscillatorI[index] = Math.cos(phase)
+      this.#oscillatorQ[index] = Math.sin(phase)
+    }
+    this.#oscillatorIndex = 0
   }
 
   process(iq: Uint8Array): Int16Array {
@@ -74,18 +83,12 @@ class NfmChannelizer {
     for (let index = 0; index + 1 < iq.length; index += 2) {
       const sourceI = (iq[index]! - 127.5) / 127.5
       const sourceQ = (iq[index + 1]! - 127.5) / 127.5
-      this.#mixI += sourceI * this.#oscillatorI - sourceQ * this.#oscillatorQ
-      this.#mixQ += sourceI * this.#oscillatorQ + sourceQ * this.#oscillatorI
-      const nextI = this.#oscillatorI * this.#stepI - this.#oscillatorQ * this.#stepQ
-      this.#oscillatorQ = this.#oscillatorI * this.#stepQ + this.#oscillatorQ * this.#stepI
-      this.#oscillatorI = nextI
-      this.#oscillatorSamples += 1
-      if (this.#oscillatorSamples === 4096) {
-        const magnitude = Math.hypot(this.#oscillatorI, this.#oscillatorQ)
-        this.#oscillatorI /= magnitude
-        this.#oscillatorQ /= magnitude
-        this.#oscillatorSamples = 0
-      }
+      const oscillatorI = this.#oscillatorI[this.#oscillatorIndex]!
+      const oscillatorQ = this.#oscillatorQ[this.#oscillatorIndex]!
+      this.#mixI += sourceI * oscillatorI - sourceQ * oscillatorQ
+      this.#mixQ += sourceI * oscillatorQ + sourceQ * oscillatorI
+      this.#oscillatorIndex += 1
+      if (this.#oscillatorIndex === this.#oscillatorI.length) this.#oscillatorIndex = 0
       this.#mixCount += 1
       if (this.#mixCount < this.#firstDecimation) continue
 
@@ -124,6 +127,11 @@ class NfmChannelizer {
     }
     return output.subarray(0, outputIndex)
   }
+}
+
+function gcd(left: number, right: number): number {
+  while (right !== 0) [left, right] = [right, left % right]
+  return left
 }
 
 const config = workerData as WorkerConfig
