@@ -33,6 +33,16 @@ test('caps retention by memory as well as time', () => {
   assert.equal(replay.list().length, 1)
 })
 
+test('deletes one retained replay segment without clearing the others', () => {
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  replay.append(Buffer.alloc(8_000 * 2 * 2 * 3))
+  const segments = replay.list()
+  const deletedId = segments[1]!.id
+  assert.equal(replay.delete(deletedId), true)
+  assert.deepEqual(replay.list().map((segment) => segment.id), [segments[0]!.id, segments[2]!.id])
+  assert.equal(replay.delete(deletedId), false)
+})
+
 test('preserves raw replay and applies selectable discriminator squelch on playback', () => {
   const replay = new RollingReplay(8_000, 2, 1, '16')
   const noisy = Buffer.alloc(16_000, 0)

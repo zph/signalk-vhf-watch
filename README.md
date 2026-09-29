@@ -77,6 +77,7 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `GET /api/replay` — replay segment metadata
 - `GET /api/replay/:id.wav` — one replay segment
 - `DELETE /api/replay` — clear the rolling buffer
+- `DELETE /api/replay/:id` — delete one retained replay segment
 
 Replay is held only in process memory. Restarting Signal K clears it, and nothing is uploaded. The
 configured time window is also capped by a separate memory limit (64 MiB by default), so higher

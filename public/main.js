@@ -18,6 +18,7 @@
   const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
+  const clearReplayDialog = $('#clear-replay-dialog')
   const timelineRange = $('#timeline-range')
   const timelineTime = $('#timeline-time')
   const timelineOffset = $('#timeline-offset')
@@ -231,7 +232,22 @@
     audio.controls = true
     audio.preload = 'none'
     audio.src = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
-    item.append(time, detail, audio)
+    const deleteButton = document.createElement('button')
+    deleteButton.className = 'danger replay-delete'
+    deleteButton.type = 'button'
+    deleteButton.textContent = 'Delete'
+    deleteButton.setAttribute('aria-label', `Delete radio segment from ${time.textContent}`)
+    deleteButton.addEventListener('click', async () => {
+      deleteButton.disabled = true
+      try {
+        await request(`replay/${segment.id}`, { method: 'DELETE' })
+        await updateReplay()
+      } catch (error) {
+        deleteButton.disabled = false
+        setConnection('error', error.message)
+      }
+    })
+    item.append(time, detail, audio, deleteButton)
     return item
   }
 
@@ -411,7 +427,6 @@
   }
 
   async function clearReplay() {
-    if (!window.confirm('Clear the private rolling VHF replay buffer?')) return
     try {
       await request('replay', { method: 'DELETE' })
       await updateReplay()
@@ -450,7 +465,10 @@
     await restartLiveStream()
   })
   $('#refresh').addEventListener('click', updateReplay)
-  $('#clear').addEventListener('click', clearReplay)
+  $('#clear').addEventListener('click', () => clearReplayDialog.showModal())
+  clearReplayDialog.addEventListener('close', () => {
+    if (clearReplayDialog.returnValue === 'delete') void clearReplay()
+  })
   $('#refresh-dsc').addEventListener('click', updateDsc)
   $('#clear-dsc').addEventListener('click', clearDsc)
   replaySquelch.addEventListener('change', () => {

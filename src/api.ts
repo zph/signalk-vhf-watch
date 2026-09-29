@@ -127,6 +127,16 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     runtime.replay.clear()
     response.status(204).end()
   })
+  write.delete('/api/replay/:id', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const id = Number(request.params.id)
+    if (!Number.isSafeInteger(id) || id < 1 || !runtime.replay.delete(id)) {
+      response.status(404).json({ error: 'Replay segment not found' })
+      return
+    }
+    response.status(204).end()
+  })
   write.delete('/api/dsc', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -143,6 +153,7 @@ export function openApi(): object {
       '/api/status': { get: { summary: 'Get receiver status', responses: { '200': { description: 'Status' } } } },
       '/api/channels': { get: { summary: 'List supported receive channels', responses: { '200': { description: 'Channels' } } } },
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
+      '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/dsc': {

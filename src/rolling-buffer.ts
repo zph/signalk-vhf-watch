@@ -117,6 +117,13 @@ export class RollingReplay {
     return wav
   }
 
+  delete(id: number): boolean {
+    const index = this.#segments.findIndex((segment) => segment.id === id)
+    if (index < 0) return false
+    this.#segments.splice(index, 1)
+    return true
+  }
+
   clear(): void {
     this.#segments = []
     this.#pending = Buffer.alloc(0)

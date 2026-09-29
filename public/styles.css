@@ -110,6 +110,15 @@ button.danger { color: var(--red); }
 .transcript { margin-top: 7px; color: var(--text); }
 .transcript strong { color: var(--cyan); }
 .replay-item audio { width: min(360px, 38vw); height: 38px; }
+.replay-delete { min-width: 88px; }
+dialog {
+  width: min(440px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line);
+  border-radius: 18px; color: var(--text); background: var(--panel); box-shadow: 0 24px 90px rgba(0, 0, 0, .6);
+}
+dialog::backdrop { background: rgba(2, 8, 13, .78); }
+dialog form { padding: 24px; }
+dialog p { color: var(--muted); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .dsc-distress { border-color: var(--red); background: rgba(255, 117, 108, .1); }
 .dsc-urgency { border-color: var(--orange); background: rgba(255, 174, 87, .08); }
 .dsc-safety { border-color: var(--cyan); }
@@ -134,4 +143,5 @@ footer strong { color: var(--green); }
   .replay-section { padding: 18px 14px; }
   .replay-item { grid-template-columns: 75px 1fr; }
   .replay-item audio { grid-column: 1 / -1; width: 100%; }
+  .replay-delete { grid-column: 1 / -1; width: 100%; }
 }
