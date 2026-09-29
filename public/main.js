@@ -18,6 +18,7 @@
   const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
+  const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   let channels = []
   let listening = false
   let liveAbort
@@ -84,6 +85,11 @@
     }
   }
 
+  function replayActiveSeconds(segment) {
+    if (!Array.isArray(segment.activity) || segment.activity.length === 0) return undefined
+    return segment.activity.reduce((sum, value) => sum + value, 0) / segment.activity.length * segment.durationSeconds
+  }
+
   function replayRow(segment) {
     const item = document.createElement('li')
     item.className = 'replay-item'
@@ -105,7 +111,7 @@
       chart.classList.add('activity-chart')
       chart.setAttribute('viewBox', `0 0 ${segment.activity.length * 2} 20`)
       chart.setAttribute('role', 'img')
-      const activeSeconds = segment.activity.reduce((sum, value) => sum + value, 0) / segment.activity.length * segment.durationSeconds
+      const activeSeconds = replayActiveSeconds(segment) ?? 0
       chart.setAttribute('aria-label', `${activeSeconds.toFixed(1)} seconds of detected sound`)
       for (const [index, value] of segment.activity.entries()) {
         const bar = document.createElementNS(namespace, 'rect')
@@ -132,8 +138,15 @@
   async function updateReplay() {
     try {
       const { segments } = await request(`replay?squelch=${encodeURIComponent(replaySquelch.value)}`)
-      replayList.replaceChildren(...segments.map(replayRow))
-      empty.hidden = segments.length > 0
+      const visibleSegments = segments.filter((segment) => {
+        const activeSeconds = replayActiveSeconds(segment)
+        return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
+      })
+      replayList.replaceChildren(...visibleSegments.map(replayRow))
+      empty.hidden = visibleSegments.length > 0
+      empty.textContent = segments.length === 0
+        ? 'Waiting for the first replay segment…'
+        : `No radio activity passes squelch ${replaySquelch.value} yet.`
     } catch (error) {
       empty.hidden = false
       empty.textContent = error.message

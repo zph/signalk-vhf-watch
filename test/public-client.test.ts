@@ -19,5 +19,7 @@ test('dedicated web client exposes live listening and replay without transmit co
   assert.match(script, /dsc/)
   assert.match(script, /activity-chart/)
   assert.match(script, /seconds of detected sound/)
+  assert.match(script, /MINIMUM_REPLAY_SIGNAL_SECONDS/)
+  assert.match(script, /No radio activity passes squelch/)
   assert.doesNotMatch(script, /push.?to.?talk|\bptt\b|transmit/i)
 })
