@@ -39,12 +39,13 @@ the plugin configuration. If the capture process or USB device fails, VHF Watch 
 exponential backoff. Status reports receiver restart counts and IQ chunks dropped when the
 channelizer cannot keep up, so a trial can distinguish quiet RF from an unhealthy processing path.
 
-The shared capture is centered at 156.75 MHz. Its 2.4 MHz window covers Channel 70, Channel 16, and
+Marine mode is centered at 156.75 MHz. Its 2.4 MHz window covers Channel 70, Channel 16, and
 the 156–157.425 MHz simplex marine voice range simultaneously. A live Raspberry Pi trial sustained
 this native dual-channel DSP with more than 30× processing headroom and no RTL-SDR sample loss.
-Duplex coast-side and weather channels around 160–162 MHz are
-outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those
-while retaining continuous DSC requires a second SDR; demo mode continues to expose the full plan.
+Duplex coast-side and weather channels around 160–162 MHz are outside that instantaneous window.
+Selecting one in fixed Slot A mode switches the same SDR into single-frequency reception centered on
+that channel; Slot B, scanning, and Channel 70 DSC are visibly paused until Slot A returns to a marine
+channel. Monitoring a distant channel while retaining continuous DSC still requires a second SDR.
 
 An RTL-SDR Blog V4 already used by AIS-Catcher is valid prototype hardware, but the two programs
 cannot own the same USB tuner at the same time. Stop AIS-Catcher before selecting the wideband

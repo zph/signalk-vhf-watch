@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=17" />
+  <link rel="stylesheet" href="./styles.css?v=18" />
 </head>
 <body>
   <main>
@@ -80,7 +80,7 @@
     <section class="replay-section" aria-labelledby="dsc-title">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">CHANNEL 70 · CONTINUOUS</p>
+          <p id="dsc-mode-label" class="eyebrow">CHANNEL 70 · CONTINUOUS</p>
           <h2 id="dsc-title">Digital selective calls</h2>
         </div>
         <div class="section-actions">
@@ -164,15 +164,15 @@
     <aside class="hardware-note">
       <strong>Using an AIS-Catcher RTL-SDR?</strong>
       Stop AIS-Catcher before enabling the RTL-SDR receiver here. A single USB tuner cannot be owned
-      by both applications at once. The wideband receiver continuously watches DSC Channel 70 while
-      demodulating the selected nearby voice channel. Channels outside its capture window are disabled.
+      by both applications at once. Marine mode continuously watches DSC Channel 70 while
+      demodulating the selected nearby voice channel. Selecting a distant weather channel temporarily pauses Slot B and DSC.
     </aside>
 
     <footer>
       <strong>No transmit controls exist in this application.</strong>
-      Channel 70 is decoded continuously whenever it is assigned to Slot B.
+      Channel 70 is decoded continuously whenever it is assigned to Slot B, except during single-frequency weather reception.
     </footer>
   </main>
-  <script src="./main.js?v=17"></script>
+  <script src="./main.js?v=18"></script>
 </body>
 </html>

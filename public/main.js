@@ -15,6 +15,7 @@
   const replayList = $('#replay-list')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
+  const dscModeLabel = $('#dsc-mode-label')
   const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
@@ -46,6 +47,7 @@
   let timelineWaitingAtEdge = false
   let timelineWindowMinutes = 120
   let timelineReceiverRows = []
+  let singleFrequencyActive = false
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -67,6 +69,7 @@
   }
 
   function renderStatus(status) {
+    singleFrequencyActive = status.captureMode === 'single_frequency'
     regionSelect.value = status.channelRegion
     slotAMode.value = status.slots.A.mode
     slotAChannel.value = status.slots.A.configuredChannel.id
@@ -74,9 +77,14 @@
     slotAPurpose.textContent = status.slots.A.mode === 'scan'
       ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
       : status.slots.A.configuredChannel.purpose
-    slotBPurpose.textContent = status.slots.B.kind === 'dsc'
-      ? 'Continuous digital selective calling watch'
-      : status.slots.B.channel.purpose
+    slotBPurpose.textContent = status.slots.B.kind === 'paused'
+      ? `Paused while Slot A receives ${status.slots.A.currentChannel.label} outside the marine band`
+      : status.slots.B.kind === 'dsc'
+        ? 'Continuous digital selective calling watch'
+        : status.slots.B.channel.purpose
+    slotAMode.disabled = singleFrequencyActive
+    slotBChannel.disabled = singleFrequencyActive
+    dscModeLabel.textContent = singleFrequencyActive ? 'CHANNEL 70 · PAUSED FOR WEATHER' : 'CHANNEL 70 · CONTINUOUS'
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -86,7 +94,8 @@
     const health = metrics && (metrics.restarts || metrics.droppedIqChunks)
       ? ` · ${metrics.restarts} restarts · ${metrics.droppedIqChunks} IQ drops`
       : ''
-    receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
+    const source = status.mode === 'demo' ? 'Demo source' : singleFrequencyActive ? 'Single-frequency RTL-SDR' : 'Wideband RTL-SDR'
+    receiverState.textContent = status.error || `${status.receiverState} · ${source}${dsc}${health}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB per voice slot · ${status.replaySegments} private segments across both slots`
     timelineWindowMinutes = status.replayMinutes
     const receiverRows = [{
@@ -136,18 +145,19 @@
     const response = await request('channels')
     channels = response.channels
     regionSelect.value = response.region
-    const voiceOptions = () => channels.map((channel) => {
+    const voiceOptions = (slot) => channels.map((channel) => {
       const option = document.createElement('option')
       option.value = channel.id
-      option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}`
-      option.disabled = channel.available === false
+      const singleFrequency = slot === 'A' && channel.requiresSingleFrequency ? ' · single-frequency; pauses Slot B + DSC' : ''
+      option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}${singleFrequency}`
+      option.disabled = slot === 'B' ? channel.availableSlotB === false : channel.availableSlotA === false
       return option
     })
-    slotAChannel.replaceChildren(...voiceOptions())
+    slotAChannel.replaceChildren(...voiceOptions('A'))
     const dscOption = document.createElement('option')
     dscOption.value = '70'
     dscOption.textContent = '70 · US+CA — Digital selective calling'
-    slotBChannel.replaceChildren(dscOption, ...voiceOptions())
+    slotBChannel.replaceChildren(dscOption, ...voiceOptions('B'))
   }
 
   async function updateStatus() {
@@ -523,6 +533,8 @@
   }
 
   async function configureSlots() {
+    const selected = channels.find((channel) => channel.id === slotAChannel.value)
+    if (selected?.requiresSingleFrequency) slotAMode.value = 'fixed'
     slotAMode.disabled = true
     slotAChannel.disabled = true
     slotBChannel.disabled = true
@@ -536,9 +548,9 @@
     } catch (error) {
       setConnection('error', error.message)
     } finally {
-      slotAMode.disabled = false
+      slotAMode.disabled = singleFrequencyActive
       slotAChannel.disabled = false
-      slotBChannel.disabled = false
+      slotBChannel.disabled = singleFrequencyActive
     }
   }
 
@@ -559,7 +571,8 @@
     } finally {
       regionSelect.disabled = false
       slotAChannel.disabled = false
-      slotBChannel.disabled = false
+      slotAMode.disabled = singleFrequencyActive
+      slotBChannel.disabled = singleFrequencyActive
     }
   }
 

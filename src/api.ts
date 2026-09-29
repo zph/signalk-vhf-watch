@@ -24,7 +24,10 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       region: runtime.region(),
       channels: runtime.channels().map((channel) => ({
         ...channel,
-        available: runtime.config.receiverMode !== 'rtl_sdr' || canChannelize(channel.frequencyHz)
+        available: true,
+        availableSlotA: true,
+        availableSlotB: runtime.config.receiverMode !== 'rtl_sdr' || canChannelize(channel.frequencyHz),
+        requiresSingleFrequency: runtime.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)
       }))
     })
   })

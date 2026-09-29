@@ -26,6 +26,15 @@ test('builds native sidecar arguments without any transmit controls', () => {
     '--audio-rate', '16000', '--ppm', '2', '--squelch', '15'
   ])
   assert.equal(args.some((arg) => /tx|transmit|ptt/i.test(arg)), false)
+
+  const weatherArgs = nativeSidecarArgs(config, channelById('WX4')!, '70', true)
+  assert.deepEqual(weatherArgs, [
+    '--mode', 'stream', '--device', '00000001', '--sample-rate', '2400000',
+    '--center', '162425000', '--voice', '162425000', '--dsc', '162425000',
+    '--slot-b', '162425000',
+    '--audio-rate', '16000', '--ppm', '2', '--squelch', '15'
+  ])
+  assert.equal(weatherArgs.some((arg) => /tx|transmit|ptt/i.test(arg)), false)
 })
 
 test('parses complete sidecar frames and retains a partial frame', () => {

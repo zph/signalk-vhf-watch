@@ -40,14 +40,27 @@ test('configures scan mode and independent receiver Slot B', () => {
   assert.throws(() => runtime.configureSlots('fixed', '68', '68'), /different channels/)
 })
 
-test('wideband runtime keeps startup and tuning inside continuous DSC coverage', () => {
+test('switches between marine wideband and distant single-frequency reception', () => {
   const runtime = new VhfRuntime(normalizeConfig({
-    enabled: false,
+    enabled: true,
     receiverMode: 'rtl_sdr',
-    initialChannel: 'WX2'
+    initialChannel: 'WX4',
+    slotAMode: 'scan'
   }))
-  assert.equal(runtime.status().channel.id, '16')
+  const weather = runtime.status()
+  assert.equal(weather.channel.id, 'WX4')
+  assert.equal(weather.captureMode, 'single_frequency')
+  assert.equal(weather.slots.A.mode, 'fixed')
+  assert.equal(weather.slots.B.kind, 'paused')
+  assert.equal(weather.dscWatch.enabled, false)
+  assert.equal(weather.wideband?.centerHz, 162_425_000)
+  assert.throws(() => runtime.configureSlots('scan', 'WX4', '70'), /requires Fixed mode/)
+
+  const marine = runtime.configureSlots('fixed', '16', '70')
+  assert.equal(marine.captureMode, 'wideband')
+  assert.equal(marine.slots.B.kind, 'dsc')
+  assert.equal(marine.dscWatch.enabled, true)
+  assert.equal(marine.wideband?.centerHz, 156_750_000)
   assert.equal(runtime.tune('68').channel.id, '68')
-  assert.throws(() => runtime.tune('WX2'), /continuous DSC Channel 70/)
-  assert.equal(runtime.status().dscWatch.lastSignalAt, undefined)
+  assert.equal(runtime.tune('WX2').captureMode, 'single_frequency')
 })

@@ -103,7 +103,7 @@ export class VhfRuntime extends EventEmitter<{
     this.#channel = configuredChannel
     this.#singleFrequency = config.receiverMode === 'rtl_sdr' && !canChannelize(configuredChannel.frequencyHz)
     this.#slotAConfigured = this.#channel
-    this.#slotAMode = config.slotAMode
+    this.#slotAMode = this.#singleFrequency ? 'fixed' : config.slotAMode
     const configuredSlotB = config.slotBChannel === '70' ? undefined : channelById(config.slotBChannel, this.#channelRegion)
     this.#slotB = configuredSlotB && (config.receiverMode !== 'rtl_sdr' || canChannelize(configuredSlotB.frequencyHz))
       ? configuredSlotB
@@ -132,7 +132,7 @@ export class VhfRuntime extends EventEmitter<{
       return
     }
     this.#startReceiver()
-    if (this.#slotAMode === 'scan') this.#scheduleScan(0)
+    if (this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
   }
 
   stop(): void {
