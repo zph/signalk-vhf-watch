@@ -90,6 +90,9 @@ button.danger { color: var(--red); }
 }
 .replay-time { font-variant-numeric: tabular-nums; font-weight: 800; }
 .replay-detail { color: var(--muted); font-size: .86rem; }
+.activity-chart { display: block; width: min(280px, 100%); height: 30px; margin-top: 6px; border-bottom: 1px solid var(--line); }
+.activity-chart rect { fill: var(--cyan); }
+.activity-caption { display: block; margin-top: 2px; font-size: .7rem; color: var(--muted); }
 .replay-item audio { width: min(360px, 38vw); height: 38px; }
 .dsc-distress { border-color: var(--red); background: rgba(255, 117, 108, .1); }
 .dsc-urgency { border-color: var(--orange); background: rgba(255, 174, 87, .08); }

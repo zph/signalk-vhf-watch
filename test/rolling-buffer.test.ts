@@ -46,4 +46,7 @@ test('preserves raw replay and applies selectable discriminator squelch on playb
   assert.equal(replay.wavFor(id, 20)?.readInt16LE(44), 0)
   assert.equal(replay.wavFor(id, 20)?.readInt16LE(44 + noisy.length), 8_000)
   assert.equal(replay.list()[0]?.minimumDiscriminatorNoise, 0.20)
+  const activity = replay.list(20)[0]?.activity ?? []
+  assert.ok(activity.slice(0, activity.length / 2).every((value) => value === 0))
+  assert.ok(activity.slice(activity.length / 2).every((value) => value === 1))
 })

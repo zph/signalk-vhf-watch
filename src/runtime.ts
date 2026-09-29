@@ -185,8 +185,8 @@ export class VhfRuntime extends EventEmitter<{
     }
   }
 
-  segments(): ReplaySegmentSummary[] {
-    return this.replay.list()
+  segments(squelch?: number): ReplaySegmentSummary[] {
+    return this.replay.list(squelch)
   }
 
   dscMessages(): DscMessage[] {

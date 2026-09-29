@@ -20,6 +20,7 @@ export interface ReplaySegment {
 export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav' | 'qualitySpans'> & {
   bytes: number
   minimumDiscriminatorNoise?: number
+  activity?: number[]
 }
 
 export class RollingReplay {
@@ -77,13 +78,14 @@ export class RollingReplay {
     return segment
   }
 
-  list(): ReplaySegmentSummary[] {
+  list(squelch?: number): ReplaySegmentSummary[] {
     return this.#segments.slice().reverse().map(({ wav, qualitySpans, ...segment }) => {
       const measured = qualitySpans.flatMap((span) => span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise])
       return {
         ...segment,
         bytes: wav.length,
-        ...(measured.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measured) })
+        ...(measured.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measured) }),
+        ...(squelch === undefined ? {} : { activity: this.#activity(qualitySpans, wav.length - 44, squelch) })
       }
     })
   }
@@ -126,6 +128,28 @@ export class RollingReplay {
       if (span.bytes === 0) this.#pendingQuality.shift()
     }
     return taken
+  }
+
+  #activity(spans: ReplayQualitySpan[], byteLength: number, squelch: number, bins = 48): number[] {
+    if (byteLength <= 0 || spans.length === 0) return Array(bins).fill(0)
+    const active = Array<number>(bins).fill(0)
+    const binBytes = byteLength / bins
+    const threshold = discriminatorThreshold(squelch)
+    let spanStart = 0
+    for (const span of spans) {
+      const spanEnd = spanStart + span.bytes
+      const open = span.discriminatorNoise === undefined || span.discriminatorNoise < threshold
+      if (open) {
+        const firstBin = Math.max(0, Math.floor(spanStart / binBytes))
+        const lastBin = Math.min(bins - 1, Math.floor(Math.max(spanStart, spanEnd - 1) / binBytes))
+        for (let index = firstBin; index <= lastBin; index += 1) {
+          const overlap = Math.max(0, Math.min(spanEnd, (index + 1) * binBytes) - Math.max(spanStart, index * binBytes))
+          active[index]! += overlap / binBytes
+        }
+      }
+      spanStart = spanEnd
+    }
+    return active.map((value) => Math.round(Math.min(1, value) * 1_000) / 1_000)
   }
 
   #store(pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {

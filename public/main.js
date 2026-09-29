@@ -95,7 +95,32 @@
     const quality = segment.minimumDiscriminatorNoise === undefined
       ? ''
       : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
-    detail.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec · raw level ${Math.round(segment.level * 650)}%${quality}`
+    const label = document.createElement('div')
+    const rawPercentage = Math.min(100, Math.round(segment.level * 650))
+    label.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec · raw level ${rawPercentage}%${quality}`
+    detail.append(label)
+    if (Array.isArray(segment.activity)) {
+      const namespace = 'http://www.w3.org/2000/svg'
+      const chart = document.createElementNS(namespace, 'svg')
+      chart.classList.add('activity-chart')
+      chart.setAttribute('viewBox', `0 0 ${segment.activity.length * 2} 20`)
+      chart.setAttribute('role', 'img')
+      const activeSeconds = segment.activity.reduce((sum, value) => sum + value, 0) / segment.activity.length * segment.durationSeconds
+      chart.setAttribute('aria-label', `${activeSeconds.toFixed(1)} seconds of detected sound`)
+      for (const [index, value] of segment.activity.entries()) {
+        const bar = document.createElementNS(namespace, 'rect')
+        const height = Math.max(1, value * 18)
+        bar.setAttribute('x', String(index * 2))
+        bar.setAttribute('y', String(20 - height))
+        bar.setAttribute('width', '1.5')
+        bar.setAttribute('height', String(height))
+        chart.append(bar)
+      }
+      const caption = document.createElement('span')
+      caption.className = 'activity-caption'
+      caption.textContent = `${activeSeconds.toFixed(1)} sec passes squelch ${replaySquelch.value}`
+      detail.append(chart, caption)
+    }
     const audio = document.createElement('audio')
     audio.controls = true
     audio.preload = 'none'
@@ -106,7 +131,7 @@
 
   async function updateReplay() {
     try {
-      const { segments } = await request('replay')
+      const { segments } = await request(`replay?squelch=${encodeURIComponent(replaySquelch.value)}`)
       replayList.replaceChildren(...segments.map(replayRow))
       empty.hidden = segments.length > 0
     } catch (error) {

@@ -28,9 +28,13 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       }))
     })
   })
-  read.get('/api/replay', (_request: Request, response: Response) => {
+  read.get('/api/replay', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
-    if (runtime) response.set('Cache-Control', 'no-store').json({ segments: runtime.segments() })
+    if (runtime) {
+      const requested = Number(request.query.squelch ?? runtime.config.squelch)
+      const squelch = Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : runtime.config.squelch
+      response.set('Cache-Control', 'no-store').json({ segments: runtime.segments(squelch) })
+    }
   })
   read.get('/api/dsc', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
