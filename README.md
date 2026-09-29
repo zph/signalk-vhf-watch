@@ -122,8 +122,9 @@ whichever happens first; the oldest records are removed first. The database and 
 directory are created with service-account-only permissions. This archive requires Node.js 22.15 or
 newer for the built-in SQLite and Zstandard implementations.
 
-For an ARM64 package built from the matching `whisper.cpp` release, run the packaging helper on the
-Pi (or an ARM64 Debian builder), then install the resulting file with `apt install ./vhf-whisper-runtime_*.deb`:
+For an ARM64 or AMD64 package built from the matching `whisper.cpp` release, run the packaging helper
+on the target Debian architecture, then install the resulting file with
+`apt install ./vhf-whisper-runtime_*.deb`:
 
 ```sh
 packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin /tmp \

@@ -16,7 +16,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 root=$work/root
 
-test "$architecture" = arm64
+case "$architecture" in
+  arm64|amd64) ;;
+  *) echo "unsupported Debian architecture: $architecture" >&2; exit 2 ;;
+esac
 test -x "$binary_dir/whisper-cli"
 mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/lib/vhf-whisper" "$root/usr/share/vhf-whisper" \
   "$root/usr/share/doc/vhf-whisper-runtime" "$output_dir"
