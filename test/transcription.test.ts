@@ -22,7 +22,8 @@ test('allows decoding to run longer than its one-minute audio window', () => {
 test('removes Whisper timestamps without discarding decoded speech', () => {
   assert.equal(cleanWhisperOutput([
     '[00:00:00.000 --> 00:00:07.440]   miles per hour becoming southwest',
-    '[00:00:07.440 --> 00:00:14.560]   mostly sunny in the morning'
+    '[00:00:07.440 --> 00:00:14.560]   mostly sunny in the morning',
+    '[BLANK_AUDIO]'
   ].join('\n')), 'miles per hour becoming southwest mostly sunny in the morning')
 })
 

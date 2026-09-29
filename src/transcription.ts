@@ -116,6 +116,7 @@ export function transcriptionTimeoutMs(durationSeconds: number): number {
 export function cleanWhisperOutput(output: string): string {
   return output
     .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\[BLANK_AUDIO\]/gi, '')
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, ''))
     .join(' ')
