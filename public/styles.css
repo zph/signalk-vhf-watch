@@ -54,8 +54,8 @@ h2 { margin-bottom: 4px; font-size: 1.5rem; }
   border: 1px solid var(--line); border-radius: 12px;
 }
 #channel {
-  width: 100%; min-height: 88px; padding: 0 18px; color: var(--text); background: var(--panel-raised);
-  border: 1px solid var(--line); border-radius: 15px; font-size: clamp(2rem, 7vw, 3.8rem); font-weight: 850;
+  width: 100%; min-height: 54px; padding: 0 14px; color: var(--text); background: var(--panel-raised);
+  border: 1px solid var(--line); border-radius: 12px; font-size: clamp(1rem, 2.5vw, 1.25rem); font-weight: 750;
 }
 #channel-purpose { min-height: 24px; margin: 10px 0 0; color: var(--muted); }
 .meter-block { flex: 1 1 45%; }
