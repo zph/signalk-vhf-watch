@@ -7,7 +7,7 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 27
+const UI_VERSION = 28
 
 interface ByteRange {
   start: number

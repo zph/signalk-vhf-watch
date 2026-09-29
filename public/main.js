@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 27
+  const CLIENT_BUILD = 28
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -371,6 +371,12 @@
 
   function hasPlayingAudio(container) {
     return [...container.querySelectorAll('audio')].some((audio) => !audio.paused && !audio.ended)
+  }
+
+  function pauseOtherAudio(activeAudio) {
+    for (const audio of document.querySelectorAll('audio')) {
+      if (audio !== activeAudio && !audio.paused) audio.pause()
+    }
   }
 
   function sessionRenderSignature(sessions, includeTranscript = false) {
@@ -1080,6 +1086,9 @@
     if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)
     else if (timelineFollowingLive) timelineWaitingAtEdge = true
   })
+  document.addEventListener('play', (event) => {
+    if (event.target instanceof HTMLAudioElement) pauseOtherAudio(event.target)
+  }, true)
   transcriptionEnabled.addEventListener('change', async () => {
     transcriptionEnabled.disabled = true
     try {
