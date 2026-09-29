@@ -99,7 +99,10 @@ directory and survives Signal K restarts. Disabling it stops the worker and clea
 Transcription requires the separately installed `vhf-whisper-runtime` Debian package. The receiver,
 DSC decoder, live audio, and replay remain fully functional without it, and the UI will refuse to
 enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
-`whisper.cpp` `base.en-q5_1` model with two CPU threads and its normal audio context. Off-air NOAA
+`whisper.cpp` `base.en-q5_1` model with two CPU threads and its normal audio context by default. The
+web UI discovers every model installed by the runtime package and durably selects both model and a
+1–16 thread count. This boat package also includes `small.en-q5_1`; larger server installations can
+add Medium or Large model files without changing the plugin. Off-air NOAA
 marine forecasts showed that Base recovered substantially more radio speech and nearby place names
 than Tiny. Timestamp-aware decoding is retained for reliable long-window alignment; the plugin strips
 the timestamp labels before display. Adjacent
@@ -122,8 +125,9 @@ For an ARM64 package built from the matching `whisper.cpp` release, run the pack
 Pi (or an ARM64 Debian builder), then install the resulting file with `apt install ./vhf-whisper-runtime_*.deb`:
 
 ```sh
-packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin \
-  /path/to/whisper.cpp/models/ggml-base.en-q5_1.bin /tmp
+packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin /tmp \
+  /path/to/whisper.cpp/models/ggml-base.en-q5_1.bin \
+  /path/to/whisper.cpp/models/ggml-small.en-q5_1.bin
 ```
 
 The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in

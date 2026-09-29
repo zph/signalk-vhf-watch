@@ -27,8 +27,9 @@ export interface RuntimeStatus {
   channel: VhfChannel
   slots: {
     A: { mode: 'fixed' | 'scan'; configuredChannel: VhfChannel; currentChannel: VhfChannel; state: 'fixed' | 'scanning' | 'holding' }
-    B: { channel: ReceiverSlotChannel; kind: 'voice' | 'dsc' }
+    B: { channel: ReceiverSlotChannel; kind: 'voice' | 'dsc' | 'paused' }
   }
+  captureMode: 'wideband' | 'single_frequency'
   receiverState: string
   receiving: boolean
   level: number
@@ -72,6 +73,7 @@ export class VhfRuntime extends EventEmitter<{
   #slotAMode: 'fixed' | 'scan'
   #slotAConfigured: VhfChannel
   #slotB: ReceiverSlotChannel
+  #singleFrequency = false
   #scanLocked = false
   #scanOpenMs = 0
   #scanQuietMs = 0
@@ -98,9 +100,8 @@ export class VhfRuntime extends EventEmitter<{
     this.config = config
     this.#channelRegion = config.channelRegion
     const configuredChannel = channelById(config.initialChannel, this.#channelRegion)!
-    this.#channel = config.receiverMode === 'rtl_sdr' && !canChannelize(configuredChannel.frequencyHz)
-      ? channelById('16', this.#channelRegion)!
-      : configuredChannel
+    this.#channel = configuredChannel
+    this.#singleFrequency = config.receiverMode === 'rtl_sdr' && !canChannelize(configuredChannel.frequencyHz)
     this.#slotAConfigured = this.#channel
     this.#slotAMode = config.slotAMode
     const configuredSlotB = config.slotBChannel === '70' ? undefined : channelById(config.slotBChannel, this.#channelRegion)
@@ -150,15 +151,22 @@ export class VhfRuntime extends EventEmitter<{
     if (!channel) throw new Error(`Unknown VHF channel: ${channelId}`)
     this.#slotAMode = 'fixed'
     this.#slotAConfigured = channel
-    if (channel.id === this.#channel.id) return this.status()
-    if (this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)) {
-      throw new Error(`${channel.label} cannot share this RTL-SDR with continuous DSC Channel 70; use a second receiver`)
-    }
+    const wasSingleFrequency = this.#singleFrequency
+    const singleFrequency = this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)
+    if (channel.id === this.#channel.id && singleFrequency === wasSingleFrequency) return this.status()
     this.#channel = channel
+    this.#singleFrequency = singleFrequency
+    this.config.initialChannel = channel.id
+    this.config.slotAMode = 'fixed'
     this.replay.setChannel(channel.id)
     this.#level = 0
     this.#error = undefined
-    if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
+    if (this.#receiver) {
+      if (wasSingleFrequency || singleFrequency) {
+        this.#stopReceiver()
+        this.#startReceiver()
+      } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
+    }
     return this.status()
   }
 
@@ -167,13 +175,14 @@ export class VhfRuntime extends EventEmitter<{
     if (!slotA) throw new Error(`Unknown Slot A VHF channel: ${slotAChannelId}`)
     const slotB = slotBChannelId.toUpperCase() === '70' ? this.#dscChannel() : channelById(slotBChannelId, this.#channelRegion)
     if (!slotB) throw new Error(`Unknown Slot B VHF channel: ${slotBChannelId}`)
-    for (const channel of [slotA, ...(slotB.id === '70' ? [] : [slotB])]) {
-      if (this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)) {
-        throw new Error(`${channel.label} is outside this RTL-SDR's wideband capture window`)
-      }
+    const singleFrequency = this.config.receiverMode === 'rtl_sdr' && !canChannelize(slotA.frequencyHz)
+    if (singleFrequency && mode === 'scan') throw new Error(`${slotA.label} requires Fixed mode because DSC and nearby-channel scanning are paused`)
+    if (slotB.id !== '70' && this.config.receiverMode === 'rtl_sdr' && !canChannelize(slotB.frequencyHz)) {
+      throw new Error(`Slot B channel ${slotB.label} is outside this RTL-SDR's marine wideband capture window`)
     }
-    if (slotB.id !== '70' && slotB.frequencyHz === slotA.frequencyHz) throw new Error('Slots A and B must use different channels')
+    if (!singleFrequency && slotB.id !== '70' && slotB.frequencyHz === slotA.frequencyHz) throw new Error('Slots A and B must use different channels')
     const slotBChanged = slotB.id !== this.#slotB.id || slotB.frequencyHz !== this.#slotB.frequencyHz
+    const captureModeChanged = singleFrequency !== this.#singleFrequency
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.#scanTimer = undefined
     this.#scanLocked = false
@@ -183,13 +192,17 @@ export class VhfRuntime extends EventEmitter<{
     this.#slotAConfigured = slotA
     this.#channel = slotA
     this.#slotB = slotB
+    this.#singleFrequency = singleFrequency
+    this.config.initialChannel = slotA.id
+    this.config.slotAMode = mode
+    this.config.slotBChannel = slotB.id
     this.replay.setChannel(slotA.id)
     this.replayB.setChannel(slotB.id)
-    if (slotBChanged && this.#receiver) {
+    if ((slotBChanged || captureModeChanged || singleFrequency) && this.#receiver) {
       this.#stopReceiver()
       this.#startReceiver()
     } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(slotA)
-    if (mode === 'scan' && this.config.enabled) this.#scheduleScan(0)
+    if (mode === 'scan' && !singleFrequency && this.config.enabled) this.#scheduleScan(0)
     this.#emitStatus()
     return this.status()
   }
@@ -198,12 +211,23 @@ export class VhfRuntime extends EventEmitter<{
     if (!['US', 'CA', 'US_CA'].includes(region)) throw new Error(`Unknown channel plan: ${region}`)
     this.#channelRegion = region
     const channel = channelById(this.#channel.id, region) ?? channelById('16', region)!
+    const wasSingleFrequency = this.#singleFrequency
+    const singleFrequency = this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)
     if (channel.id !== this.#channel.id || channel.frequencyHz !== this.#channel.frequencyHz) {
       this.#channel = channel
+      this.#slotAConfigured = channel
+      this.#singleFrequency = singleFrequency
       this.replay.setChannel(channel.id)
-      if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
+      if (this.#receiver) {
+        if (wasSingleFrequency || singleFrequency) {
+          this.#stopReceiver()
+          this.#startReceiver()
+        } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
+      }
     } else {
       this.#channel = channel
+      this.#slotAConfigured = channel
+      this.#singleFrequency = singleFrequency
     }
     this.#emitStatus()
     return this.status()
@@ -224,14 +248,15 @@ export class VhfRuntime extends EventEmitter<{
       mode: this.config.receiverMode,
       channelRegion: this.#channelRegion,
       channel: this.#channel,
+      captureMode: this.#singleFrequency ? 'single_frequency' : 'wideband',
       slots: {
         A: {
           mode: this.#slotAMode,
           configuredChannel: this.#slotAConfigured,
           currentChannel: this.#channel,
-          state: this.#slotAMode === 'fixed' ? 'fixed' : this.#scanLocked ? 'holding' : 'scanning'
+          state: this.#singleFrequency || this.#slotAMode === 'fixed' ? 'fixed' : this.#scanLocked ? 'holding' : 'scanning'
         },
-        B: { channel: this.#slotB, kind: this.#slotB.id === '70' ? 'dsc' : 'voice' }
+        B: { channel: this.#slotB, kind: this.#singleFrequency ? 'paused' : this.#slotB.id === '70' ? 'dsc' : 'voice' }
       },
       receiverState: this.#receiverState,
       receiving: this.#level > 0.003,
@@ -245,19 +270,19 @@ export class VhfRuntime extends EventEmitter<{
       receiverMetrics: { ...this.#receiverMetrics },
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),
       dscWatch: {
-        enabled: this.config.receiverMode === 'rtl_sdr' && this.config.enabled && this.#slotB.id === '70',
+        enabled: !this.#singleFrequency && this.config.receiverMode === 'rtl_sdr' && this.config.enabled && this.#slotB.id === '70',
         frequencyHz: DSC_CHANNEL_HZ,
-        continuous: this.#slotB.id === '70' && this.#dscContinuous,
+        continuous: !this.#singleFrequency && this.#slotB.id === '70' && this.#dscContinuous,
         level: this.#dscLevel,
         messages: this.#dscMessages.length,
         ...(this.#lastDscSignalAt ? { lastSignalAt: this.#lastDscSignalAt } : {})
       },
       ...(this.config.receiverMode === 'rtl_sdr' ? {
         wideband: {
-          centerHz: WIDEBAND_CENTER_HZ,
+          centerHz: this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ,
           sampleRate: WIDEBAND_SAMPLE_RATE,
-          minimumHz: WIDEBAND_CENTER_HZ - WIDEBAND_SAMPLE_RATE / 2,
-          maximumHz: WIDEBAND_CENTER_HZ + WIDEBAND_SAMPLE_RATE / 2
+          minimumHz: (this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ) - WIDEBAND_SAMPLE_RATE / 2,
+          maximumHz: (this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ) + WIDEBAND_SAMPLE_RATE / 2
         }
       } : {}),
       ...(this.#error ? { error: this.#error } : {}),
@@ -292,6 +317,12 @@ export class VhfRuntime extends EventEmitter<{
     return this.status()
   }
 
+  async configureTranscription(model: string, threads: number): Promise<RuntimeStatus> {
+    await this.transcription.configure(model, threads)
+    this.#emitStatus()
+    return this.status()
+  }
+
   listenerJoined(): void {
     this.#liveListeners += 1
     this.#emitStatus()
@@ -304,7 +335,7 @@ export class VhfRuntime extends EventEmitter<{
 
   #startReceiver(): void {
     const receiver = this.config.receiverMode === 'rtl_sdr'
-      ? new NativeSidecarReceiver(this.config, this.#channel, this.#slotB.id === '70' ? '70' : this.#slotB)
+      ? new NativeSidecarReceiver(this.config, this.#channel, this.#slotB.id === '70' ? '70' : this.#slotB, this.#singleFrequency)
       : new DemoReceiver(this.config.sampleRate)
     this.#receiver = receiver
     receiver.on('audio', (chunk) => {
@@ -329,24 +360,25 @@ export class VhfRuntime extends EventEmitter<{
       this.emit('rawAudio', chunk, discriminatorNoise)
     })
     receiver.on('slotBReplayAudio', (chunk, discriminatorNoise) => {
+      if (this.#singleFrequency) return
       for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
     })
     receiver.on('state', (state) => {
       this.#receiverState = state
-      if (state.startsWith('Wideband capture')) this.#error = undefined
+      if (state.includes('capture')) this.#error = undefined
       this.#emitStatus()
     })
     receiver.on('metrics', (metrics) => {
       this.#receiverMetrics = metrics
-      if (metrics.dscDiscriminatorNoise !== undefined) {
+      if (!this.#singleFrequency && metrics.dscDiscriminatorNoise !== undefined) {
         this.#dscLevel = Math.max(0, Math.min(1, 1 - metrics.dscDiscriminatorNoise / 0.35))
       }
       this.#emitStatus()
     })
     receiver.on('dscAudio', (chunk) => {
-      if (this.#slotB.id !== '70') return
+      if (this.#singleFrequency || this.#slotB.id !== '70') return
       this.#dscContinuous = true
       const messages = this.#dscDecoder.push(chunk)
       if (messages.length > 0) {

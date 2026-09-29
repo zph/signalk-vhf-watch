@@ -30,6 +30,8 @@
   const frequencyMap = $('#frequency-map')
   const frequencyEmpty = $('#frequency-empty')
   const transcriptionEnabled = $('#transcription-enabled')
+  const transcriptionModel = $('#transcription-model')
+  const transcriptionThreads = $('#transcription-threads')
   const transcriptionStatus = $('#transcription-status')
   const archiveList = $('#archive-list')
   const archiveEmpty = $('#archive-empty')
@@ -103,10 +105,24 @@
     timelineReceiverRows = receiverRows
     if (receiverRowsChanged) renderFrequencyMap()
     const transcription = status.transcription
+    const modelSignature = JSON.stringify(transcription.availableModels)
+    if (transcriptionModel.dataset.models !== modelSignature) {
+      transcriptionModel.replaceChildren(...transcription.availableModels.map((model) => {
+        const option = document.createElement('option')
+        option.value = model.id
+        option.textContent = `${model.label} · ${(model.bytes / 1024 / 1024).toFixed(0)} MiB`
+        return option
+      }))
+      transcriptionModel.dataset.models = modelSignature
+    }
+    transcriptionModel.value = transcription.model
+    transcriptionThreads.value = String(transcription.threads)
+    transcriptionModel.disabled = transcription.availableModels.length === 0
+    transcriptionThreads.disabled = transcription.availableModels.length === 0
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
     transcriptionStatus.textContent = transcription.enabled
-      ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''} · ${transcription.engine}`
+      ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''} · ${transcription.engine} · ${transcription.threads} threads`
       : transcription.available
         ? `Local transcription off · ${transcription.engine} is installed and ready`
         : 'Local transcription off · install vhf-whisper-runtime to enable it'
@@ -630,6 +646,28 @@
       transcriptionEnabled.disabled = false
     }
   })
+
+  async function saveTranscriptionRuntime() {
+    transcriptionModel.disabled = true
+    transcriptionThreads.disabled = true
+    try {
+      const status = await request('transcription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: transcriptionModel.value,
+          threads: Number(transcriptionThreads.value)
+        })
+      })
+      renderStatus(status)
+    } catch (error) {
+      transcriptionStatus.textContent = error.message
+      await updateStatus()
+    }
+  }
+
+  transcriptionModel.addEventListener('change', saveTranscriptionRuntime)
+  transcriptionThreads.addEventListener('change', saveTranscriptionRuntime)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
   })

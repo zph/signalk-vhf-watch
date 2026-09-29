@@ -29,6 +29,8 @@ test('removes Whisper timestamps without discarding decoded speech', () => {
 test('transcription defaults off, requires its runtime, and persists explicit activation', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-'))
   const settings = path.join(directory, 'settings.json')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(path.join(directory, 'ggml-small.en-q5_1.bin'), 'small model')
   const missing = new TranscriptionManager(settings, path.join(directory, 'missing'))
   assert.equal(missing.status().enabled, false)
   await assert.rejects(() => missing.setEnabled(true), /Install the vhf-whisper-runtime package/)
@@ -36,10 +38,16 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(command, '#!/bin/sh\nprintf "channel one six test\\n"\n')
   chmodSync(command, 0o755)
-  const manager = new TranscriptionManager(settings, command, { batchSeconds: 2, idleMs: 10 })
+  const manager = new TranscriptionManager(settings, command, { batchSeconds: 2, idleMs: 10, modelsDir: directory })
   await manager.setEnabled(true)
-  assert.equal(JSON.parse(readFileSync(settings, 'utf8')).enabled, true)
-  assert.equal(new TranscriptionManager(settings, command).status().enabled, true)
+  await manager.configure('small.en-q5_1', 4)
+  assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')), {
+    enabled: true,
+    model: 'small.en-q5_1',
+    threads: 4
+  })
+  assert.deepEqual(manager.status().availableModels.map((model) => model.id), ['base.en-q5_1', 'small.en-q5_1'])
+  assert.equal(new TranscriptionManager(settings, command, { modelsDir: directory }).status().enabled, true)
 
   const brief = new RollingReplay(8_000, 2, 1, '16')
   brief.append(Buffer.alloc(30_400), Date.UTC(2026, 8, 29), 0.5)
@@ -61,10 +69,11 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-batch-'))
   const settings = path.join(directory, 'settings.json')
   const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
   writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
   chmodSync(command, 0o755)
   const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
-  const manager = new TranscriptionManager(settings, command, { batchSeconds: 6, idleMs: 10, archive })
+  const manager = new TranscriptionManager(settings, command, { batchSeconds: 6, idleMs: 10, archive, modelsDir: directory })
   await manager.setEnabled(true)
   const replay = new RollingReplay(8_000, 2, 1, '16')
   const segments = [0, 1, 2].map((index) => replay.append(
@@ -92,6 +101,7 @@ test('reuses audio overlap between windows without duplicating text or archived 
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-overlap-'))
   const settings = path.join(directory, 'settings.json')
   const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
   writeFileSync(command, [
     '#!/bin/sh',
     'state="$0.state"',
@@ -108,7 +118,8 @@ test('reuses audio overlap between windows without duplicating text or archived 
     batchSeconds: 6,
     overlapSeconds: 2,
     idleMs: 1_000,
-    archive
+    archive,
+    modelsDir: directory
   })
   await manager.setEnabled(true)
   const replay = new RollingReplay(8_000, 2, 1, '16')

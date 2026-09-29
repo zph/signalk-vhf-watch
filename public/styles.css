@@ -124,6 +124,8 @@ button.danger { color: var(--red); }
 .squelch-control select { min-height: 28px; padding: 2px 8px; color: var(--text); background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; }
 .transcription-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .78rem; }
 .transcription-control input { width: 20px; height: 20px; accent-color: var(--cyan); }
+.transcription-setting { display: grid; gap: 3px; color: var(--muted); font-size: .7rem; }
+.transcription-setting select { min-width: 92px; }
 #transcription-status { margin: -4px 0 10px; font-size: .78rem; }
 .muted { color: var(--muted); }
 .empty { padding: 34px 10px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; }

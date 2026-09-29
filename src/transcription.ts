@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +9,10 @@ import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchive
 import { pcmToWav } from './wav'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
+export const DEFAULT_TRANSCRIPTION_MODELS_DIR = '/usr/share/vhf-whisper'
+export const DEFAULT_TRANSCRIPTION_MODEL = 'base.en-q5_1'
+export const DEFAULT_TRANSCRIPTION_THREADS = 2
+export const MAXIMUM_TRANSCRIPTION_THREADS = 16
 export const MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS = 0.35
 export const TRANSCRIPTION_BATCH_SECONDS = 60
 export const TRANSCRIPTION_OVERLAP_SECONDS = 10
@@ -21,7 +25,10 @@ export interface TranscriptionStatus {
   available: boolean
   state: 'disabled' | 'unavailable' | 'idle' | 'transcribing'
   queued: number
-  engine: 'whisper.cpp base.en q5_1'
+  engine: string
+  model: string
+  threads: number
+  availableModels: TranscriptionModel[]
   command: string
   archive?: TranscriptArchiveStatus
   error?: string
@@ -29,6 +36,14 @@ export interface TranscriptionStatus {
 
 interface PersistedSettings {
   enabled: boolean
+  model: string
+  threads: number
+}
+
+export interface TranscriptionModel {
+  id: string
+  label: string
+  bytes: number
 }
 
 interface TranscriptionBatch {
@@ -43,6 +58,7 @@ interface TranscriptionOptions {
   overlapSeconds?: number
   idleMs?: number
   archive?: TranscriptArchive
+  modelsDir?: string
 }
 
 function normalizedWords(text: string): string[] {
@@ -114,7 +130,10 @@ export class TranscriptionManager {
   readonly #overlapSeconds: number
   readonly #idleMs: number
   readonly #archive?: TranscriptArchive
+  readonly #modelsDir: string
   #enabled: boolean
+  #model: string
+  #threads: number
   #queue: TranscriptionBatch[] = []
   #pending: ReplaySegment[] = []
   #pendingSeconds = 0
@@ -133,7 +152,11 @@ export class TranscriptionManager {
     this.#overlapSeconds = Math.min(options.overlapSeconds ?? TRANSCRIPTION_OVERLAP_SECONDS, this.#batchSeconds / 2)
     this.#idleMs = options.idleMs ?? TRANSCRIPTION_BATCH_IDLE_MS
     this.#archive = options.archive
-    this.#enabled = this.#load().enabled
+    this.#modelsDir = options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
+    const settings = this.#load()
+    this.#enabled = settings.enabled
+    this.#model = settings.model
+    this.#threads = settings.threads
   }
 
   status(): TranscriptionStatus {
@@ -143,7 +166,10 @@ export class TranscriptionManager {
       available,
       state: !this.#enabled ? 'disabled' : !available ? 'unavailable' : this.#running ? 'transcribing' : 'idle',
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
-      engine: 'whisper.cpp base.en q5_1',
+      engine: `whisper.cpp ${this.#model}`,
+      model: this.#model,
+      threads: this.#threads,
+      availableModels: this.availableModels(),
       command: this.#command,
       ...(this.#archive ? { archive: this.#archive.status() } : {}),
       ...(this.#error ? { error: this.#error } : {})
@@ -153,10 +179,39 @@ export class TranscriptionManager {
   available(): boolean {
     try {
       accessSync(this.#command, constants.X_OK)
-      return true
+      return this.availableModels().some((candidate) => candidate.id === this.#model)
     } catch {
       return false
     }
+  }
+
+  availableModels(): TranscriptionModel[] {
+    try {
+      return readdirSync(this.#modelsDir)
+        .flatMap((filename) => {
+          const match = /^ggml-([a-z0-9._-]+)\.bin$/i.exec(filename)
+          if (!match) return []
+          const id = match[1]!
+          return [{ id, label: id.replaceAll('-', ' '), bytes: statSync(path.join(this.#modelsDir, filename)).size }]
+        })
+        .sort((left, right) => left.bytes - right.bytes || left.id.localeCompare(right.id))
+    } catch {
+      return []
+    }
+  }
+
+  async configure(model: string, threads: number): Promise<TranscriptionStatus> {
+    if (!this.availableModels().some((candidate) => candidate.id === model)) {
+      throw new Error(`Whisper model ${model} is not installed`)
+    }
+    if (!Number.isSafeInteger(threads) || threads < 1 || threads > MAXIMUM_TRANSCRIPTION_THREADS) {
+      throw new Error(`threads must be an integer from 1 to ${MAXIMUM_TRANSCRIPTION_THREADS}`)
+    }
+    this.#model = model
+    this.#threads = threads
+    this.#error = undefined
+    this.#save()
+    return this.status()
   }
 
   async setEnabled(enabled: boolean): Promise<TranscriptionStatus> {
@@ -165,6 +220,9 @@ export class TranscriptionManager {
         await access(this.#command, constants.X_OK)
       } catch {
         throw new Error('Install the vhf-whisper-runtime package before enabling transcription')
+      }
+      if (!this.availableModels().some((candidate) => candidate.id === this.#model)) {
+        throw new Error(`Install or select the Whisper model ${this.#model} before enabling transcription`)
       }
     }
     this.#enabled = enabled
@@ -322,7 +380,7 @@ export class TranscriptionManager {
     const pcm = Buffer.concat(batch.segments.map((segment) => segment.wav.subarray(44)))
     writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#command, [wavPath], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(this.#command, [wavPath, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
       this.#child = child
       let stdout = ''
       let stderr = ''
@@ -366,17 +424,31 @@ export class TranscriptionManager {
 
   #load(): PersistedSettings {
     try {
-      if (!existsSync(this.#settingsPath)) return { enabled: false }
+      if (!existsSync(this.#settingsPath)) return {
+        enabled: false,
+        model: DEFAULT_TRANSCRIPTION_MODEL,
+        threads: DEFAULT_TRANSCRIPTION_THREADS
+      }
       const parsed = JSON.parse(readFileSync(this.#settingsPath, 'utf8')) as Partial<PersistedSettings>
-      return { enabled: parsed.enabled === true }
+      return {
+        enabled: parsed.enabled === true,
+        model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_TRANSCRIPTION_MODEL,
+        threads: Number.isSafeInteger(parsed.threads) && parsed.threads! >= 1 && parsed.threads! <= MAXIMUM_TRANSCRIPTION_THREADS
+          ? parsed.threads!
+          : DEFAULT_TRANSCRIPTION_THREADS
+      }
     } catch {
-      return { enabled: false }
+      return { enabled: false, model: DEFAULT_TRANSCRIPTION_MODEL, threads: DEFAULT_TRANSCRIPTION_THREADS }
     }
   }
 
   #save(): void {
     const temporary = `${this.#settingsPath}.new`
-    writeFileSync(temporary, `${JSON.stringify({ enabled: this.#enabled })}\n`, { mode: 0o600 })
+    writeFileSync(temporary, `${JSON.stringify({
+      enabled: this.#enabled,
+      model: this.#model,
+      threads: this.#threads
+    })}\n`, { mode: 0o600 })
     renameSync(temporary, this.#settingsPath)
   }
 }

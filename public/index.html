@@ -113,6 +113,20 @@
             <input id="transcription-enabled" type="checkbox" />
             Transcribe voice
           </label>
+          <label class="transcription-setting" for="transcription-model">Model
+            <select id="transcription-model" aria-label="Whisper model"></select>
+          </label>
+          <label class="transcription-setting" for="transcription-threads">CPU threads
+            <select id="transcription-threads" aria-label="Whisper CPU threads">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="12">12</option>
+              <option value="16">16</option>
+            </select>
+          </label>
           <button id="refresh" type="button">Refresh</button>
           <button id="clear" class="danger" type="button">Delete all</button>
         </div>

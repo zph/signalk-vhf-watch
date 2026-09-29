@@ -153,9 +153,21 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
-      const enabled = (request.body as { enabled?: unknown } | undefined)?.enabled
-      if (typeof enabled !== 'boolean') throw new Error('enabled must be true or false')
-      response.json(await runtime.setTranscriptionEnabled(enabled))
+      const body = request.body as { enabled?: unknown; model?: unknown; threads?: unknown } | undefined
+      let status = runtime.status()
+      if (body?.model !== undefined || body?.threads !== undefined) {
+        if (typeof body.model !== 'string') throw new Error('model must be a string')
+        if (typeof body.threads !== 'number') throw new Error('threads must be a number')
+        status = await runtime.configureTranscription(body.model, body.threads)
+      }
+      if (body?.enabled !== undefined) {
+        if (typeof body.enabled !== 'boolean') throw new Error('enabled must be true or false')
+        status = await runtime.setTranscriptionEnabled(body.enabled)
+      }
+      if (body?.enabled === undefined && body?.model === undefined && body?.threads === undefined) {
+        throw new Error('enabled, model, or threads is required')
+      }
+      response.json(status)
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
