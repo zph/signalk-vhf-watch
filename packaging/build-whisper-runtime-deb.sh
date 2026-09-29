@@ -10,7 +10,7 @@ binary_dir=$1
 model=$2
 output_dir=$3
 architecture=$(dpkg --print-architecture)
-version=1.9.4-1
+version=1.9.4-2
 package=vhf-whisper-runtime
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
@@ -34,7 +34,7 @@ printf '%s\n' \
 printf '%s\n' \
   '#!/bin/sh' \
   'export LD_LIBRARY_PATH=/usr/lib/vhf-whisper${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
-  'exec /usr/lib/vhf-whisper/whisper-cli -m /usr/share/vhf-whisper/ggml-tiny.en-q5_1.bin -l en -t 2 -ac 768 -sns -np -nt -f "$1"' \
+  'exec /usr/lib/vhf-whisper/whisper-cli -m /usr/share/vhf-whisper/ggml-tiny.en-q5_1.bin -l en -t 2 -np -nt -f "$1"' \
   > "$root/usr/bin/vhf-whisper"
 chmod 0755 "$root/usr/bin/vhf-whisper"
 installed_size=$(du -sk "$root" | awk '{print $1}')

@@ -97,7 +97,9 @@ directory and survives Signal K restarts. Disabling it stops the worker and clea
 Transcription requires the separately installed `vhf-whisper-runtime` Debian package. The receiver,
 DSC decoder, live audio, and replay remain fully functional without it, and the UI will refuse to
 enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
-`whisper.cpp` `tiny.en-q5_1` model with two CPU threads and a reduced audio context. Only completed
+`whisper.cpp` `tiny.en-q5_1` model with two CPU threads and its normal audio context. An off-air NOAA
+marine forecast showed that the smaller 768-token audio context could be faster but failed badly on
+continuous radio speech, so the packaged runtime deliberately keeps the model default. Only completed
 replay segments that pass the configured RF squelch are queued, one at a time; audio is not uploaded.
 
 For an ARM64 package built from the matching `whisper.cpp` release, run the packaging helper on the
