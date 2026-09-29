@@ -37,4 +37,5 @@ test('wideband runtime keeps startup and tuning inside continuous DSC coverage',
   assert.equal(runtime.status().channel.id, '16')
   assert.equal(runtime.tune('68').channel.id, '68')
   assert.throws(() => runtime.tune('WX2'), /continuous DSC Channel 70/)
+  assert.equal(runtime.status().dscWatch.lastSignalAt, undefined)
 })

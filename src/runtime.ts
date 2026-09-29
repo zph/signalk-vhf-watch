@@ -226,15 +226,16 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     })
     receiver.on('metrics', (metrics) => {
       this.#receiverMetrics = metrics
+      if (metrics.dscDiscriminatorNoise !== undefined) {
+        this.#dscLevel = Math.max(0, Math.min(1, 1 - metrics.dscDiscriminatorNoise / 0.35))
+      }
       this.#emitStatus()
     })
     receiver.on('dscAudio', (chunk) => {
       this.#dscContinuous = true
-      const level = rmsLevel(chunk)
-      this.#dscLevel = this.#dscLevel * 0.8 + level * 0.2
-      if (level > 0.01) this.#lastDscSignalAt = new Date().toISOString()
       const messages = this.#dscDecoder.push(chunk)
       if (messages.length > 0) {
+        this.#lastDscSignalAt = new Date().toISOString()
         if (this.#dscCache) {
           this.#dscCache.add(messages.reverse())
           this.#dscMessages = this.#dscCache.list()
