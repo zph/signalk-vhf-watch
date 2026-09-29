@@ -50,6 +50,8 @@
   let timelineReceiverRows = []
   let timelineActiveSlotAChannel
   let timelineAwaitingChannel
+  let replayRenderSignature = ''
+  let archiveRenderSignature = ''
   let singleFrequencyActive = false
 
   async function request(path, options) {
@@ -289,6 +291,21 @@
         ...(measured.length > 0 ? { minimumDiscriminatorNoise: Math.min(...measured) } : {})
       }
     }).reverse()
+  }
+
+  function hasPlayingAudio(container) {
+    return [...container.querySelectorAll('audio')].some((audio) => !audio.paused && !audio.ended)
+  }
+
+  function sessionRenderSignature(sessions, includeTranscript = false) {
+    return JSON.stringify(sessions.map((session) => ({
+      ids: session.ids,
+      durationSeconds: session.durationSeconds,
+      ...(includeTranscript ? {
+        transcript: session.transcript,
+        transcription: session.transcription
+      } : {})
+    })))
   }
 
   function timelineIndexNear(timestamp) {
@@ -628,7 +645,11 @@
         const activeSeconds = replayActiveSeconds(session)
         return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
       })
-      replayList.replaceChildren(...visibleSessions.map(replayRow))
+      const signature = sessionRenderSignature(visibleSessions, true)
+      if (signature !== replayRenderSignature && !hasPlayingAudio(replayList)) {
+        replayList.replaceChildren(...visibleSessions.map(replayRow))
+        replayRenderSignature = signature
+      }
       empty.hidden = visibleSessions.length > 0
       empty.textContent = segments.length === 0
         ? 'Waiting for the first replay segment…'
@@ -695,7 +716,11 @@
     try {
       const { records, archive } = await request('transcripts?limit=500')
       const sessions = groupArchiveSessions(records)
-      archiveList.replaceChildren(...sessions.map(archiveRow))
+      const signature = sessionRenderSignature(sessions, true)
+      if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
+        archiveList.replaceChildren(...sessions.map(archiveRow))
+        archiveRenderSignature = signature
+      }
       archiveEmpty.hidden = sessions.length > 0
       archiveEmpty.textContent = 'No archived transcripts yet.'
       if (archive) {
