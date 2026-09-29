@@ -75,8 +75,10 @@ h2 { margin-bottom: 4px; font-size: 1.5rem; }
 .timeline-selection span, .timeline-scale { color: var(--muted); font-size: .78rem; }
 .frequency-overview { margin: 16px 0 10px; }
 .frequency-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: .78rem; }
-.frequency-overview-heading > span { display: flex; align-items: center; gap: 7px; color: var(--muted); }
-.frequency-overview-heading i { width: 58px; height: 8px; border-radius: 999px; background: linear-gradient(90deg, rgba(53, 209, 230, .15), var(--cyan)); }
+.frequency-overview-heading > span { display: flex; align-items: center; justify-content: flex-end; gap: 6px; color: var(--muted); text-align: right; }
+.frequency-overview-heading i { display: inline-block; flex: 0 0 auto; width: 30px; border-radius: 999px; background: var(--cyan); }
+.frequency-legend-floor { height: 2px; opacity: .18; }
+.frequency-legend-burst { height: 8px; box-shadow: 0 0 8px rgba(53, 209, 230, .65); }
 .frequency-map { display: grid; gap: 6px; }
 .frequency-row { display: grid; grid-template-columns: minmax(118px, 150px) 1fr; align-items: center; gap: 10px; }
 .frequency-label { min-width: 0; font-variant-numeric: tabular-nums; }
@@ -84,6 +86,7 @@ h2 { margin-bottom: 4px; font-size: 1.5rem; }
 .frequency-label strong { font-size: .72rem; }
 .frequency-label span { color: var(--muted); font-size: .66rem; }
 .frequency-track { position: relative; height: 30px; overflow: hidden; border-radius: 7px; background: repeating-linear-gradient(90deg, rgba(155, 178, 193, .08) 0, rgba(155, 178, 193, .08) 1px, transparent 1px, transparent 25%), #061019; }
+.frequency-floor { position: absolute; bottom: 3px; left: var(--burst-left); width: max(3px, var(--burst-width)); height: 2px; border-radius: 999px; background: var(--cyan); opacity: var(--floor-opacity); }
 .frequency-burst {
   position: absolute; top: 3px; bottom: 3px; left: var(--burst-left); width: max(4px, var(--burst-width)); min-height: 0; padding: 0;
   border: 0; border-radius: 3px; background: var(--cyan); opacity: var(--burst-opacity);
@@ -164,6 +167,8 @@ footer strong { color: var(--green); }
   .connection { margin-top: 7px; padding: 7px 10px; }
   .radio-card, .listen-card { align-items: stretch; flex-direction: column; gap: 18px; }
   .timeline-selection { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .frequency-overview-heading { align-items: flex-start; flex-direction: column; }
+  .frequency-overview-heading > span { justify-content: flex-start; flex-wrap: wrap; text-align: left; }
   .frequency-row { grid-template-columns: 98px 1fr; gap: 7px; }
   .frequency-track { height: 40px; }
   .frequency-scale { grid-template-columns: 1fr 1fr 1fr; padding-left: 105px; }

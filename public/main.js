@@ -165,10 +165,13 @@
     return channels.find((channel) => channel.id === channelId)?.frequencyHz
   }
 
-  function radioStrength(segment, activity) {
+  function rfStrength(segment) {
     const noise = segment.minimumDiscriminatorNoise
-    const rfStrength = noise === undefined ? 0.45 : Math.max(0, Math.min(1, (0.5 - noise) / 0.45))
-    return Math.max(0.12, Math.min(1, activity * 0.65 + rfStrength * 0.35))
+    return noise === undefined ? 0.45 : Math.max(0, Math.min(1, (0.5 - noise) / 0.45))
+  }
+
+  function radioStrength(segment, activity) {
+    return Math.max(0.12, Math.min(1, activity * 0.65 + rfStrength(segment) * 0.35))
   }
 
   function activityRuns(segment) {
@@ -198,15 +201,19 @@
     const rows = new Map()
 
     for (const receiver of timelineReceiverRows) {
-      rows.set(`${receiver.slot}:${receiver.frequencyHz || receiver.channel}`, { ...receiver, marks: [] })
+      rows.set(`${receiver.slot}:${receiver.frequencyHz || receiver.channel}`, { ...receiver, marks: [], floorMarks: [] })
     }
 
     for (const [segmentIndex, segment] of replayTimeline.entries()) {
       const frequencyHz = channelFrequency(segment.channel)
       const key = `${segment.slot}:${frequencyHz || segment.channel}`
-      if (!rows.has(key)) rows.set(key, { slot: segment.slot, channel: segment.channel, frequencyHz, marks: [] })
+      if (!rows.has(key)) rows.set(key, { slot: segment.slot, channel: segment.channel, frequencyHz, marks: [], floorMarks: [] })
       const segmentStart = Date.parse(segment.startedAt)
       const segmentDuration = Math.max(1, segment.durationSeconds * 1000)
+      const segmentEnd = segmentStart + segmentDuration
+      if (segment.minimumDiscriminatorNoise !== undefined && segmentEnd >= startTime && segmentStart <= endTime) {
+        rows.get(key).floorMarks.push({ segmentStart, segmentEnd, strength: rfStrength(segment) })
+      }
       for (const run of activityRuns(segment)) {
         const runStart = segmentStart + segmentDuration * run.start / segment.activity.length
         const runEnd = segmentStart + segmentDuration * run.end / segment.activity.length
@@ -230,7 +237,20 @@
       label.append(channel, frequency)
       const track = document.createElement('div')
       track.className = 'frequency-track'
-      track.setAttribute('aria-label', row.marks.length > 0 ? `${row.marks.length} detected activity bursts` : 'Listening; no activity bursts above squelch yet')
+      track.setAttribute('aria-label', row.marks.length > 0
+        ? `${row.marks.length} detected activity bursts; faint trace is below squelch`
+        : 'Listening; faint trace is below squelch; no activity bursts above squelch yet')
+      for (const floor of row.floorMarks) {
+        const left = Math.max(0, Math.min(100, (floor.segmentStart - startTime) / timeSpan * 100))
+        const right = Math.max(left, Math.min(100, (floor.segmentEnd - startTime) / timeSpan * 100))
+        const trace = document.createElement('span')
+        trace.className = 'frequency-floor'
+        trace.setAttribute('aria-hidden', 'true')
+        trace.style.setProperty('--burst-left', `${left}%`)
+        trace.style.setProperty('--burst-width', `${Math.max(0.08, right - left)}%`)
+        trace.style.setProperty('--floor-opacity', (0.05 + floor.strength * 0.2).toFixed(2))
+        track.append(trace)
+      }
       for (const mark of row.marks) {
         const left = Math.max(0, Math.min(100, (mark.runStart - startTime) / timeSpan * 100))
         const right = Math.max(left, Math.min(100, (mark.runEnd - startTime) / timeSpan * 100))

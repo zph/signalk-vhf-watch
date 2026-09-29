@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=16" />
+  <link rel="stylesheet" href="./styles.css?v=17" />
 </head>
 <body>
   <main>
@@ -61,7 +61,7 @@
       <div class="frequency-overview">
         <div class="frequency-overview-heading">
           <strong>Frequency activity</strong>
-          <span><i aria-hidden="true"></i> stronger signal · tap to listen</span>
+          <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> passes squelch · tap to listen</span>
         </div>
         <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
         <p id="frequency-empty" class="frequency-empty">Listening — no bursts above squelch yet.</p>
@@ -159,6 +159,6 @@
       Channel 70 is decoded continuously whenever it is assigned to Slot B.
     </footer>
   </main>
-  <script src="./main.js?v=16"></script>
+  <script src="./main.js?v=17"></script>
 </body>
 </html>
