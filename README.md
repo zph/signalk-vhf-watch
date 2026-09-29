@@ -123,10 +123,13 @@ processed one at a time; audio is not uploaded.
 Completed batches are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
 compressed WAV. The Transcript archive section combines adjacent records on the same channel into
-one transcript and one synthesized WAV until a channel change, missing time, or six seconds of quiet
+one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing
-directory are created with service-account-only permissions. This archive requires Node.js 22.15 or
+directory are created with service-account-only permissions. A separate **Read transcript** control
+uses a device-local browser voice to speak the recognized text in sentence-aware chunks. Synthesized
+speech is a parallel player: it never rewrites the radio recording or sends text through the plugin
+to a speech service. This archive requires Node.js 22.15 or
 newer for the built-in SQLite and Zstandard implementations.
 
 For an ARM64 or AMD64 package built from the matching `whisper.cpp` release, run the packaging helper

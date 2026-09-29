@@ -7,7 +7,7 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 28
+const UI_VERSION = 29
 
 interface ByteRange {
   start: number
@@ -388,10 +388,10 @@ export function openApi(): object {
       '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/replay/{id}/continuous.wav': { get: { summary: 'Play seamless replay through the live edge', responses: { '200': { description: 'Streaming WAV audio' } } } },
-      '/api/replay-session.wav': { get: { summary: 'Play one synthesized historical radio session', responses: { '200': { description: 'WAV audio' } } } },
+      '/api/replay-session.wav': { get: { summary: 'Play one stitched historical radio session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
       '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
-      '/api/transcript-session.wav': { get: { summary: 'Play one synthesized archived transcript session', responses: { '200': { description: 'WAV audio' } } } },
+      '/api/transcript-session.wav': { get: { summary: 'Play one stitched archived transcript session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/dsc': {
         get: { summary: 'List decoded DSC Channel 70 calls', responses: { '200': { description: 'DSC calls' } } },

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 28
+  const CLIENT_BUILD = 29
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -66,6 +66,7 @@
   let timelineAwaitingChannel
   let archiveRenderSignature = ''
   let singleFrequencyActive = false
+  let activeNarration = null
 
   function storedPreference(key, fallback) {
     try { return window.localStorage.getItem(`vhf-watch:${key}`) ?? fallback } catch { return fallback }
@@ -377,6 +378,103 @@
     for (const audio of document.querySelectorAll('audio')) {
       if (audio !== activeAudio && !audio.paused) audio.pause()
     }
+  }
+
+  function localTranscriptVoices() {
+    if (!('speechSynthesis' in window)) return []
+    const voices = window.speechSynthesis.getVoices().filter((voice) => voice.localService === true)
+    return voices.sort((left, right) => {
+      const leftEnglish = /^en(?:-|$)/i.test(left.lang) ? 0 : 1
+      const rightEnglish = /^en(?:-|$)/i.test(right.lang) ? 0 : 1
+      return leftEnglish - rightEnglish || left.name.localeCompare(right.name)
+    })
+  }
+
+  function populateTranscriptVoiceSelect(select) {
+    const voices = localTranscriptVoices()
+    const preferred = storedPreference('transcript-voice-uri', '')
+    select.replaceChildren(...voices.map((voice) => {
+      const option = document.createElement('option')
+      option.value = voice.voiceURI
+      option.textContent = `${voice.name} · ${voice.lang}`
+      return option
+    }))
+    select.disabled = voices.length === 0
+    if (voices.length === 0) {
+      const option = document.createElement('option')
+      option.textContent = 'No local voice available'
+      select.append(option)
+      return
+    }
+    if (voices.some((voice) => voice.voiceURI === preferred)) select.value = preferred
+    else {
+      const english = voices.find((voice) => /^en(?:-|$)/i.test(voice.lang))
+      select.value = (english || voices[0]).voiceURI
+    }
+  }
+
+  function narrationChunks(text, maximumLength = 220) {
+    const chunks = []
+    const sentences = text.trim().match(/[^.!?]+(?:[.!?]+|$)/g) || []
+    for (const sentence of sentences) {
+      let remaining = sentence.trim()
+      while (remaining.length > maximumLength) {
+        const space = remaining.lastIndexOf(' ', maximumLength)
+        const split = space > maximumLength / 2 ? space : maximumLength
+        chunks.push(remaining.slice(0, split).trim())
+        remaining = remaining.slice(split).trim()
+      }
+      if (remaining) chunks.push(remaining)
+    }
+    return chunks
+  }
+
+  function stopNarration() {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    if (activeNarration) {
+      activeNarration.button.textContent = 'Read transcript'
+      activeNarration.button.classList.remove('is-speaking')
+      activeNarration = null
+    }
+  }
+
+  function toggleNarration(button, text, voiceSelect) {
+    if (activeNarration?.button === button) {
+      stopNarration()
+      return
+    }
+    stopNarration()
+    const voices = localTranscriptVoices()
+    const voice = voices.find((candidate) => candidate.voiceURI === voiceSelect.value)
+    const chunks = narrationChunks(text)
+    if (!voice || chunks.length === 0) return
+    pauseOtherAudio()
+    const narration = { button, chunks, index: 0 }
+    activeNarration = narration
+    button.textContent = 'Stop reading'
+    button.classList.add('is-speaking')
+    const speakNext = () => {
+      if (activeNarration !== narration) return
+      const chunk = narration.chunks[narration.index]
+      if (!chunk) {
+        stopNarration()
+        return
+      }
+      narration.index += 1
+      const utterance = new SpeechSynthesisUtterance(chunk)
+      utterance.voice = voice
+      utterance.lang = voice.lang
+      utterance.rate = 0.95
+      utterance.onend = speakNext
+      utterance.onerror = (event) => {
+        if (event.error !== 'canceled' && event.error !== 'interrupted') {
+          setConnection('error', `Transcript voice failed: ${event.error}`)
+        }
+        stopNarration()
+      }
+      window.speechSynthesis.speak(utterance)
+    }
+    speakNext()
   }
 
   function sessionRenderSignature(sessions, includeTranscript = false) {
@@ -842,7 +940,14 @@
     const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
-    controls.append(squelchLabel, cleanupLabel)
+    const voiceLabel = document.createElement('label')
+    voiceLabel.textContent = 'Transcript voice · device local'
+    const voice = document.createElement('select')
+    voice.className = 'transcript-voice-select'
+    populateTranscriptVoiceSelect(voice)
+    voice.addEventListener('change', () => savePreference('transcript-voice-uri', voice.value))
+    voiceLabel.append(voice)
+    controls.append(squelchLabel, cleanupLabel, voiceLabel)
 
     const log = document.createElement('div')
     log.className = 'archive-log'
@@ -921,7 +1026,15 @@
         setConnection('error', `Could not copy transcript: ${error.message}`)
       }
     })
-    actions.append(download, originalDownload, copy)
+    const readTranscript = document.createElement('button')
+    readTranscript.type = 'button'
+    readTranscript.className = 'transcript-read-button'
+    readTranscript.textContent = 'Read transcript'
+    readTranscript.dataset.hasTranscript = String(Boolean(record.transcript))
+    readTranscript.disabled = !record.transcript || voice.disabled
+    readTranscript.title = voice.disabled ? 'No device-local text-to-speech voice is available in this browser' : 'Play a synthesized reading without changing the original radio audio'
+    readTranscript.addEventListener('click', () => toggleNarration(readTranscript, record.transcript, voice))
+    actions.append(download, originalDownload, readTranscript, copy)
     const updatePlayback = () => {
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
@@ -956,7 +1069,7 @@
       const { records, archive } = await request('transcripts?limit=500')
       const sessions = groupArchiveSessions(records)
       const signature = sessionRenderSignature(sessions, true)
-      if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
+      if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList) && !activeNarration) {
         const expanded = new Set([...archiveList.querySelectorAll('details[open]')].map((details) => details.dataset.sessionKey))
         archiveList.replaceChildren(...sessions.map(archiveRow))
         for (const details of archiveList.querySelectorAll('details')) {
@@ -1087,8 +1200,21 @@
     else if (timelineFollowingLive) timelineWaitingAtEdge = true
   })
   document.addEventListener('play', (event) => {
-    if (event.target instanceof HTMLAudioElement) pauseOtherAudio(event.target)
+    if (event.target instanceof HTMLAudioElement) {
+      stopNarration()
+      pauseOtherAudio(event.target)
+    }
   }, true)
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.addEventListener('voiceschanged', () => {
+      for (const select of document.querySelectorAll('.transcript-voice-select')) populateTranscriptVoiceSelect(select)
+      for (const button of document.querySelectorAll('.transcript-read-button')) {
+        if (button.textContent === 'Read transcript') {
+          button.disabled = button.dataset.hasTranscript !== 'true' || localTranscriptVoices().length === 0
+        }
+      }
+    })
+  }
   transcriptionEnabled.addEventListener('change', async () => {
     transcriptionEnabled.disabled = true
     try {
@@ -1133,6 +1259,7 @@
   window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
+    stopNarration()
   })
   initialize()
 })()

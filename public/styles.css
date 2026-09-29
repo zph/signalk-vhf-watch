@@ -127,6 +127,8 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015e
 .archive-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .button-link { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 11px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; font-size: 11px; font-weight: 600; text-decoration: none; }
 .archive-actions button { min-height: 34px; padding: 0 11px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; font-size: 11px; font-weight: 600; }
+.archive-actions button.is-speaking { color: #fff; background: var(--blue); border-color: var(--blue); }
+.archive-actions button:disabled { cursor: not-allowed; opacity: .5; }
 .processing-panel { padding: 13px 18px 16px; border-top: 1px solid var(--line); }
 .processing-panel summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; font-size: 12px; }
 .processing-panel > p { margin: 5px 0 9px; color: var(--muted); font-size: 10px; }
