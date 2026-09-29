@@ -53,11 +53,15 @@ h2 { margin-bottom: 4px; font-size: 1.5rem; }
   width: 100%; padding: 0 12px; color: var(--text); background: var(--panel-raised);
   border: 1px solid var(--line); border-radius: 12px;
 }
-#channel {
+#slot-a-channel, #slot-b-channel {
   width: 100%; min-height: 54px; padding: 0 14px; color: var(--text); background: var(--panel-raised);
   border: 1px solid var(--line); border-radius: 12px; font-size: clamp(1rem, 2.5vw, 1.25rem); font-weight: 750;
 }
-#channel-purpose { min-height: 24px; margin: 10px 0 0; color: var(--muted); }
+.slot-row { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.slot-row label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 8px; }
+.slot-row label strong { color: var(--cyan); }
+.slot-row p { min-height: 24px; margin: 8px 0 0; color: var(--muted); }
+#slot-a-mode { min-height: 36px; padding: 2px 8px; color: var(--text); background: var(--panel-raised); border: 1px solid var(--line); border-radius: 8px; }
 .meter-block { flex: 1 1 45%; }
 .meter-label { display: flex; justify-content: space-between; margin-bottom: 9px; color: var(--muted); }
 .meter-label strong { color: var(--text); }

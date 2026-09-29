@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	frameVoice byte = 1
-	frameDSC   byte = 2
-	frameState byte = 3
+	frameVoice  byte = 1
+	frameDSC    byte = 2
+	frameState  byte = 3
+	frameVoiceB byte = 4
 )
 
 var normalizedIQ = func() [256]float64 {
@@ -78,6 +79,10 @@ func (c *channelizer) tune(offsetHz int) {
 		c.oscillatorI[index], c.oscillatorQ[index] = math.Cos(phase), math.Sin(phase)
 	}
 	c.oscillatorIndex = 0
+	c.mixI, c.mixQ, c.mixCount = 0, 0, 0
+	c.filterI1, c.filterQ1, c.filterI2, c.filterQ2, c.filterI3, c.filterQ3 = 0, 0, 0, 0, 0, 0
+	c.previousI, c.previousQ, c.audioSum, c.deemphasis, c.audioCount = 0, 0, 0, 0, 0
+	c.level = math.Pi / 2
 }
 
 func (c *channelizer) process(iq []byte) []int16 {
@@ -149,10 +154,10 @@ type report struct {
 }
 
 type options struct {
-	mode, rtlPath, device                                   string
-	sampleRate, center, voice, dsc, audioRate, ppm, squelch int
-	gain                                                    float64
-	gainSet                                                 bool
+	mode, rtlPath, device                                          string
+	sampleRate, center, voice, dsc, slotB, audioRate, ppm, squelch int
+	gain                                                           float64
+	gainSet                                                        bool
 }
 
 func main() {
@@ -164,6 +169,7 @@ func main() {
 	flag.IntVar(&opts.center, "center", 156_750_000, "capture center frequency")
 	flag.IntVar(&opts.voice, "voice", 156_800_000, "voice frequency")
 	flag.IntVar(&opts.dsc, "dsc", 156_525_000, "DSC frequency")
+	flag.IntVar(&opts.slotB, "slot-b", 156_525_000, "second receiver slot frequency")
 	flag.IntVar(&opts.audioRate, "audio-rate", 16_000, "voice PCM sample rate")
 	flag.IntVar(&opts.ppm, "ppm", 0, "frequency correction")
 	flag.IntVar(&opts.squelch, "squelch", 20, "voice squelch level")
@@ -193,7 +199,11 @@ func runProbe(opts options, input io.Reader, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	dsc, err := newChannelizer(opts.sampleRate, 24_000, opts.dsc-opts.center, 0)
+	slotBRate := opts.audioRate
+	if opts.slotB == opts.dsc {
+		slotBRate = 24_000
+	}
+	dsc, err := newChannelizer(opts.sampleRate, slotBRate, opts.slotB-opts.center, 0)
 	if err != nil {
 		return err
 	}
@@ -229,7 +239,11 @@ func runStream(opts options) error {
 	if err != nil {
 		return err
 	}
-	dsc, err := newChannelizer(opts.sampleRate, 24_000, opts.dsc-opts.center, 0)
+	slotBRate := opts.audioRate
+	if opts.slotB == opts.dsc {
+		slotBRate = 24_000
+	}
+	dsc, err := newChannelizer(opts.sampleRate, slotBRate, opts.slotB-opts.center, 0)
 	if err != nil {
 		return err
 	}
@@ -277,12 +291,21 @@ func runStream(opts options) error {
 				_ = command.Process.Kill()
 				return err
 			}
-			if err := writePCMFrame(os.Stdout, frameDSC, dscPCM); err != nil {
+			kind := frameVoiceB
+			if opts.slotB == opts.dsc {
+				kind = frameDSC
+			}
+			if kind == frameVoiceB {
+				err = writeVoiceBFrame(os.Stdout, dscPCM, dsc.level)
+			} else {
+				err = writePCMFrame(os.Stdout, kind, dscPCM)
+			}
+			if err != nil {
 				_ = command.Process.Kill()
 				return err
 			}
 			if time.Since(lastState) >= time.Second {
-				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "dsc_level": dsc.level, "iq_samples": voice.outputSamples * int64(opts.sampleRate) / int64(opts.audioRate)})
+				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "slot_b_frequency_hz": opts.slotB, "slot_b_level": dsc.level, "dsc_level": dsc.level, "iq_samples": voice.outputSamples * int64(opts.sampleRate) / int64(opts.audioRate)})
 				if err := writeFrame(os.Stdout, frameState, state); err != nil {
 					_ = command.Process.Kill()
 					return err
@@ -344,12 +367,18 @@ func writePCMFrame(output io.Writer, kind byte, samples []int16) error {
 }
 
 func writeVoiceFrame(output io.Writer, samples []int16, discriminatorNoise float64) error {
+	return writeMeasuredVoiceFrame(output, frameVoice, samples, discriminatorNoise)
+}
+func writeVoiceBFrame(output io.Writer, samples []int16, discriminatorNoise float64) error {
+	return writeMeasuredVoiceFrame(output, frameVoiceB, samples, discriminatorNoise)
+}
+func writeMeasuredVoiceFrame(output io.Writer, kind byte, samples []int16, discriminatorNoise float64) error {
 	payload := make([]byte, 8+len(samples)*2)
 	binary.LittleEndian.PutUint64(payload, math.Float64bits(discriminatorNoise))
 	for index, sample := range samples {
 		binary.LittleEndian.PutUint16(payload[8+index*2:], uint16(sample))
 	}
-	return writeFrame(output, frameVoice, payload)
+	return writeFrame(output, kind, payload)
 }
 func writeFrame(output io.Writer, kind byte, payload []byte) error {
 	header := [5]byte{kind}

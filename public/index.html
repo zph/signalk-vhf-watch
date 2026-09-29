@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=13" />
+  <link rel="stylesheet" href="./styles.css?v=14" />
 </head>
 <body>
   <main>
@@ -19,16 +19,25 @@
     </header>
 
     <section class="radio-card" aria-labelledby="receiver-title">
-      <div class="channel-block">
+      <div class="channel-block slot-controls">
         <label for="region">Channel plan</label>
         <select id="region">
           <option value="US_CA">United States + Canada</option>
           <option value="US">United States</option>
           <option value="CA">Canada</option>
         </select>
-        <label id="receiver-title" for="channel">Receive channel</label>
-        <select id="channel" aria-describedby="channel-purpose"></select>
-        <p id="channel-purpose">—</p>
+        <div class="slot-row">
+          <label id="receiver-title" for="slot-a-channel"><strong>Slot A</strong> · voice
+            <select id="slot-a-mode"><option value="fixed">Fixed</option><option value="scan">Scan</option></select>
+          </label>
+          <select id="slot-a-channel" aria-describedby="slot-a-purpose"></select>
+          <p id="slot-a-purpose">—</p>
+        </div>
+        <div class="slot-row">
+          <label for="slot-b-channel"><strong>Slot B</strong> · fixed voice or DSC</label>
+          <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
+          <p id="slot-b-purpose">—</p>
+        </div>
       </div>
       <div class="meter-block">
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
@@ -57,27 +66,6 @@
         <button id="timeline-newer" type="button" disabled>+ 1 minute</button>
       </div>
       <p class="muted">Choose any recorded moment. Playback continues through the following five-second slices.</p>
-    </section>
-
-    <section class="listen-card" aria-labelledby="live-title">
-      <div>
-        <p class="eyebrow">PRIVATE ONBOARD AUDIO</p>
-        <h2 id="live-title">Live receiver</h2>
-        <p>The browser will only connect after you press Listen.</p>
-      </div>
-      <div class="live-controls">
-        <label class="squelch-control" for="live-squelch">Live squelch
-          <select id="live-squelch">
-            <option value="0">Off / raw</option>
-            <option value="10">10</option>
-            <option value="20" selected>20</option>
-            <option value="30">30</option>
-            <option value="40">40</option>
-          </select>
-        </label>
-        <button id="listen" class="primary" type="button">Listen live</button>
-        <span id="live-status" class="muted" aria-live="polite">Not streaming</span>
-      </div>
     </section>
 
     <section class="replay-section" aria-labelledby="dsc-title">
@@ -146,9 +134,9 @@
 
     <footer>
       <strong>No transmit controls exist in this application.</strong>
-      Channel 70 is continuously reserved for DSC and unavailable as voice audio.
+      Channel 70 is decoded continuously whenever it is assigned to Slot B.
     </footer>
   </main>
-  <script src="./main.js?v=13"></script>
+  <script src="./main.js?v=14"></script>
 </body>
 </html>

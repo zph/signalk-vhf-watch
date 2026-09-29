@@ -22,6 +22,7 @@ test('builds native sidecar arguments without any transmit controls', () => {
   assert.deepEqual(args, [
     '--mode', 'stream', '--device', '00000001', '--sample-rate', '2400000',
     '--center', '156750000', '--voice', '156800000', '--dsc', '156525000',
+    '--slot-b', '156525000',
     '--audio-rate', '16000', '--ppm', '2', '--squelch', '15'
   ])
   assert.equal(args.some((arg) => /tx|transmit|ptt/i.test(arg)), false)

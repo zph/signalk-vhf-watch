@@ -14,6 +14,7 @@ export const CHANNEL_GUARD_HZ = 25_000
 export interface ReceiverEvents {
   audio: [Buffer]
   replayAudio: [Buffer, number]
+  slotBReplayAudio: [Buffer, number]
   dscAudio: [Buffer]
   error: [Error]
   metrics: [ReceiverMetrics]
@@ -25,6 +26,7 @@ export interface ReceiverMetrics {
   droppedIqBytes: number
   restarts: number
   voiceDiscriminatorNoise?: number
+  slotBDiscriminatorNoise?: number
   dscDiscriminatorNoise?: number
 }
 
@@ -48,7 +50,7 @@ export function canChannelize(frequencyHz: number): boolean {
   return Math.abs(frequencyHz - WIDEBAND_CENTER_HZ) <= WIDEBAND_SAMPLE_RATE / 2 - CHANNEL_GUARD_HZ
 }
 
-export function nativeSidecarArgs(config: VhfWatchConfig, channel: VhfChannel): string[] {
+export function nativeSidecarArgs(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70'): string[] {
   return [
     '--mode', 'stream',
     '--device', config.device,
@@ -56,6 +58,7 @@ export function nativeSidecarArgs(config: VhfWatchConfig, channel: VhfChannel): 
     '--center', String(WIDEBAND_CENTER_HZ),
     '--voice', String(channel.frequencyHz),
     '--dsc', String(DSC_CHANNEL_HZ),
+    '--slot-b', String(slotB === '70' ? DSC_CHANNEL_HZ : slotB.frequencyHz),
     '--audio-rate', String(config.sampleRate),
     '--ppm', String(config.ppm),
     '--squelch', String(config.squelch),
@@ -84,6 +87,7 @@ export function parseSidecarFrames(buffer: Buffer): { frames: SidecarFrame[]; re
 export class NativeSidecarReceiver extends AudioReceiver {
   readonly #config: VhfWatchConfig
   #channel: VhfChannel
+  #slotB: VhfChannel | '70'
   #process?: ReturnType<typeof spawn>
   #active = false
   #restartTimer?: ReturnType<typeof setTimeout>
@@ -91,10 +95,11 @@ export class NativeSidecarReceiver extends AudioReceiver {
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   #metrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
 
-  constructor(config: VhfWatchConfig, channel: VhfChannel) {
+  constructor(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70') {
     super()
     this.#config = config
     this.#channel = channel
+    this.#slotB = slotB
   }
 
   start(): void {
@@ -110,7 +115,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
   #startCapture(): void {
     if (!this.#active || this.#process) return
     this.emit('state', 'Starting native wideband receiver')
-    const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel), {
+    const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel, this.#slotB), {
       stdio: ['pipe', 'pipe', 'pipe']
     })
     this.#process = child
@@ -135,16 +140,24 @@ export class NativeSidecarReceiver extends AudioReceiver {
             this.emit('replayAudio', rawPcm, discriminatorNoise)
           }
           else if (frame.kind === 2) this.emit('dscAudio', frame.payload)
+          else if (frame.kind === 4) {
+            if (frame.payload.length < 8) throw new Error('Truncated Slot B voice frame from VHF sidecar')
+            const discriminatorNoise = frame.payload.readDoubleLE(0)
+            this.#metrics.slotBDiscriminatorNoise = discriminatorNoise
+            this.emit('slotBReplayAudio', frame.payload.subarray(8), discriminatorNoise)
+          }
           else if (frame.kind === 3) {
             this.#restartDelayMs = 1_000
             const state = JSON.parse(frame.payload.toString('utf8')) as {
               voice_level?: number
+              slot_b_level?: number
               dsc_level?: number
             }
             this.#metrics.voiceDiscriminatorNoise = state.voice_level
+            this.#metrics.slotBDiscriminatorNoise = state.slot_b_level
             this.#metrics.dscDiscriminatorNoise = state.dsc_level
             this.emit('metrics', { ...this.#metrics })
-            this.emit('state', `Wideband capture · voice ${this.#channel.label} + continuous DSC 70`)
+            this.emit('state', `Wideband capture · Slot A ${this.#channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
           }
         }
       } catch (error) {
@@ -190,7 +203,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
     }
     this.#channel = channel
     this.#process?.stdin?.write(`tune ${channel.frequencyHz}\n`)
-    this.emit('state', `Wideband capture · voice ${channel.label} + continuous DSC 70`)
+    this.emit('state', `Wideband capture · Slot A ${channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
   }
 
   stop(): void {

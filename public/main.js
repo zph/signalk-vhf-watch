@@ -4,14 +4,14 @@
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
   const regionSelect = $('#region')
-  const channelSelect = $('#channel')
-  const purpose = $('#channel-purpose')
+  const slotAMode = $('#slot-a-mode')
+  const slotAChannel = $('#slot-a-channel')
+  const slotBChannel = $('#slot-b-channel')
+  const slotAPurpose = $('#slot-a-purpose')
+  const slotBPurpose = $('#slot-b-purpose')
   const signalBar = $('#signal-bar')
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
-  const listenButton = $('#listen')
-  const liveSquelch = $('#live-squelch')
-  const liveStatus = $('#live-status')
   const replayList = $('#replay-list')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
@@ -31,15 +31,12 @@
   const transcriptionStatus = $('#transcription-status')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   let channels = []
-  let listening = false
-  let liveAbort
-  let liveContext
-  let liveGeneration = 0
   let poll
   let replaySquelchTouched = false
   let replayTimeline = []
   let timelineSegmentId
   let timelineFollowingLive = true
+  let timelineWaitingAtEdge = false
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -62,8 +59,15 @@
 
   function renderStatus(status) {
     regionSelect.value = status.channelRegion
-    if (channelSelect.value !== status.channel.id) channelSelect.value = status.channel.id
-    purpose.textContent = status.channel.purpose
+    slotAMode.value = status.slots.A.mode
+    slotAChannel.value = status.slots.A.configuredChannel.id
+    slotBChannel.value = status.slots.B.channel.id
+    slotAPurpose.textContent = status.slots.A.mode === 'scan'
+      ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
+      : status.slots.A.configuredChannel.purpose
+    slotBPurpose.textContent = status.slots.B.kind === 'dsc'
+      ? 'Continuous digital selective calling watch'
+      : status.slots.B.channel.purpose
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -74,7 +78,7 @@
       ? ` · ${metrics.restarts} restarts · ${metrics.droppedIqChunks} IQ drops`
       : ''
     receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
-    retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB private buffer · ${status.replaySegments} segments · ${status.liveListeners} live listener${status.liveListeners === 1 ? '' : 's'}`
+    retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB per voice slot · ${status.replaySegments} private segments across both slots`
     const transcription = status.transcription
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
@@ -90,13 +94,18 @@
     const response = await request('channels')
     channels = response.channels
     regionSelect.value = response.region
-    channelSelect.replaceChildren(...channels.map((channel) => {
+    const voiceOptions = () => channels.map((channel) => {
       const option = document.createElement('option')
       option.value = channel.id
       option.textContent = `${channel.label} · ${channel.countries.join('+')} — ${channel.purpose}`
       option.disabled = channel.available === false
       return option
-    }))
+    })
+    slotAChannel.replaceChildren(...voiceOptions())
+    const dscOption = document.createElement('option')
+    dscOption.value = '70'
+    dscOption.textContent = '70 · US+CA — Digital selective calling'
+    slotBChannel.replaceChildren(dscOption, ...voiceOptions())
   }
 
   async function updateStatus() {
@@ -135,7 +144,7 @@
     timelineRange.value = String(index)
     timelineSegmentId = segment.id
     timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · CH ${segment.channel}`
+    timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · CH ${segment.channel}`
     timelineOlder.disabled = index === 0
     timelineNewer.disabled = index === replayTimeline.length - 1
     const source = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
@@ -160,9 +169,15 @@
     }
     const oldest = new Date(replayTimeline[0].startedAt)
     timelineOldest.textContent = oldest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const currentIndex = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
+    if (timelineFollowingLive && timelineWaitingAtEdge && currentIndex >= 0 && currentIndex < replayTimeline.length - 1) {
+      timelineWaitingAtEdge = false
+      selectTimelineIndex(currentIndex + 1, true)
+      return
+    }
     const selectedIndex = timelineFollowingLive
-      ? replayTimeline.length - 1
-      : Math.max(0, replayTimeline.findIndex((segment) => segment.id === timelineSegmentId))
+      ? (currentIndex >= 0 ? currentIndex : replayTimeline.length - 1)
+      : Math.max(0, currentIndex)
     selectTimelineIndex(selectedIndex)
   }
 
@@ -185,7 +200,7 @@
       ? ''
       : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
     const label = document.createElement('div')
-    label.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
+    label.textContent = `Slot ${segment.slot} · CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
     detail.append(label)
     if (Array.isArray(segment.activity)) {
       const namespace = 'http://www.w3.org/2000/svg'
@@ -296,29 +311,30 @@
     }
   }
 
-  async function tune() {
-    channelSelect.disabled = true
+  async function configureSlots() {
+    slotAMode.disabled = true
+    slotAChannel.disabled = true
+    slotBChannel.disabled = true
     try {
-      const status = await request('channel', {
+      const status = await request('slots', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: channelSelect.value })
+        body: JSON.stringify({ mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBChannel: slotBChannel.value })
       })
       renderStatus(status)
-      purpose.textContent = channelPurpose(channelSelect.value)
-      if (listening) {
-        await restartLiveStream()
-      }
     } catch (error) {
       setConnection('error', error.message)
     } finally {
-      channelSelect.disabled = false
+      slotAMode.disabled = false
+      slotAChannel.disabled = false
+      slotBChannel.disabled = false
     }
   }
 
   async function changeRegion() {
     regionSelect.disabled = true
-    channelSelect.disabled = true
+    slotAChannel.disabled = true
+    slotBChannel.disabled = true
     try {
       const status = await request('region', {
         method: 'POST',
@@ -331,99 +347,9 @@
       setConnection('error', error.message)
     } finally {
       regionSelect.disabled = false
-      channelSelect.disabled = false
+      slotAChannel.disabled = false
+      slotBChannel.disabled = false
     }
-  }
-
-  function stopLiveStream() {
-    liveGeneration += 1
-    liveAbort?.abort()
-    liveAbort = undefined
-    if (liveContext) void liveContext.close()
-    liveContext = undefined
-    listening = false
-    listenButton.textContent = 'Listen live'
-    listenButton.classList.remove('listening')
-    liveStatus.textContent = 'Not streaming'
-  }
-
-  async function pumpLivePcm(response, context, generation) {
-    const reader = response.body.getReader()
-    let pending = new Uint8Array(0)
-    let headerBytes = 44
-    let playAt = context.currentTime + 0.12
-    while (generation === liveGeneration) {
-      const { value, done } = await reader.read()
-      if (done) throw new Error('Live stream ended')
-      let chunk = value
-      if (headerBytes > 0) {
-        const skipped = Math.min(headerBytes, chunk.length)
-        chunk = chunk.subarray(skipped)
-        headerBytes -= skipped
-      }
-      if (chunk.length === 0) continue
-      const joined = new Uint8Array(pending.length + chunk.length)
-      joined.set(pending)
-      joined.set(chunk, pending.length)
-      const usable = joined.length - joined.length % 2
-      pending = joined.slice(usable)
-      if (usable === 0) continue
-      const samples = usable / 2
-      const audioBuffer = context.createBuffer(1, samples, 16_000)
-      const output = audioBuffer.getChannelData(0)
-      const view = new DataView(joined.buffer, joined.byteOffset, usable)
-      for (let index = 0; index < samples; index += 1) {
-        output[index] = view.getInt16(index * 2, true) / 32_768
-      }
-      const source = context.createBufferSource()
-      source.buffer = audioBuffer
-      source.connect(context.destination)
-      playAt = Math.max(playAt, context.currentTime + 0.06)
-      source.start(playAt)
-      playAt += audioBuffer.duration
-    }
-  }
-
-  async function startLiveStream() {
-    const generation = ++liveGeneration
-    liveAbort = new AbortController()
-    liveContext = new AudioContext({ sampleRate: 16_000 })
-    try {
-      await liveContext.resume()
-      const response = await fetch(
-        `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`,
-        { credentials: 'include', signal: liveAbort.signal }
-      )
-      if (!response.ok || !response.body) throw new Error(`Live stream failed (${response.status})`)
-      listening = true
-      listenButton.textContent = 'Stop listening'
-      listenButton.classList.add('listening')
-      liveStatus.textContent = liveSquelch.value === '0'
-        ? 'Streaming raw audio'
-        : `Streaming · squelch ${liveSquelch.value} · silence means the channel is quiet`
-      void pumpLivePcm(response, liveContext, generation).catch((error) => {
-        if (generation !== liveGeneration || error.name === 'AbortError') return
-        stopLiveStream()
-        liveStatus.textContent = `Stream failed: ${error.message}`
-      })
-    } catch (error) {
-      stopLiveStream()
-      liveStatus.textContent = 'Stream failed'
-      setConnection('error', `Audio could not start: ${error.message}`)
-    }
-  }
-
-  async function restartLiveStream() {
-    stopLiveStream()
-    await startLiveStream()
-  }
-
-  async function toggleListen() {
-    if (listening) {
-      stopLiveStream()
-      return
-    }
-    await startLiveStream()
   }
 
   async function clearReplay() {
@@ -457,13 +383,10 @@
     }
   }
 
-  channelSelect.addEventListener('change', tune)
+  slotAMode.addEventListener('change', configureSlots)
+  slotAChannel.addEventListener('change', configureSlots)
+  slotBChannel.addEventListener('change', configureSlots)
   regionSelect.addEventListener('change', changeRegion)
-  listenButton.addEventListener('click', toggleListen)
-  liveSquelch.addEventListener('change', async () => {
-    if (!listening) return
-    await restartLiveStream()
-  })
   $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', () => clearReplayDialog.showModal())
   clearReplayDialog.addEventListener('close', () => {
@@ -477,19 +400,21 @@
   })
   timelineRange.addEventListener('input', () => {
     timelineFollowingLive = false
+    timelineWaitingAtEdge = false
     selectTimelineIndex(Number(timelineRange.value))
   })
   timelineOlder.addEventListener('click', () => moveTimeline(-60_000))
   timelineNewer.addEventListener('click', () => moveTimeline(60_000))
   timelineLatest.addEventListener('click', () => {
     timelineFollowingLive = true
-    selectTimelineIndex(replayTimeline.length - 1)
+    timelineWaitingAtEdge = false
+    selectTimelineIndex(replayTimeline.length - 1, true)
   })
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)
+    else if (timelineFollowingLive) timelineWaitingAtEdge = true
   })
-  timelineAudio.addEventListener('play', () => { timelineFollowingLive = false })
   transcriptionEnabled.addEventListener('change', async () => {
     transcriptionEnabled.disabled = true
     try {
@@ -509,7 +434,6 @@
   })
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
-    stopLiveStream()
   })
   initialize()
 })()

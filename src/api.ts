@@ -44,10 +44,10 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const id = Number(request.params.id)
-    const segment = runtime.replay.get(id)
+    const segment = runtime.replaySegment(id)
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
     const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
-    const wav = runtime.replay.wavFor(id, squelch)
+    const wav = runtime.replayWavFor(id, squelch)
     if (!segment || !wav) {
       response.status(404).json({ error: 'Replay segment not found' })
       return
@@ -100,6 +100,18 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
+  write.post('/api/slots', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    try {
+      const body = request.body as { mode?: unknown; slotAChannel?: unknown; slotBChannel?: unknown } | undefined
+      const mode = String(body?.mode ?? '')
+      if (mode !== 'fixed' && mode !== 'scan') throw new Error('Slot A mode must be fixed or scan')
+      response.json(runtime.configureSlots(mode, String(body?.slotAChannel ?? ''), String(body?.slotBChannel ?? '')))
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
   write.post('/api/region', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -124,14 +136,14 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
   write.delete('/api/replay', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
-    runtime.replay.clear()
+    runtime.clearReplay()
     response.status(204).end()
   })
   write.delete('/api/replay/:id', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const id = Number(request.params.id)
-    if (!Number.isSafeInteger(id) || id < 1 || !runtime.replay.delete(id)) {
+    if (!Number.isSafeInteger(id) || id < 1 || !runtime.deleteReplay(id)) {
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
@@ -161,6 +173,7 @@ export function openApi(): object {
         delete: { summary: 'Clear decoded DSC calls', responses: { '204': { description: 'Cleared' } } }
       },
       '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
+      '/api/slots': { post: { summary: 'Configure the two receiver slots and Slot A scan mode', responses: { '200': { description: 'Updated status' } } } },
       '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } },
       '/api/transcription': { post: { summary: 'Durably enable or disable local voice transcription', responses: { '200': { description: 'Updated status' } } } }
     }

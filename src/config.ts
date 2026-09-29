@@ -2,12 +2,15 @@ import path from 'node:path'
 import { channelById, type ChannelRegion } from './channels'
 
 export type ReceiverMode = 'demo' | 'rtl_sdr'
+export type SlotAMode = 'fixed' | 'scan'
 
 export interface VhfWatchConfig {
   enabled: boolean
   receiverMode: ReceiverMode
   channelRegion: ChannelRegion
   initialChannel: string
+  slotAMode: SlotAMode
+  slotBChannel: string
   device: string
   sidecarPath: string
   ppm: number
@@ -31,6 +34,8 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   receiverMode: 'demo',
   channelRegion: 'US_CA',
   initialChannel: '16',
+  slotAMode: 'fixed',
+  slotBChannel: '70',
   device: '0',
   sidecarPath: defaultSidecarPath(),
   ppm: 0,
@@ -67,6 +72,10 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     receiverMode,
     channelRegion,
     initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
+    slotAMode: value.slotAMode === 'scan' ? 'scan' : 'fixed',
+    slotBChannel: String(value.slotBChannel ?? DEFAULT_CONFIG.slotBChannel).toUpperCase() === '70'
+      ? '70'
+      : channelById(String(value.slotBChannel ?? ''), channelRegion)?.id ?? DEFAULT_CONFIG.slotBChannel,
     device: String(value.device ?? value.deviceIndex ?? DEFAULT_CONFIG.device).trim() || DEFAULT_CONFIG.device,
     sidecarPath: String(value.sidecarPath ?? DEFAULT_CONFIG.sidecarPath).trim() || DEFAULT_CONFIG.sidecarPath,
     ppm: Math.min(150, Math.max(-150, Math.round(finiteNumber(value.ppm, DEFAULT_CONFIG.ppm)))),
@@ -103,6 +112,11 @@ export const pluginSchema = {
       default: 'US_CA'
     },
     initialChannel: { type: 'string', title: 'Channel at startup', default: '16' },
+    slotAMode: {
+      type: 'string', title: 'Receiver Slot A mode', enum: ['fixed', 'scan'],
+      enumNames: ['Fixed channel', 'Scan nearby voice channels'], default: 'fixed'
+    },
+    slotBChannel: { type: 'string', title: 'Receiver Slot B channel (70 for continuous DSC)', default: '70' },
     device: {
       type: 'string',
       title: 'RTL-SDR device index or serial number',
@@ -125,7 +139,7 @@ export const pluginSchema = {
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
     replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 120 },
     segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },
-    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory (MiB)', minimum: 16, maximum: 256, default: 256 },
+    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory per voice slot (MiB)', minimum: 16, maximum: 256, default: 256 },
     dscRetentionHours: { type: 'integer', title: 'DSC call retention (hours)', minimum: 1, maximum: 720, default: 168 },
     maxDscMessages: { type: 'integer', title: 'Maximum stored DSC calls', minimum: 10, maximum: 1000, default: 100 },
     maxDscCacheKiB: { type: 'integer', title: 'Maximum DSC cache (KiB)', minimum: 64, maximum: 4096, default: 256 }

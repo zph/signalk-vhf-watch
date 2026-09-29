@@ -7,6 +7,8 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.receiverMode, 'demo')
   assert.equal(config.channelRegion, 'US_CA')
   assert.equal(config.initialChannel, '16')
+  assert.equal(config.slotAMode, 'fixed')
+  assert.equal(config.slotBChannel, '70')
   assert.equal(config.replayMinutes, 120)
   assert.equal(config.segmentSeconds, 2)
   assert.equal(config.maxBufferMiB, 256)
@@ -14,6 +16,12 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.maxDscMessages, 100)
   assert.equal(config.maxDscCacheKiB, 256)
   assert.equal(config.sidecarPath, defaultSidecarPath())
+})
+
+test('accepts scan mode and a second nearby voice channel', () => {
+  const config = normalizeConfig({ slotAMode: 'scan', slotBChannel: '68' })
+  assert.equal(config.slotAMode, 'scan')
+  assert.equal(config.slotBChannel, '68')
 })
 
 test('selects a prebuilt sidecar by host platform and architecture', () => {

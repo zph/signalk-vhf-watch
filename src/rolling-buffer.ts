@@ -19,6 +19,7 @@ export interface ReplayTranscription {
 
 export interface ReplaySegment {
   id: number
+  slot: 'A' | 'B'
   channel: string
   startedAt: string
   endedAt: string
@@ -44,6 +45,8 @@ export class RollingReplay {
   #pendingQuality: ReplayQualitySpan[] = []
   #pendingStartedAt = Date.now()
   #sequence = 0
+  readonly #slot: 'A' | 'B'
+  readonly #sequenceStep: number
   #segments: ReplaySegment[] = []
 
   constructor(
@@ -51,7 +54,10 @@ export class RollingReplay {
     segmentSeconds: number,
     replayMinutes: number,
     channel: string,
-    maxBytes = Number.POSITIVE_INFINITY
+    maxBytes = Number.POSITIVE_INFINITY,
+    slot: 'A' | 'B' = 'A',
+    sequenceStart = 0,
+    sequenceStep = 1
   ) {
     this.#sampleRate = sampleRate
     this.#segmentBytes = sampleRate * 2 * segmentSeconds
@@ -59,6 +65,9 @@ export class RollingReplay {
     const memorySegments = Math.floor(maxBytes / (this.#segmentBytes + 44))
     this.#maxSegments = Math.max(1, Math.min(timeSegments, memorySegments))
     this.#channel = channel
+    this.#slot = slot
+    this.#sequence = sequenceStart
+    this.#sequenceStep = sequenceStep
   }
 
   setChannel(channel: string): void {
@@ -193,7 +202,8 @@ export class RollingReplay {
   #store(pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {
     const durationSeconds = pcm.length / 2 / this.#sampleRate
     const segment: ReplaySegment = {
-      id: ++this.#sequence,
+      id: this.#sequence += this.#sequenceStep,
+      slot: this.#slot,
       channel: this.#channel,
       startedAt: new Date(startedAtMs).toISOString(),
       endedAt: new Date(startedAtMs + durationSeconds * 1000).toISOString(),

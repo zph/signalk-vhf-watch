@@ -63,6 +63,16 @@ func TestWritesVoiceQualityWithUnsquelchedPCM(t *testing.T) {
 	}
 }
 
+func TestWritesIndependentSlotBVoiceFrame(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeVoiceBFrame(&output, []int16{7}, 0.2); err != nil {
+		t.Fatal(err)
+	}
+	if output.Bytes()[0] != frameVoiceB {
+		t.Fatalf("frame kind = %d, want %d", output.Bytes()[0], frameVoiceB)
+	}
+}
+
 func TestAudioLimiterPreservesVoiceGainWithoutHardClipping(t *testing.T) {
 	quiet := softLimitAudio(0.1)
 	if quiet < 7_000 || quiet > 7_700 {

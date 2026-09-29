@@ -15,6 +15,8 @@ test('demo runtime produces bounded replay audio and can retune', async () => {
   try {
     await new Promise((resolve) => setTimeout(resolve, 2_150))
     assert.equal(runtime.status().receiveOnly, true)
+    assert.equal(runtime.status().slots.A.mode, 'fixed')
+    assert.equal(runtime.status().slots.B.channel.id, '70')
     assert.equal(runtime.segments().length, 1)
     assert.equal(runtime.tune('WX2').channel.id, 'WX2')
     assert.equal(runtime.segments()[0]?.channel, '16')
@@ -26,6 +28,16 @@ test('demo runtime produces bounded replay audio and can retune', async () => {
   } finally {
     runtime.stop()
   }
+})
+
+test('configures scan mode and independent receiver Slot B', () => {
+  const runtime = new VhfRuntime(normalizeConfig({ enabled: false, receiverMode: 'rtl_sdr' }))
+  const status = runtime.configureSlots('scan', '16', '68')
+  assert.equal(status.slots.A.mode, 'scan')
+  assert.equal(status.slots.B.channel.id, '68')
+  assert.equal(status.slots.B.kind, 'voice')
+  assert.equal(status.dscWatch.enabled, false)
+  assert.throws(() => runtime.configureSlots('fixed', '68', '68'), /different channels/)
 })
 
 test('wideband runtime keeps startup and tuning inside continuous DSC coverage', () => {
