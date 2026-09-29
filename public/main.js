@@ -432,7 +432,7 @@
   function stopNarration() {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     if (activeNarration) {
-      activeNarration.button.textContent = 'Read transcript'
+      activeNarration.button.textContent = 'Play'
       activeNarration.button.classList.remove('is-speaking')
       activeNarration = null
     }
@@ -447,11 +447,18 @@
     const voices = localTranscriptVoices()
     const voice = voices.find((candidate) => candidate.voiceURI === voiceSelect.value)
     const chunks = narrationChunks(text)
-    if (!voice || chunks.length === 0) return
+    if (!voice) {
+      setConnection('error', 'No device-local transcript voice is available')
+      return
+    }
+    if (chunks.length === 0) {
+      setConnection('error', 'This recording has no transcript to read')
+      return
+    }
     pauseOtherAudio()
     const narration = { button, chunks, index: 0 }
     activeNarration = narration
-    button.textContent = 'Stop reading'
+    button.textContent = 'Stop'
     button.classList.add('is-speaking')
     const speakNext = () => {
       if (activeNarration !== narration) return
@@ -941,13 +948,31 @@
     if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
     const voiceLabel = document.createElement('label')
-    voiceLabel.textContent = 'Transcript voice · device local'
+    voiceLabel.textContent = 'Voice · device local'
     const voice = document.createElement('select')
     voice.className = 'transcript-voice-select'
     populateTranscriptVoiceSelect(voice)
     voice.addEventListener('change', () => savePreference('transcript-voice-uri', voice.value))
     voiceLabel.append(voice)
-    controls.append(squelchLabel, cleanupLabel, voiceLabel)
+    controls.append(squelchLabel, cleanupLabel)
+
+    const transcriptPlayback = document.createElement('div')
+    transcriptPlayback.className = 'transcript-playback'
+    const transcriptPlaybackTitle = document.createElement('div')
+    const transcriptPlaybackHeading = document.createElement('strong')
+    transcriptPlaybackHeading.textContent = 'Transcript reader'
+    const transcriptPlaybackNote = document.createElement('span')
+    transcriptPlaybackNote.textContent = 'Separate from the original radio recording'
+    transcriptPlaybackTitle.append(transcriptPlaybackHeading, transcriptPlaybackNote)
+    const readTranscript = document.createElement('button')
+    readTranscript.type = 'button'
+    readTranscript.className = 'transcript-read-button'
+    readTranscript.textContent = 'Play'
+    readTranscript.dataset.hasTranscript = String(Boolean(record.transcript))
+    readTranscript.disabled = !record.transcript || voice.disabled
+    readTranscript.title = voice.disabled ? 'No device-local text-to-speech voice is available in this browser' : 'Play a synthesized reading without changing the original radio audio'
+    readTranscript.addEventListener('click', () => toggleNarration(readTranscript, record.transcript, voice))
+    transcriptPlayback.append(transcriptPlaybackTitle, voiceLabel, readTranscript)
 
     const log = document.createElement('div')
     log.className = 'archive-log'
@@ -1026,15 +1051,7 @@
         setConnection('error', `Could not copy transcript: ${error.message}`)
       }
     })
-    const readTranscript = document.createElement('button')
-    readTranscript.type = 'button'
-    readTranscript.className = 'transcript-read-button'
-    readTranscript.textContent = 'Read transcript'
-    readTranscript.dataset.hasTranscript = String(Boolean(record.transcript))
-    readTranscript.disabled = !record.transcript || voice.disabled
-    readTranscript.title = voice.disabled ? 'No device-local text-to-speech voice is available in this browser' : 'Play a synthesized reading without changing the original radio audio'
-    readTranscript.addEventListener('click', () => toggleNarration(readTranscript, record.transcript, voice))
-    actions.append(download, originalDownload, readTranscript, copy)
+    actions.append(download, originalDownload, copy)
     const updatePlayback = () => {
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
@@ -1046,7 +1063,7 @@
     details.addEventListener('toggle', () => {
       if (details.open) void renderArchiveWaveform(waveform, audioUrl)
     })
-    body.append(waveform, audio, controls, log, metadata, actions)
+    body.append(waveform, audio, transcriptPlayback, controls, log, metadata, actions)
     details.append(summary, body)
     item.append(details)
     return item
@@ -1209,7 +1226,7 @@
     window.speechSynthesis.addEventListener('voiceschanged', () => {
       for (const select of document.querySelectorAll('.transcript-voice-select')) populateTranscriptVoiceSelect(select)
       for (const button of document.querySelectorAll('.transcript-read-button')) {
-        if (button.textContent === 'Read transcript') {
+        if (button.textContent === 'Play') {
           button.disabled = button.dataset.hasTranscript !== 'true' || localTranscriptVoices().length === 0
         }
       }

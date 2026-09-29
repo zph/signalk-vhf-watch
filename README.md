@@ -126,7 +126,7 @@ compressed WAV. The Transcript archive section combines adjacent records on the 
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing
-directory are created with service-account-only permissions. A separate **Read transcript** control
+directory are created with service-account-only permissions. A separate **Transcript reader** control
 uses a device-local browser voice to speak the recognized text in sentence-aware chunks. Synthesized
 speech is a parallel player: it never rewrites the radio recording or sends text through the plugin
 to a speech service. This archive requires Node.js 22.15 or
