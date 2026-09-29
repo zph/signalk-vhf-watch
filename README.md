@@ -94,7 +94,7 @@ when a segment is played without changing live listening or future recordings; `
 for investigating weak signals. Timeline and transcript playback also offer non-destructive cleanup:
 **Voice focus** limits audio to the useful speech band, while **Strong static reduction** narrows that
 band further and adaptively lowers steady noise between speech. The original buffered and archived
-audio is never rewritten, so operators can switch back to natural playback when cleanup masks a weak
+audio is never rewritten, so operators can switch back to raw playback when cleanup masks a weak
 voice.
 
 ### Optional local transcription

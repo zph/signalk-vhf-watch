@@ -26,6 +26,8 @@ test('minimal web client keeps receiver monitoring and one unified activity work
   assert.match(html, /processing-panel/)
   assert.match(html, /frequency-map/)
   assert.match(html, /Listening — no bursts above squelch yet/)
+  assert.match(html, /<option value="raw">Raw<\/option>/)
+  assert.doesNotMatch(html, />Natural<\/option>/)
   assert.match(html, /Voice focus/)
   assert.match(html, /Strong static reduction/)
   assert.match(html, /Delete all recent audio\?/)
@@ -97,6 +99,8 @@ test('each archived recording has independent non-destructive squelch and cleanu
 
   assert.match(script, /Playback squelch/)
   assert.match(script, /Background noise/)
+  assert.match(script, /<option value="raw">Raw<\/option>/)
+  assert.doesNotMatch(script, />Natural<\/option>/)
   assert.match(script, /Off \/ raw/)
   assert.match(script, /Strong reduction/)
   assert.match(script, /cleanup=\$\{encodeURIComponent\(cleanup\)\}&squelch=\$\{encodeURIComponent\(squelch\)\}/)

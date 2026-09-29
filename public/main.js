@@ -832,7 +832,7 @@
     const cleanupLabel = document.createElement('label')
     cleanupLabel.textContent = 'Background noise'
     const cleanup = document.createElement('select')
-    cleanup.innerHTML = '<option value="raw">Natural</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option>'
+    cleanup.innerHTML = '<option value="raw">Raw</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option>'
     const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
