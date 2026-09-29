@@ -6,6 +6,11 @@ interface ReplayQualitySpan {
   discriminatorNoise?: number
 }
 
+interface ReplayGateSpan {
+  bytes: number
+  open: boolean
+}
+
 export interface ReplayTranscription {
   status: 'queued' | 'transcribing' | 'complete' | 'skipped' | 'error'
   text: string
@@ -106,12 +111,9 @@ export class RollingReplay {
     if (!segment) return undefined
     if (squelch <= 0 || segment.qualitySpans.length === 0) return segment.wav
     const wav = Buffer.from(segment.wav)
-    const threshold = discriminatorThreshold(squelch)
     let offset = 44
-    for (const span of segment.qualitySpans) {
-      if (span.discriminatorNoise !== undefined && span.discriminatorNoise >= threshold) {
-        wav.fill(0, offset, offset + span.bytes)
-      }
+    for (const span of this.#gateSpans(segment.qualitySpans, squelch)) {
+      if (!span.open) wav.fill(0, offset, offset + span.bytes)
       offset += span.bytes
     }
     return wav
@@ -148,12 +150,10 @@ export class RollingReplay {
     if (byteLength <= 0 || spans.length === 0) return Array(bins).fill(0)
     const active = Array<number>(bins).fill(0)
     const binBytes = byteLength / bins
-    const threshold = discriminatorThreshold(squelch)
     let spanStart = 0
-    for (const span of spans) {
+    for (const span of this.#gateSpans(spans, squelch)) {
       const spanEnd = spanStart + span.bytes
-      const open = span.discriminatorNoise === undefined || span.discriminatorNoise < threshold
-      if (open) {
+      if (span.open) {
         const firstBin = Math.max(0, Math.floor(spanStart / binBytes))
         const lastBin = Math.min(bins - 1, Math.floor(Math.max(spanStart, spanEnd - 1) / binBytes))
         for (let index = firstBin; index <= lastBin; index += 1) {
@@ -164,6 +164,30 @@ export class RollingReplay {
       spanStart = spanEnd
     }
     return active.map((value) => Math.round(Math.min(1, value) * 1_000) / 1_000)
+  }
+
+  #gateSpans(spans: ReplayQualitySpan[], squelch: number): ReplayGateSpan[] {
+    if (squelch <= 0) return spans.map((span) => ({ bytes: span.bytes, open: true }))
+    const threshold = discriminatorThreshold(squelch)
+    const runs: ReplayGateSpan[] = []
+    for (const span of spans) {
+      const open = span.discriminatorNoise === undefined || span.discriminatorNoise < threshold
+      const previous = runs[runs.length - 1]
+      if (previous?.open === open) previous.bytes += span.bytes
+      else runs.push({ bytes: span.bytes, open })
+    }
+    const minimumOpenBytes = this.#sampleRate * 2 * 0.2
+    const hangBytes = this.#sampleRate * 2 * 0.15
+    let gateOpen = false
+    return runs.map((run, index) => {
+      if (run.open) {
+        if (!gateOpen) gateOpen = run.bytes >= minimumOpenBytes
+        return { bytes: run.bytes, open: gateOpen }
+      }
+      const bridgesSignal = gateOpen && run.bytes <= hangBytes && runs[index + 1]?.open === true
+      if (!bridgesSignal) gateOpen = false
+      return { bytes: run.bytes, open: bridgesSignal }
+    })
   }
 
   #store(pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {

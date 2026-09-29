@@ -123,10 +123,15 @@ func (c *channelizer) process(iq []byte) []int16 {
 		c.outputSamples++
 		// Preserve unsquelched low-rate PCM. Signal K applies the configured live gate and retains
 		// this stream with the discriminator-noise value for adjustable replay squelch.
-		scaled := c.deemphasis * 80_000
-		output = append(output, int16(math.Max(-32768, math.Min(32767, math.Round(scaled)))))
+		output = append(output, softLimitAudio(c.deemphasis))
 	}
 	return output
+}
+
+func softLimitAudio(sample float64) int16 {
+	// Preserve roughly the original small-signal gain while rounding over large discriminator
+	// excursions. Unsquelched FM noise can approach +/-Pi and must not hit the PCM rails.
+	return int16(math.Round(math.Tanh(sample*2.5) * 30_000))
 }
 
 type report struct {

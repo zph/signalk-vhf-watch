@@ -60,3 +60,22 @@ test('preserves raw replay and applies selectable discriminator squelch on playb
   assert.ok(activity.slice(0, activity.length / 2).every((value) => value === 0))
   assert.ok(activity.slice(activity.length / 2).every((value) => value === 1))
 })
+
+test('rejects brief noise bursts but retains sustained radio activity', () => {
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const brief = Buffer.alloc(8_000 * 2 / 10, 1)
+  const quietRemainder = Buffer.alloc(8_000 * 2 * 19 / 10, 1)
+  replay.append(brief, Date.UTC(2026, 8, 29), 0.20)
+  replay.append(quietRemainder, Date.UTC(2026, 8, 29, 0, 0, 0, 100), 0.52)
+  const briefSegment = replay.list(10)[0]!
+  assert.ok(briefSegment.activity?.every((value) => value === 0))
+  assert.equal(replay.wavFor(briefSegment.id, 10)?.readInt16LE(44), 0)
+
+  const sustained = Buffer.alloc(8_000 * 2 / 4, 1)
+  const remaining = Buffer.alloc(8_000 * 2 * 7 / 4, 1)
+  replay.append(sustained, Date.UTC(2026, 8, 29, 0, 0, 2), 0.20)
+  replay.append(remaining, Date.UTC(2026, 8, 29, 0, 0, 2, 250), 0.52)
+  const sustainedSegment = replay.list(10)[0]!
+  assert.ok(sustainedSegment.activity?.some((value) => value > 0))
+  assert.notEqual(replay.wavFor(sustainedSegment.id, 10)?.readInt16LE(44), 0)
+})

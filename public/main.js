@@ -185,8 +185,7 @@
       ? ''
       : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
     const label = document.createElement('div')
-    const rawPercentage = Math.min(100, Math.round(segment.level * 650))
-    label.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec · raw level ${rawPercentage}%${quality}`
+    label.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
     detail.append(label)
     if (Array.isArray(segment.activity)) {
       const namespace = 'http://www.w3.org/2000/svg'

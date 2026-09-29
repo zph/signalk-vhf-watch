@@ -62,3 +62,16 @@ func TestWritesVoiceQualityWithUnsquelchedPCM(t *testing.T) {
 		t.Fatalf("bad voice PCM: %v", written[13:])
 	}
 }
+
+func TestAudioLimiterPreservesVoiceGainWithoutHardClipping(t *testing.T) {
+	quiet := softLimitAudio(0.1)
+	if quiet < 7_000 || quiet > 7_700 {
+		t.Fatalf("small-signal sample = %d, want voice-range gain", quiet)
+	}
+	for _, sample := range []float64{-math.Pi, math.Pi} {
+		limited := softLimitAudio(sample)
+		if limited <= -32_760 || limited >= 32_760 {
+			t.Fatalf("limited sample = %d, want headroom inside PCM clipping rails", limited)
+		}
+	}
+}
