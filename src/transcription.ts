@@ -6,6 +6,7 @@ import path from 'node:path'
 import type { ReplaySegment } from './rolling-buffer'
 import { discriminatorThreshold } from './squelch'
 import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchiveStatus } from './transcript-archive'
+import type { NarrationManager } from './narration'
 import { pcmToWav } from './wav'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
@@ -191,6 +192,7 @@ export class TranscriptionManager {
   #error?: string
   #closed = false
   #previousTranscript = new Map<string, string>()
+  #narrator?: NarrationManager
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
@@ -298,6 +300,7 @@ export class TranscriptionManager {
       this.#flushPending()
       return
     }
+    this.#narrator?.yield()
     const previous = this.#pending.at(-1)
     if (previous && (previous.channel !== segment.channel || Math.abs(Date.parse(segment.startedAt) - Date.parse(previous.endedAt)) > 500)) {
       this.#flushPending()
@@ -320,6 +323,15 @@ export class TranscriptionManager {
     this.stop()
     this.#archive?.close()
     this.#closed = true
+  }
+
+  attachNarrator(narrator: NarrationManager): void {
+    this.#narrator = narrator
+    narrator.resume()
+  }
+
+  busy(): boolean {
+    return this.#running || this.#queue.length > 0 || this.#pending.length > 0
   }
 
   archiveRecords(limit?: number): TranscriptArchiveRecord[] {
@@ -418,6 +430,7 @@ export class TranscriptionManager {
     } finally {
       this.#running = false
       this.#child = undefined
+      this.#narrator?.resume()
     }
   }
 
@@ -464,7 +477,7 @@ export class TranscriptionManager {
     )))
     const sampleRate = first.wav.readUInt32LE(24)
     const pcm = Buffer.concat(archivedSegments.map((segment) => segment.wav.subarray(44)))
-    this.#archive.add({
+    const record = this.#archive.add({
       startedAt: first.startedAt,
       endedAt: last.endedAt,
       channel: first.channel,
@@ -474,6 +487,7 @@ export class TranscriptionManager {
       transcript,
       wav: pcmToWav(pcm, sampleRate)
     })
+    if (record) this.#narrator?.enqueue(record.id)
   }
 
   #repairArchivedTranscriptOverlap(): void {

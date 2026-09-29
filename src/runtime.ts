@@ -17,6 +17,7 @@ import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
 import { TranscriptionManager, type TranscriptionStatus } from './transcription'
 import { discriminatorThreshold } from './squelch'
+import { NarrationManager, type NarrationStatus } from './narration'
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
@@ -57,6 +58,7 @@ export interface RuntimeStatus {
   }
   error?: string
   transcription: TranscriptionStatus
+  narration: NarrationStatus
   receiveOnly: true
 }
 
@@ -70,6 +72,7 @@ export class VhfRuntime extends EventEmitter<{
   readonly replay: RollingReplay
   readonly replayB: RollingReplay
   readonly transcription: TranscriptionManager
+  readonly narration?: NarrationManager
   #channel: VhfChannel
   #slotAMode: 'fixed' | 'scan'
   #slotAConfigured: VhfChannel
@@ -96,7 +99,7 @@ export class VhfRuntime extends EventEmitter<{
   readonly #dscCache?: DscMessageCache
   #dscMessages: DscMessage[] = []
 
-  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache, transcription?: TranscriptionManager) {
+  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache, transcription?: TranscriptionManager, narration?: NarrationManager) {
     super()
     this.config = config
     this.#channelRegion = config.channelRegion
@@ -111,6 +114,7 @@ export class VhfRuntime extends EventEmitter<{
       : this.#dscChannel()
     this.#dscCache = dscCache
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
+    this.narration = narration
     this.#dscMessages = dscCache?.list() ?? []
     this.replay = new RollingReplay(
       config.sampleRate,
@@ -140,6 +144,7 @@ export class VhfRuntime extends EventEmitter<{
     this.#stopReceiver()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.transcription.stop()
+    this.narration?.close()
     this.replay.flush()
     this.replayB.flush()
     this.#receiverState = 'Stopped'
@@ -288,6 +293,9 @@ export class VhfRuntime extends EventEmitter<{
       } : {}),
       ...(this.#error ? { error: this.#error } : {}),
       transcription: this.transcription.status(),
+      narration: this.narration?.status() ?? {
+        available: false, state: 'unavailable', voice: 'af_sarah', threads: 2, queued: 0
+      },
       receiveOnly: true
     }
   }

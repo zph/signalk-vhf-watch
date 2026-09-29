@@ -1,4 +1,5 @@
 import path from 'node:path'
+import os from 'node:os'
 import type { Plugin, PluginConstructor, ServerAPI } from '@signalk/server-api'
 import { openApi, registerRoutes } from './api'
 import { normalizeConfig, pluginSchema } from './config'
@@ -6,6 +7,7 @@ import { DscMessageCache } from './dsc-cache'
 import { VhfRuntime } from './runtime'
 import { TranscriptionManager } from './transcription'
 import { TranscriptArchive } from './transcript-archive'
+import { NarrationManager } from './narration'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -23,12 +25,17 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         maxMessages: config.maxDscMessages,
         maxBytes: config.maxDscCacheKiB * 1024
       })
+      const archive = new TranscriptArchive(path.join(app.getDataDirPath(), 'transcript-archive', 'transcripts.sqlite3'))
       const transcription = new TranscriptionManager(
         path.join(app.getDataDirPath(), 'transcription-settings.json'),
         undefined,
-        { archive: new TranscriptArchive(path.join(app.getDataDirPath(), 'transcript-archive', 'transcripts.sqlite3')) }
+        { archive }
       )
-      runtime = new VhfRuntime(config, dscCache, transcription)
+      const narration = new NarrationManager(archive, undefined, {
+        canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)
+      })
+      transcription.attachNarrator(narration)
+      runtime = new VhfRuntime(config, dscCache, transcription, narration)
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`

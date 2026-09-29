@@ -126,10 +126,13 @@ compressed WAV. The Transcript archive section combines adjacent records on the 
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing
-directory are created with service-account-only permissions. A separate **Transcript reader** control
-uses a device-local browser voice to speak the recognized text in sentence-aware chunks. Synthesized
-speech is a parallel player: it never rewrites the radio recording or sends text through the plugin
-to a speech service. This archive requires Node.js 22.15 or
+directory are created with service-account-only permissions. A separate **Transcript reader** uses
+the optional offline `vhf-tts-runtime` and Kokoro `af_sarah` voice. After Whisper finishes, narration
+is generated with two low-priority CPU threads only while the Pi has spare capacity. Incoming Whisper
+work pre-empts Kokoro and returns the interrupted item to its queue. Each finished reading is stored
+as 24 kbit/s Opus in the same database row as its source recording, so it survives restarts and is
+deleted by the same age and size pruning. Synthesized speech is a parallel player: it never rewrites
+the radio recording or sends text to a speech service. This archive requires Node.js 22.15 or
 newer for the built-in SQLite and Zstandard implementations.
 
 For an ARM64 or AMD64 package built from the matching `whisper.cpp` release, run the packaging helper
@@ -140,6 +143,14 @@ on the target Debian architecture, then install the resulting file with
 packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin /tmp \
   /path/to/whisper.cpp/models/ggml-base.en-q5_1.bin \
   /path/to/whisper.cpp/models/ggml-small.en-q5_1.bin
+```
+
+Build the optional Kokoro reader on the target Debian architecture from the official sherpa-onnx
+binary bundle and `kokoro-en-v0_19` model, then install it with `apt install ./vhf-tts-runtime_*.deb`:
+
+```sh
+packaging/build-tts-runtime-deb.sh /path/to/sherpa-onnx/bin \
+  /path/to/kokoro-en-v0_19 /tmp
 ```
 
 The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in

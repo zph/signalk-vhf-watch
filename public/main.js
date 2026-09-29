@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 29
+  const CLIENT_BUILD = 30
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -66,7 +66,6 @@
   let timelineAwaitingChannel
   let archiveRenderSignature = ''
   let singleFrequencyActive = false
-  let activeNarration = null
 
   function storedPreference(key, fallback) {
     try { return window.localStorage.getItem(`vhf-watch:${key}`) ?? fallback } catch { return fallback }
@@ -380,117 +379,14 @@
     }
   }
 
-  function localTranscriptVoices() {
-    if (!('speechSynthesis' in window)) return []
-    const voices = window.speechSynthesis.getVoices().filter((voice) => voice.localService === true)
-    return voices.sort((left, right) => {
-      const leftEnglish = /^en(?:-|$)/i.test(left.lang) ? 0 : 1
-      const rightEnglish = /^en(?:-|$)/i.test(right.lang) ? 0 : 1
-      return leftEnglish - rightEnglish || left.name.localeCompare(right.name)
-    })
-  }
-
-  function populateTranscriptVoiceSelect(select) {
-    const voices = localTranscriptVoices()
-    const preferred = storedPreference('transcript-voice-uri', '')
-    select.replaceChildren(...voices.map((voice) => {
-      const option = document.createElement('option')
-      option.value = voice.voiceURI
-      option.textContent = `${voice.name} · ${voice.lang}`
-      return option
-    }))
-    select.disabled = voices.length === 0
-    if (voices.length === 0) {
-      const option = document.createElement('option')
-      option.textContent = 'No local voice available'
-      select.append(option)
-      return
-    }
-    if (voices.some((voice) => voice.voiceURI === preferred)) select.value = preferred
-    else {
-      const english = voices.find((voice) => /^en(?:-|$)/i.test(voice.lang))
-      select.value = (english || voices[0]).voiceURI
-    }
-  }
-
-  function narrationChunks(text, maximumLength = 220) {
-    const chunks = []
-    const sentences = text.trim().match(/[^.!?]+(?:[.!?]+|$)/g) || []
-    for (const sentence of sentences) {
-      let remaining = sentence.trim()
-      while (remaining.length > maximumLength) {
-        const space = remaining.lastIndexOf(' ', maximumLength)
-        const split = space > maximumLength / 2 ? space : maximumLength
-        chunks.push(remaining.slice(0, split).trim())
-        remaining = remaining.slice(split).trim()
-      }
-      if (remaining) chunks.push(remaining)
-    }
-    return chunks
-  }
-
-  function stopNarration() {
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
-    if (activeNarration) {
-      activeNarration.button.textContent = 'Play'
-      activeNarration.button.classList.remove('is-speaking')
-      activeNarration = null
-    }
-  }
-
-  function toggleNarration(button, text, voiceSelect) {
-    if (activeNarration?.button === button) {
-      stopNarration()
-      return
-    }
-    stopNarration()
-    const voices = localTranscriptVoices()
-    const voice = voices.find((candidate) => candidate.voiceURI === voiceSelect.value)
-    const chunks = narrationChunks(text)
-    if (!voice) {
-      setConnection('error', 'No device-local transcript voice is available')
-      return
-    }
-    if (chunks.length === 0) {
-      setConnection('error', 'This recording has no transcript to read')
-      return
-    }
-    pauseOtherAudio()
-    const narration = { button, chunks, index: 0 }
-    activeNarration = narration
-    button.textContent = 'Stop'
-    button.classList.add('is-speaking')
-    const speakNext = () => {
-      if (activeNarration !== narration) return
-      const chunk = narration.chunks[narration.index]
-      if (!chunk) {
-        stopNarration()
-        return
-      }
-      narration.index += 1
-      const utterance = new SpeechSynthesisUtterance(chunk)
-      utterance.voice = voice
-      utterance.lang = voice.lang
-      utterance.rate = 0.95
-      utterance.onend = speakNext
-      utterance.onerror = (event) => {
-        if (event.error !== 'canceled' && event.error !== 'interrupted') {
-          setConnection('error', `Transcript voice failed: ${event.error}`)
-        }
-        stopNarration()
-      }
-      window.speechSynthesis.speak(utterance)
-    }
-    speakNext()
-  }
-
   function sessionRenderSignature(sessions, includeTranscript = false) {
     return JSON.stringify(sessions.map((session) => ({
       ids: session.ids,
       durationSeconds: session.durationSeconds,
       ...(includeTranscript ? {
         transcript: session.transcript,
-        transcription: session.transcription
+        transcription: session.transcription,
+        narration: session.records.map((record) => [record.narrationBytes, record.narrationVoice, record.narrationError])
       } : {})
     })))
   }
@@ -947,13 +843,6 @@
     const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
-    const voiceLabel = document.createElement('label')
-    voiceLabel.textContent = 'Voice · device local'
-    const voice = document.createElement('select')
-    voice.className = 'transcript-voice-select'
-    populateTranscriptVoiceSelect(voice)
-    voice.addEventListener('change', () => savePreference('transcript-voice-uri', voice.value))
-    voiceLabel.append(voice)
     controls.append(squelchLabel, cleanupLabel)
 
     const transcriptPlayback = document.createElement('div')
@@ -962,17 +851,20 @@
     const transcriptPlaybackHeading = document.createElement('strong')
     transcriptPlaybackHeading.textContent = 'Transcript reader'
     const transcriptPlaybackNote = document.createElement('span')
-    transcriptPlaybackNote.textContent = 'Separate from the original radio recording'
+    const narrationReady = record.records.every((entry) => entry.narrationBytes > 0)
+    const narrationError = record.records.find((entry) => entry.narrationError)?.narrationError
+    transcriptPlaybackNote.textContent = narrationReady
+      ? 'Sarah · cached Opus · separate from the original recording'
+      : narrationError
+        ? `Sarah unavailable · ${narrationError}`
+        : 'Sarah · preparing when the Pi is idle; Whisper takes priority'
     transcriptPlaybackTitle.append(transcriptPlaybackHeading, transcriptPlaybackNote)
-    const readTranscript = document.createElement('button')
-    readTranscript.type = 'button'
-    readTranscript.className = 'transcript-read-button'
-    readTranscript.textContent = 'Play'
-    readTranscript.dataset.hasTranscript = String(Boolean(record.transcript))
-    readTranscript.disabled = !record.transcript || voice.disabled
-    readTranscript.title = voice.disabled ? 'No device-local text-to-speech voice is available in this browser' : 'Play a synthesized reading without changing the original radio audio'
-    readTranscript.addEventListener('click', () => toggleNarration(readTranscript, record.transcript, voice))
-    transcriptPlayback.append(transcriptPlaybackTitle, voiceLabel, readTranscript)
+    const transcriptAudio = document.createElement('audio')
+    transcriptAudio.controls = true
+    transcriptAudio.preload = 'metadata'
+    transcriptAudio.setAttribute('aria-label', 'Transcript reader using the Sarah voice')
+    if (narrationReady) transcriptAudio.src = `${API}transcript-session.opus?ids=${encodeURIComponent(record.ids.join(','))}`
+    transcriptPlayback.append(transcriptPlaybackTitle, transcriptAudio)
 
     const log = document.createElement('div')
     log.className = 'archive-log'
@@ -1086,7 +978,7 @@
       const { records, archive } = await request('transcripts?limit=500')
       const sessions = groupArchiveSessions(records)
       const signature = sessionRenderSignature(sessions, true)
-      if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList) && !activeNarration) {
+      if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
         const expanded = new Set([...archiveList.querySelectorAll('details[open]')].map((details) => details.dataset.sessionKey))
         archiveList.replaceChildren(...sessions.map(archiveRow))
         for (const details of archiveList.querySelectorAll('details')) {
@@ -1100,7 +992,7 @@
       archiveEmpty.textContent = 'No archived transcripts yet.'
       if (archive) {
         archiveSummary.textContent = `${archive.records} records · ${(archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${archive.retentionDays} days`
-        archiveBytes.textContent = `${(archive.compressedBytes / 1024 / 1024).toFixed(1)} MiB`
+        archiveBytes.textContent = `${((archive.compressedBytes + archive.narrationBytes) / 1024 / 1024).toFixed(1)} MiB`
       }
     } catch (error) {
       archiveEmpty.hidden = false
@@ -1218,20 +1110,9 @@
   })
   document.addEventListener('play', (event) => {
     if (event.target instanceof HTMLAudioElement) {
-      stopNarration()
       pauseOtherAudio(event.target)
     }
   }, true)
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.addEventListener('voiceschanged', () => {
-      for (const select of document.querySelectorAll('.transcript-voice-select')) populateTranscriptVoiceSelect(select)
-      for (const button of document.querySelectorAll('.transcript-read-button')) {
-        if (button.textContent === 'Play') {
-          button.disabled = button.dataset.hasTranscript !== 'true' || localTranscriptVoices().length === 0
-        }
-      }
-    })
-  }
   transcriptionEnabled.addEventListener('change', async () => {
     transcriptionEnabled.disabled = true
     try {

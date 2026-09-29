@@ -28,6 +28,9 @@ export interface TranscriptArchiveRecord {
   transcript: string
   audioBytes: number
   compressedBytes: number
+  narrationBytes: number
+  narrationVoice?: string
+  narrationError?: string
 }
 
 export interface TranscriptArchiveStatus {
@@ -36,6 +39,8 @@ export interface TranscriptArchiveStatus {
   databaseBytes: number
   maxBytes: number
   retentionDays: number
+  narrationBytes: number
+  narratedRecords: number
 }
 
 interface ArchiveOptions {
@@ -54,6 +59,9 @@ interface ArchiveRow {
   transcript: string
   audio_bytes: number
   compressed_bytes: number
+  narration_bytes: number
+  narration_voice: string | null
+  narration_error: string | null
 }
 
 export class TranscriptArchive {
@@ -90,6 +98,11 @@ export class TranscriptArchive {
       );
       CREATE INDEX IF NOT EXISTS transcript_archive_started ON transcript_archive(started_ms);
     `)
+    const columns = new Set((this.#database.prepare('PRAGMA table_info(transcript_archive)').all() as unknown as { name: string }[]).map((column) => column.name))
+    if (!columns.has('narration_opus')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_opus BLOB')
+    if (!columns.has('narration_bytes')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_bytes INTEGER NOT NULL DEFAULT 0')
+    if (!columns.has('narration_voice')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_voice TEXT')
+    if (!columns.has('narration_error')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_error TEXT')
     this.prune()
   }
 
@@ -125,7 +138,8 @@ export class TranscriptArchive {
   list(limit = 500): TranscriptArchiveRecord[] {
     const rows = this.#database.prepare(`
       SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
-             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes
+             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             narration_bytes, narration_voice, narration_error
       FROM transcript_archive
       ORDER BY started_ms DESC, id DESC
       LIMIT ?
@@ -136,7 +150,8 @@ export class TranscriptArchive {
   record(id: number): TranscriptArchiveRecord | undefined {
     const row = this.#database.prepare(`
       SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
-             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes
+             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             narration_bytes, narration_voice, narration_error
       FROM transcript_archive WHERE id = ?
     `).get(id) as unknown as ArchiveRow | undefined
     return row ? this.#summary(row) : undefined
@@ -149,29 +164,74 @@ export class TranscriptArchive {
 
   updateTranscript(id: number, transcript: string): TranscriptArchiveRecord | undefined {
     const result = this.#database.prepare(
-      'UPDATE transcript_archive SET transcript = ? WHERE id = ?'
+      `UPDATE transcript_archive
+       SET transcript = ?, narration_opus = NULL, narration_bytes = 0,
+           narration_voice = NULL, narration_error = NULL
+       WHERE id = ?`
     ).run(transcript, id)
     return Number(result.changes) === 0 ? undefined : this.record(id)
   }
 
+  narrationOpus(id: number): Buffer | undefined {
+    const row = this.#database.prepare('SELECT narration_opus FROM transcript_archive WHERE id = ?').get(id) as unknown as { narration_opus: Uint8Array | null } | undefined
+    return row?.narration_opus ? Buffer.from(row.narration_opus) : undefined
+  }
+
+  setNarration(id: number, opus: Buffer, voice: string): TranscriptArchiveRecord | undefined {
+    const result = this.#database.prepare(`
+      UPDATE transcript_archive
+      SET narration_opus = ?, narration_bytes = ?, narration_voice = ?, narration_error = NULL
+      WHERE id = ?
+    `).run(opus, opus.length, voice, id)
+    if (Number(result.changes) === 0) return undefined
+    this.prune()
+    return this.record(id)
+  }
+
+  setNarrationError(id: number, error: string): TranscriptArchiveRecord | undefined {
+    const result = this.#database.prepare(`
+      UPDATE transcript_archive
+      SET narration_opus = NULL, narration_bytes = 0, narration_voice = NULL, narration_error = ?
+      WHERE id = ?
+    `).run(error.slice(0, 1_000), id)
+    return Number(result.changes) === 0 ? undefined : this.record(id)
+  }
+
+  recordsNeedingNarration(limit = 500): TranscriptArchiveRecord[] {
+    const rows = this.#database.prepare(`
+      SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
+             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             narration_bytes, narration_voice, narration_error
+      FROM transcript_archive
+      WHERE transcript <> '' AND narration_opus IS NULL AND narration_error IS NULL
+      ORDER BY started_ms DESC, id DESC
+      LIMIT ?
+    `).all(Math.min(2_000, Math.max(1, Math.floor(limit)))) as unknown as ArchiveRow[]
+    return rows.map((row) => this.#summary(row))
+  }
+
   status(): TranscriptArchiveStatus {
     const row = this.#database.prepare(`
-      SELECT COUNT(*) AS records, COALESCE(SUM(compressed_bytes), 0) AS compressed_bytes
+      SELECT COUNT(*) AS records, COALESCE(SUM(compressed_bytes), 0) AS compressed_bytes,
+             COALESCE(SUM(narration_bytes), 0) AS narration_bytes,
+             COALESCE(SUM(CASE WHEN narration_bytes > 0 THEN 1 ELSE 0 END), 0) AS narrated_records
       FROM transcript_archive
-    `).get() as unknown as { records: number; compressed_bytes: number }
+    `).get() as unknown as { records: number; compressed_bytes: number; narration_bytes: number; narrated_records: number }
     return {
       records: row.records,
       compressedBytes: row.compressed_bytes,
       databaseBytes: this.#databaseBytes(),
       maxBytes: this.#maxBytes,
-      retentionDays: this.#retentionDays
+      retentionDays: this.#retentionDays,
+      narrationBytes: row.narration_bytes,
+      narratedRecords: row.narrated_records
     }
   }
 
   prune(now = Date.now()): void {
     this.#database.prepare('DELETE FROM transcript_archive WHERE started_ms < ?').run(now - this.#retentionMs)
     const total = (): number => (this.#database.prepare(
-      'SELECT COALESCE(SUM(compressed_bytes), 0) AS bytes FROM transcript_archive'
+      'SELECT COALESCE(SUM(compressed_bytes + narration_bytes), 0) AS bytes FROM transcript_archive'
     ).get() as unknown as { bytes: number }).bytes
     while (total() > this.#maxBytes || this.#databaseBytes() > this.#maxBytes) {
       const removed = this.#database.prepare(`
@@ -199,7 +259,10 @@ export class TranscriptArchive {
       ...(row.minimum_discriminator_noise === null ? {} : { minimumDiscriminatorNoise: row.minimum_discriminator_noise }),
       transcript: row.transcript,
       audioBytes: row.audio_bytes,
-      compressedBytes: row.compressed_bytes
+      compressedBytes: row.compressed_bytes,
+      narrationBytes: row.narration_bytes,
+      ...(row.narration_voice === null ? {} : { narrationVoice: row.narration_voice }),
+      ...(row.narration_error === null ? {} : { narrationError: row.narration_error })
     }
   }
 
