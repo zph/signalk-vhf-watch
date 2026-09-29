@@ -6,6 +6,56 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
+interface ByteRange {
+  start: number
+  end: number
+}
+
+export function parseByteRange(value: string | undefined, totalBytes: number): ByteRange | undefined | null {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(totalBytes) || totalBytes <= 0) return null
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim())
+  if (!match || (match[1] === '' && match[2] === '')) return null
+  if (match[1] === '') {
+    const suffixBytes = Number(match[2])
+    if (!Number.isSafeInteger(suffixBytes) || suffixBytes <= 0) return null
+    return { start: Math.max(0, totalBytes - suffixBytes), end: totalBytes - 1 }
+  }
+  const start = Number(match[1])
+  const requestedEnd = match[2] === '' ? totalBytes - 1 : Number(match[2])
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start >= totalBytes || requestedEnd < start) return null
+  return { start, end: Math.min(requestedEnd, totalBytes - 1) }
+}
+
+function sendSeekableWav(
+  request: Request,
+  response: Response,
+  wav: Buffer,
+  filename: string,
+  cacheControl: string
+): void {
+  const range = parseByteRange(request.headers.range, wav.length)
+  const commonHeaders = {
+    'Accept-Ranges': 'bytes',
+    'Content-Type': 'audio/wav',
+    'Cache-Control': cacheControl,
+    'Content-Disposition': `inline; filename="${filename}"`
+  }
+  if (range === null) {
+    response.status(416).set({ ...commonHeaders, 'Content-Range': `bytes */${wav.length}` }).end()
+    return
+  }
+  if (range === undefined) {
+    response.status(200).set({ ...commonHeaders, 'Content-Length': String(wav.length) }).send(wav)
+    return
+  }
+  response.status(206).set({
+    ...commonHeaders,
+    'Content-Length': String(range.end - range.start + 1),
+    'Content-Range': `bytes ${range.start}-${range.end}/${wav.length}`
+  }).send(wav.subarray(range.start, range.end + 1))
+}
+
 function requestedIds(value: unknown, maximum: number): number[] | undefined {
   if (typeof value !== 'string') return undefined
   const ids = value.split(',').map(Number)
@@ -71,12 +121,13 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Archived transcript not found' })
       return
     }
-    response.set({
-      'Content-Type': 'audio/wav',
-      'Content-Length': String(wav.length),
-      'Cache-Control': 'private, max-age=3600',
-      'Content-Disposition': `inline; filename="vhf-transcript-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav"`
-    }).send(wav)
+    sendSeekableWav(
+      request,
+      response,
+      wav,
+      `vhf-transcript-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav`,
+      'private, max-age=3600'
+    )
   })
   read.get('/api/transcript-session.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -99,11 +150,13 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
-    response.set({
-      'Content-Type': 'audio/wav',
-      'Cache-Control': 'no-store, private',
-      'Content-Disposition': `inline; filename="vhf-transcript-${first.channel}-session.wav"`
-    }).send(pcmToWav(pcm, first.sampleRate))
+    sendSeekableWav(
+      request,
+      response,
+      pcmToWav(pcm, first.sampleRate),
+      `vhf-transcript-${first.channel}-session.wav`,
+      'no-store, private'
+    )
   })
   read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -117,12 +170,13 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
-    response.set({
-      'Content-Type': 'audio/wav',
-      'Content-Length': String(wav.length),
-      'Cache-Control': 'private, max-age=3600',
-      'Content-Disposition': `inline; filename="vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav"`
-    }).send(wav)
+    sendSeekableWav(
+      request,
+      response,
+      wav,
+      `vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav`,
+      'private, max-age=3600'
+    )
   })
   read.get('/api/replay-session.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -147,11 +201,13 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
-    response.set({
-      'Content-Type': 'audio/wav',
-      'Cache-Control': 'no-store, private',
-      'Content-Disposition': `inline; filename="vhf-${first.channel}-session.wav"`
-    }).send(pcmToWav(pcm, runtime.config.sampleRate))
+    sendSeekableWav(
+      request,
+      response,
+      pcmToWav(pcm, runtime.config.sampleRate),
+      `vhf-${first.channel}-session.wav`,
+      'no-store, private'
+    )
   })
   read.get('/api/replay/:id/continuous.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
