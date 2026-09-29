@@ -110,6 +110,17 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
+  write.post('/api/transcription', async (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    try {
+      const enabled = (request.body as { enabled?: unknown } | undefined)?.enabled
+      if (typeof enabled !== 'boolean') throw new Error('enabled must be true or false')
+      response.json(await runtime.setTranscriptionEnabled(enabled))
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
   write.delete('/api/replay', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -139,7 +150,8 @@ export function openApi(): object {
         delete: { summary: 'Clear decoded DSC calls', responses: { '204': { description: 'Cleared' } } }
       },
       '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
-      '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } }
+      '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } },
+      '/api/transcription': { post: { summary: 'Durably enable or disable local voice transcription', responses: { '200': { description: 'Updated status' } } } }
     }
   }
 }

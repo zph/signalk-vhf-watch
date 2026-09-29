@@ -18,6 +18,8 @@
   const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
+  const transcriptionEnabled = $('#transcription-enabled')
+  const transcriptionStatus = $('#transcription-status')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   let channels = []
   let listening = false
@@ -61,6 +63,14 @@
       : ''
     receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB private buffer · ${status.replaySegments} segments · ${status.liveListeners} live listener${status.liveListeners === 1 ? '' : 's'}`
+    const transcription = status.transcription
+    transcriptionEnabled.checked = transcription.enabled
+    transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
+    transcriptionStatus.textContent = transcription.enabled
+      ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''} · ${transcription.engine}`
+      : transcription.available
+        ? `Local transcription off · ${transcription.engine} is installed and ready`
+        : 'Local transcription off · install vhf-whisper-runtime to enable it'
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
   }
 
@@ -126,6 +136,24 @@
       caption.className = 'activity-caption'
       caption.textContent = `${activeSeconds.toFixed(1)} sec passes squelch ${replaySquelch.value}`
       detail.append(chart, caption)
+    }
+    if (segment.transcription?.status === 'complete' && segment.transcription.text) {
+      const transcript = document.createElement('div')
+      transcript.className = 'transcript'
+      const heading = document.createElement('strong')
+      heading.textContent = 'Transcript: '
+      transcript.append(heading, document.createTextNode(segment.transcription.text))
+      detail.append(transcript)
+    } else if (['queued', 'transcribing'].includes(segment.transcription?.status)) {
+      const transcript = document.createElement('div')
+      transcript.className = 'transcript'
+      transcript.textContent = segment.transcription.status === 'queued' ? 'Transcript queued…' : 'Transcribing locally…'
+      detail.append(transcript)
+    } else if (segment.transcription?.status === 'error') {
+      const transcript = document.createElement('div')
+      transcript.className = 'transcript'
+      transcript.textContent = `Transcription failed: ${segment.transcription.error}`
+      detail.append(transcript)
     }
     const audio = document.createElement('audio')
     audio.controls = true
@@ -355,6 +383,23 @@
   replaySquelch.addEventListener('change', () => {
     replaySquelchTouched = true
     void updateReplay()
+  })
+  transcriptionEnabled.addEventListener('change', async () => {
+    transcriptionEnabled.disabled = true
+    try {
+      const status = await request('transcription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: transcriptionEnabled.checked })
+      })
+      renderStatus(status)
+      await updateReplay()
+    } catch (error) {
+      setConnection('error', error.message)
+      await updateStatus()
+    } finally {
+      transcriptionEnabled.disabled = false
+    }
   })
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)

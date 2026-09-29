@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=9" />
+  <link rel="stylesheet" href="./styles.css?v=10" />
 </head>
 <body>
   <main>
@@ -35,6 +35,28 @@
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state">Receiver stopped</p>
       </div>
+    </section>
+
+    <section class="timeline-card" aria-labelledby="timeline-title">
+      <div class="timeline-heading">
+        <div>
+          <p class="eyebrow">PAST TWO HOURS</p>
+          <h2 id="timeline-title">Radio timeline</h2>
+        </div>
+        <button id="timeline-latest" type="button">Latest</button>
+      </div>
+      <div class="timeline-selection" aria-live="polite">
+        <strong id="timeline-time">Waiting for audio…</strong>
+        <span id="timeline-offset">The rolling buffer is filling.</span>
+      </div>
+      <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
+      <div class="timeline-scale"><span id="timeline-oldest">2 hr ago</span><span>Now</span></div>
+      <audio id="timeline-audio" controls preload="none"></audio>
+      <div class="timeline-actions">
+        <button id="timeline-older" type="button" disabled>− 1 minute</button>
+        <button id="timeline-newer" type="button" disabled>+ 1 minute</button>
+      </div>
+      <p class="muted">Choose any recorded moment. Playback continues through the following five-second slices.</p>
     </section>
 
     <section class="listen-card" aria-labelledby="live-title">
@@ -90,11 +112,16 @@
               <option value="40">40</option>
             </select>
           </label>
+          <label class="transcription-control" for="transcription-enabled">
+            <input id="transcription-enabled" type="checkbox" />
+            Transcribe voice
+          </label>
           <button id="refresh" type="button">Refresh</button>
           <button id="clear" class="danger" type="button">Clear</button>
         </div>
       </div>
       <p id="retention" class="muted">Audio remains in this Signal K process only.</p>
+      <p id="transcription-status" class="muted">Transcription is off.</p>
       <div id="empty" class="empty">Waiting for the first replay segment…</div>
       <ol id="replay-list" class="replay-list" aria-live="polite"></ol>
     </section>
@@ -111,6 +138,6 @@
       Channel 70 is continuously reserved for DSC and unavailable as voice audio.
     </footer>
   </main>
-  <script src="./main.js?v=9"></script>
+  <script src="./main.js?v=10"></script>
 </body>
 </html>

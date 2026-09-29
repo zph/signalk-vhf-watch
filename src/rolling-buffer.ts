@@ -6,6 +6,12 @@ interface ReplayQualitySpan {
   discriminatorNoise?: number
 }
 
+export interface ReplayTranscription {
+  status: 'queued' | 'transcribing' | 'complete' | 'skipped' | 'error'
+  text: string
+  error?: string
+}
+
 export interface ReplaySegment {
   id: number
   channel: string
@@ -15,6 +21,7 @@ export interface ReplaySegment {
   level: number
   wav: Buffer
   qualitySpans: ReplayQualitySpan[]
+  transcription?: ReplayTranscription
 }
 
 export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav' | 'qualitySpans'> & {

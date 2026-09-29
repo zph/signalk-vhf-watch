@@ -87,6 +87,29 @@ with discriminator-noise metadata. The Recent radio control can therefore apply 
 when a segment is played without changing live listening or future recordings; `Off / raw` is useful
 for investigating weak signals.
 
+### Optional local transcription
+
+Voice transcription is **off by default** and only starts after an operator explicitly enables
+**Transcribe voice** in the VHF Watch page. That choice is stored in the plugin's private data
+directory and survives Signal K restarts. Disabling it stops the worker and clears its queue.
+
+Transcription requires the separately installed `vhf-whisper-runtime` Debian package. The receiver,
+DSC decoder, live audio, and replay remain fully functional without it, and the UI will refuse to
+enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
+`whisper.cpp` `tiny.en-q5_1` model with two CPU threads and a reduced audio context. Only completed
+replay segments that pass the configured RF squelch are queued, one at a time; audio is not uploaded.
+
+For an ARM64 package built from the matching `whisper.cpp` release, run the packaging helper on the
+Pi (or an ARM64 Debian builder), then install the resulting file with `apt install ./vhf-whisper-runtime_*.deb`:
+
+```sh
+packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin \
+  /path/to/whisper.cpp/models/ggml-tiny.en-q5_1.bin /tmp
+```
+
+The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in
+[`docs/WHISPER_BENCHMARK.md`](docs/WHISPER_BENCHMARK.md).
+
 Accepted DSC calls are different: they survive Signal K restarts in the plugin's private data
 directory. The cache is pruned by age (seven days by default), call count (100 by default), and a
 hard serialized-size limit (256 KiB by default). Incomplete, unknown-format, unknown-category, or

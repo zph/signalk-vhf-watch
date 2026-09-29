@@ -4,6 +4,7 @@ import { openApi, registerRoutes } from './api'
 import { normalizeConfig, pluginSchema } from './config'
 import { DscMessageCache } from './dsc-cache'
 import { VhfRuntime } from './runtime'
+import { TranscriptionManager } from './transcription'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -21,7 +22,8 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         maxMessages: config.maxDscMessages,
         maxBytes: config.maxDscCacheKiB * 1024
       })
-      runtime = new VhfRuntime(config, dscCache)
+      const transcription = new TranscriptionManager(path.join(app.getDataDirPath(), 'transcription-settings.json'))
+      runtime = new VhfRuntime(config, dscCache, transcription)
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`

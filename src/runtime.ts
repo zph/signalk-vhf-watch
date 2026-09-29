@@ -15,6 +15,7 @@ import {
 } from './receiver'
 import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
+import { TranscriptionManager, type TranscriptionStatus } from './transcription'
 
 export interface RuntimeStatus {
   enabled: boolean
@@ -47,6 +48,7 @@ export interface RuntimeStatus {
     maximumHz: number
   }
   error?: string
+  transcription: TranscriptionStatus
   receiveOnly: true
 }
 
@@ -57,6 +59,7 @@ export class VhfRuntime extends EventEmitter<{
 }> {
   readonly config: VhfWatchConfig
   readonly replay: RollingReplay
+  readonly transcription: TranscriptionManager
   #channel: VhfChannel
   #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
@@ -73,7 +76,7 @@ export class VhfRuntime extends EventEmitter<{
   readonly #dscCache?: DscMessageCache
   #dscMessages: DscMessage[] = []
 
-  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache) {
+  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache, transcription?: TranscriptionManager) {
     super()
     this.config = config
     this.#channelRegion = config.channelRegion
@@ -82,6 +85,7 @@ export class VhfRuntime extends EventEmitter<{
       ? channelById('16', this.#channelRegion)!
       : configuredChannel
     this.#dscCache = dscCache
+    this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.#dscMessages = dscCache?.list() ?? []
     this.replay = new RollingReplay(
       config.sampleRate,
@@ -103,6 +107,7 @@ export class VhfRuntime extends EventEmitter<{
 
   stop(): void {
     this.#stopReceiver()
+    this.transcription.stop()
     this.replay.flush()
     this.#receiverState = 'Stopped'
     this.#emitStatus()
@@ -181,6 +186,7 @@ export class VhfRuntime extends EventEmitter<{
         }
       } : {}),
       ...(this.#error ? { error: this.#error } : {}),
+      transcription: this.transcription.status(),
       receiveOnly: true
     }
   }
@@ -197,6 +203,12 @@ export class VhfRuntime extends EventEmitter<{
     this.#dscMessages = []
     this.#dscCache?.clear()
     this.#emitStatus()
+  }
+
+  async setTranscriptionEnabled(enabled: boolean): Promise<RuntimeStatus> {
+    await this.transcription.setEnabled(enabled)
+    this.#emitStatus()
+    return this.status()
   }
 
   listenerJoined(): void {
@@ -217,11 +229,17 @@ export class VhfRuntime extends EventEmitter<{
     receiver.on('audio', (chunk) => {
       this.#lastAudioAt = new Date().toISOString()
       this.#level = this.#level * 0.7 + rmsLevel(chunk) * 0.3
-      if (!(receiver instanceof NativeSidecarReceiver)) this.replay.append(chunk)
+      if (!(receiver instanceof NativeSidecarReceiver)) {
+        for (const segment of this.replay.append(chunk)) {
+          this.transcription.enqueue(segment, this.config.squelch)
+        }
+      }
       this.emit('audio', chunk)
     })
     receiver.on('replayAudio', (chunk, discriminatorNoise) => {
-      this.replay.append(chunk, Date.now(), discriminatorNoise)
+      for (const segment of this.replay.append(chunk, Date.now(), discriminatorNoise)) {
+        this.transcription.enqueue(segment, this.config.squelch)
+      }
       this.emit('rawAudio', chunk, discriminatorNoise)
     })
     receiver.on('state', (state) => {
