@@ -203,7 +203,7 @@
   }
 
   async function clearDsc() {
-    if (!window.confirm('Clear decoded DSC calls from memory?')) return
+    if (!window.confirm('Clear all retained decoded DSC calls?')) return
     try {
       await request('dsc', { method: 'DELETE' })
       await updateDsc()

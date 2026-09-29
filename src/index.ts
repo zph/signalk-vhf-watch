@@ -1,6 +1,8 @@
+import path from 'node:path'
 import type { Plugin, PluginConstructor, ServerAPI } from '@signalk/server-api'
 import { openApi, registerRoutes } from './api'
 import { normalizeConfig, pluginSchema } from './config'
+import { DscMessageCache } from './dsc-cache'
 import { VhfRuntime } from './runtime'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
@@ -14,7 +16,12 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
     start: (rawConfig) => {
       runtime?.stop()
       const config = normalizeConfig(rawConfig)
-      runtime = new VhfRuntime(config)
+      const dscCache = new DscMessageCache(path.join(app.getDataDirPath(), 'dsc-calls.json'), {
+        ttlHours: config.dscRetentionHours,
+        maxMessages: config.maxDscMessages,
+        maxBytes: config.maxDscCacheKiB * 1024
+      })
+      runtime = new VhfRuntime(config, dscCache)
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`

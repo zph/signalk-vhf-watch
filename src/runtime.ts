@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { channelById, channelPlan, type ChannelRegion, type VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
 import { DscAudioDecoder, type DscMessage } from './dsc'
+import type { DscMessageCache } from './dsc-cache'
 import {
   canChannelize,
   DemoReceiver,
@@ -64,9 +65,10 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   #dscContinuous = false
   #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
   readonly #dscDecoder = new DscAudioDecoder()
-  readonly #dscMessages: DscMessage[] = []
+  readonly #dscCache?: DscMessageCache
+  #dscMessages: DscMessage[] = []
 
-  constructor(config: VhfWatchConfig) {
+  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache) {
     super()
     this.config = config
     this.#channelRegion = config.channelRegion
@@ -74,6 +76,8 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     this.#channel = config.receiverMode === 'rtl_sdr' && !canChannelize(configuredChannel.frequencyHz)
       ? channelById('16', this.#channelRegion)!
       : configuredChannel
+    this.#dscCache = dscCache
+    this.#dscMessages = dscCache?.list() ?? []
     this.replay = new RollingReplay(
       config.sampleRate,
       config.segmentSeconds,
@@ -184,7 +188,8 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   }
 
   clearDscMessages(): void {
-    this.#dscMessages.length = 0
+    this.#dscMessages = []
+    this.#dscCache?.clear()
     this.#emitStatus()
   }
 
@@ -225,8 +230,13 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       if (level > 0.01) this.#lastDscSignalAt = new Date().toISOString()
       const messages = this.#dscDecoder.push(chunk)
       if (messages.length > 0) {
-        this.#dscMessages.unshift(...messages.reverse())
-        this.#dscMessages.splice(100)
+        if (this.#dscCache) {
+          this.#dscCache.add(messages.reverse())
+          this.#dscMessages = this.#dscCache.list()
+        } else {
+          this.#dscMessages.unshift(...messages.reverse())
+          this.#dscMessages.splice(100)
+        }
         this.#emitStatus()
       }
     })

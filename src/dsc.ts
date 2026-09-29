@@ -132,6 +132,13 @@ export function decodeDscSymbols(symbols: number[], validCharacters = true, id =
   return message
 }
 
+export function isCredibleDscMessage(message: DscMessage): boolean {
+  if (!message.validCharacters || message.format === 'unknown' || message.category === 'unknown') return false
+  if (!EOS.has(message.eos)) return false
+  if (message.format === 'distress') return message.selfMmsi !== undefined && message.rawSymbols.length >= 15
+  return message.targetMmsi !== undefined && message.selfMmsi !== undefined && message.rawSymbols.length >= 13
+}
+
 class BitFramer {
   #register = 0
   #bitCount = 0
@@ -257,9 +264,7 @@ export class DscAudioDecoder {
     }
     // Adjacent sample-phase hypotheses can produce a damaged shadow of the same clean frame. When
     // at least one fully valid decode exists in this batch, prefer it and suppress those shadows.
-    return messages.some((message) => message.validCharacters)
-      ? messages.filter((message) => message.validCharacters)
-      : messages
+    return messages.filter(isCredibleDscMessage)
   }
 
   #toneEnergy(cosine: number[], sine: number[]): number {

@@ -22,6 +22,8 @@ export interface ReceiverMetrics {
   droppedIqChunks: number
   droppedIqBytes: number
   restarts: number
+  voiceDiscriminatorNoise?: number
+  dscDiscriminatorNoise?: number
 }
 
 export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
@@ -125,6 +127,13 @@ export class NativeSidecarReceiver extends AudioReceiver {
           else if (frame.kind === 2) this.emit('dscAudio', frame.payload)
           else if (frame.kind === 3) {
             this.#restartDelayMs = 1_000
+            const state = JSON.parse(frame.payload.toString('utf8')) as {
+              voice_level?: number
+              dsc_level?: number
+            }
+            this.#metrics.voiceDiscriminatorNoise = state.voice_level
+            this.#metrics.dscDiscriminatorNoise = state.dsc_level
+            this.emit('metrics', { ...this.#metrics })
             this.emit('state', `Wideband capture · voice ${this.#channel.label} + continuous DSC 70`)
           }
         }

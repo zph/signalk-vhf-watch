@@ -44,3 +44,22 @@ func TestWritesFramedLittleEndianPCM(t *testing.T) {
 		t.Fatalf("bad PCM payload: %v", written[5:])
 	}
 }
+
+func TestDefaultSquelchMutesUncorrelatedIQNoise(t *testing.T) {
+	channel, err := newChannelizer(2_400_000, 16_000, 50_000, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iq := make([]byte, 2_400_000/5*2)
+	state := uint32(1)
+	for index := range iq {
+		state = state*1664525 + 1013904223
+		iq[index] = byte(state >> 24)
+	}
+	pcm := channel.process(iq)
+	for index, sample := range pcm {
+		if sample != 0 {
+			t.Fatalf("noise sample %d was not squelched: %d (discriminator noise %.3f)", index, sample, channel.level)
+		}
+	}
+}

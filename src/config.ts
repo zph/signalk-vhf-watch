@@ -17,6 +17,9 @@ export interface VhfWatchConfig {
   replayMinutes: number
   segmentSeconds: number
   maxBufferMiB: number
+  dscRetentionHours: number
+  maxDscMessages: number
+  maxDscCacheKiB: number
 }
 
 export function defaultSidecarPath(platform = process.platform, architecture = process.arch): string {
@@ -35,7 +38,10 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   sampleRate: 16_000,
   replayMinutes: 30,
   segmentSeconds: 5,
-  maxBufferMiB: 64
+  maxBufferMiB: 64,
+  dscRetentionHours: 168,
+  maxDscMessages: 100,
+  maxDscCacheKiB: 256
 }
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -71,7 +77,10 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
       : DEFAULT_CONFIG.sampleRate,
     replayMinutes: Math.min(120, Math.max(1, Math.floor(finiteNumber(value.replayMinutes, DEFAULT_CONFIG.replayMinutes)))),
     segmentSeconds: Math.min(30, Math.max(2, Math.floor(finiteNumber(value.segmentSeconds, DEFAULT_CONFIG.segmentSeconds)))),
-    maxBufferMiB: Math.min(256, Math.max(16, Math.floor(finiteNumber(value.maxBufferMiB, DEFAULT_CONFIG.maxBufferMiB))))
+    maxBufferMiB: Math.min(256, Math.max(16, Math.floor(finiteNumber(value.maxBufferMiB, DEFAULT_CONFIG.maxBufferMiB)))),
+    dscRetentionHours: Math.min(720, Math.max(1, Math.floor(finiteNumber(value.dscRetentionHours, DEFAULT_CONFIG.dscRetentionHours)))),
+    maxDscMessages: Math.min(1_000, Math.max(10, Math.floor(finiteNumber(value.maxDscMessages, DEFAULT_CONFIG.maxDscMessages)))),
+    maxDscCacheKiB: Math.min(4_096, Math.max(64, Math.floor(finiteNumber(value.maxDscCacheKiB, DEFAULT_CONFIG.maxDscCacheKiB))))
   }
 }
 
@@ -116,6 +125,9 @@ export const pluginSchema = {
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
     replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 30 },
     segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },
-    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory (MiB)', minimum: 16, maximum: 256, default: 64 }
+    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory (MiB)', minimum: 16, maximum: 256, default: 64 },
+    dscRetentionHours: { type: 'integer', title: 'DSC call retention (hours)', minimum: 1, maximum: 720, default: 168 },
+    maxDscMessages: { type: 'integer', title: 'Maximum stored DSC calls', minimum: 10, maximum: 1000, default: 100 },
+    maxDscCacheKiB: { type: 'integer', title: 'Maximum DSC cache (KiB)', minimum: 64, maximum: 4096, default: 256 }
   }
 } as const

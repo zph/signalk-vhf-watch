@@ -82,6 +82,11 @@ Replay is held only in process memory. Restarting Signal K clears it, and nothin
 configured time window is also capped by a separate memory limit (64 MiB by default), so higher
 sample rates cannot silently exhaust an onboard computer.
 
+Accepted DSC calls are different: they survive Signal K restarts in the plugin's private data
+directory. The cache is pruned by age (seven days by default), call count (100 by default), and a
+hard serialized-size limit (256 KiB by default). Incomplete, unknown-format, unknown-category, or
+character-error decodes are discarded rather than shown as calls.
+
 DSC decoding follows ITU-R M.493's ten-bit character table and 1,300/2,100 Hz VHF signalling. It is
 experimental and must be validated against known-good, legally obtained over-the-air IQ captures;
 never generate a distress alert for testing.

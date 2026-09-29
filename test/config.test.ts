@@ -10,6 +10,9 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.replayMinutes, 120)
   assert.equal(config.segmentSeconds, 2)
   assert.equal(config.maxBufferMiB, 64)
+  assert.equal(config.dscRetentionHours, 168)
+  assert.equal(config.maxDscMessages, 100)
+  assert.equal(config.maxDscCacheKiB, 256)
   assert.equal(config.sidecarPath, defaultSidecarPath())
 })
 

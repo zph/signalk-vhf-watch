@@ -56,7 +56,10 @@ func newChannelizer(inputRate, outputRate, offsetHz int, squelch ...int) (*chann
 	if intermediate%outputRate != 0 {
 		return nil, fmt.Errorf("intermediate rate %d does not divide output rate %d", intermediate, outputRate)
 	}
-	value := &channelizer{inputRate: inputRate, outputRate: outputRate, firstDecimation: first, secondDecimation: intermediate / outputRate}
+	value := &channelizer{
+		inputRate: inputRate, outputRate: outputRate, firstDecimation: first,
+		secondDecimation: intermediate / outputRate, level: math.Pi / 2,
+	}
 	if len(squelch) > 0 {
 		value.squelch = squelch[0]
 	}
@@ -118,13 +121,14 @@ func (c *channelizer) process(iq []byte) []int16 {
 		c.deemphasis += deAlpha * (sample - c.deemphasis)
 		c.checksum += c.deemphasis
 		c.outputSamples++
-		threshold := 0.0
-		if c.squelch > 0 {
-			threshold = 0.002 + float64(c.squelch)*0.00012
-		}
+		// With no carrier, the FM discriminator jumps through nearly random phase angles. A real
+		// narrowband FM carrier makes adjacent phase changes coherent and therefore much smaller.
+		// Higher configured squelch requires a cleaner (lower-noise) discriminator signal.
+		threshold := math.Max(0.05, 0.6-float64(c.squelch)*0.0125)
 		scaled := 0.0
-		if c.level >= threshold {
-			scaled = c.deemphasis * 120_000
+		warmedUp := c.outputSamples > int64(c.outputRate/20)
+		if warmedUp && (c.squelch == 0 || c.level < threshold) {
+			scaled = c.deemphasis * 80_000
 		}
 		output = append(output, int16(math.Max(-32768, math.Min(32767, math.Round(scaled)))))
 	}

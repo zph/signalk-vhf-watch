@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bchCheck, bchEncode, decodeDscSymbols, DscAudioDecoder } from '../src/dsc'
+import { bchCheck, bchEncode, decodeDscSymbols, DscAudioDecoder, isCredibleDscMessage } from '../src/dsc'
 
 function codewordBits(symbol: number): number[] {
   const codeword = bchEncode(symbol)
@@ -72,4 +72,11 @@ test('parses the repeated format symbol in the Signal Identification Wiki VHF sa
   assert.equal(message.targetMmsi, '247365000')
   assert.equal(message.selfMmsi, '247365000')
   assert.equal(message.eos, 117)
+})
+
+test('rejects incomplete or error-marked DSC decodes', () => {
+  const unknown = decodeDscSymbols([7, 4, 9, 117], true)
+  const damaged = decodeDscSymbols([120, 36, 60, 12, 34, 50, 100, 31, 60, 98, 76, 50, 117], false)
+  assert.equal(isCredibleDscMessage(unknown), false)
+  assert.equal(isCredibleDscMessage(damaged), false)
 })
