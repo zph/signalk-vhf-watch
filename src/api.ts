@@ -7,7 +7,7 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 30
+const UI_VERSION = 31
 
 interface ByteRange {
   start: number
@@ -355,8 +355,11 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     })
   })
 
-  const write = router.access('readwrite')
-  write.post('/api/channel', (request: Request, response: Response) => {
+  // Tuning changes only the receive-only SDR session. Keep it usable from the
+  // bundled webapp with normal read access; destructive and durable processing
+  // controls below continue to require read/write authorization.
+  const tune = router.access('readonly')
+  tune.post('/api/channel', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
@@ -366,7 +369,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
-  write.post('/api/slots', (request: Request, response: Response) => {
+  tune.post('/api/slots', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
@@ -378,7 +381,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
-  write.post('/api/region', (request: Request, response: Response) => {
+  tune.post('/api/region', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
@@ -388,6 +391,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
+  const write = router.access('readwrite')
   write.post('/api/transcription', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return

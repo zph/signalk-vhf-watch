@@ -18,6 +18,7 @@ import { rmsLevel } from './wav'
 import { TranscriptionManager, type TranscriptionStatus } from './transcription'
 import { discriminatorThreshold } from './squelch'
 import { NarrationManager, type NarrationStatus } from './narration'
+import type { TuningSettings } from './tuning-settings'
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
@@ -97,9 +98,16 @@ export class VhfRuntime extends EventEmitter<{
   #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscCache?: DscMessageCache
+  readonly #saveTuning?: (settings: TuningSettings) => void
   #dscMessages: DscMessage[] = []
 
-  constructor(config: VhfWatchConfig, dscCache?: DscMessageCache, transcription?: TranscriptionManager, narration?: NarrationManager) {
+  constructor(
+    config: VhfWatchConfig,
+    dscCache?: DscMessageCache,
+    transcription?: TranscriptionManager,
+    narration?: NarrationManager,
+    saveTuning?: (settings: TuningSettings) => void
+  ) {
     super()
     this.config = config
     this.#channelRegion = config.channelRegion
@@ -113,6 +121,7 @@ export class VhfRuntime extends EventEmitter<{
       ? configuredSlotB
       : this.#dscChannel()
     this.#dscCache = dscCache
+    this.#saveTuning = saveTuning
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.narration = narration
     this.#dscMessages = dscCache?.list() ?? []
@@ -173,6 +182,7 @@ export class VhfRuntime extends EventEmitter<{
         this.#startReceiver()
       } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
     }
+    this.#persistTuning()
     return this.status()
   }
 
@@ -209,6 +219,7 @@ export class VhfRuntime extends EventEmitter<{
       this.#startReceiver()
     } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(slotA)
     if (mode === 'scan' && !singleFrequency && this.config.enabled) this.#scheduleScan(0)
+    this.#persistTuning()
     this.#emitStatus()
     return this.status()
   }
@@ -216,6 +227,7 @@ export class VhfRuntime extends EventEmitter<{
   setRegion(region: ChannelRegion): RuntimeStatus {
     if (!['US', 'CA', 'US_CA'].includes(region)) throw new Error(`Unknown channel plan: ${region}`)
     this.#channelRegion = region
+    this.config.channelRegion = region
     const channel = channelById(this.#channel.id, region) ?? channelById('16', region)!
     const wasSingleFrequency = this.#singleFrequency
     const singleFrequency = this.config.receiverMode === 'rtl_sdr' && !canChannelize(channel.frequencyHz)
@@ -235,6 +247,8 @@ export class VhfRuntime extends EventEmitter<{
       this.#slotAConfigured = channel
       this.#singleFrequency = singleFrequency
     }
+    this.config.initialChannel = this.#slotAConfigured.id
+    this.#persistTuning()
     this.#emitStatus()
     return this.status()
   }
@@ -245,6 +259,15 @@ export class VhfRuntime extends EventEmitter<{
 
   channels(): VhfChannel[] {
     return channelPlan(this.#channelRegion)
+  }
+
+  #persistTuning(): void {
+    this.#saveTuning?.({
+      channelRegion: this.#channelRegion,
+      slotAMode: this.#slotAMode,
+      slotAChannel: this.#slotAConfigured.id,
+      slotBChannel: this.#slotB.id
+    })
   }
 
   status(): RuntimeStatus {

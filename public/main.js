@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 30
+  const CLIENT_BUILD = 31
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -66,6 +66,7 @@
   let timelineAwaitingChannel
   let archiveRenderSignature = ''
   let singleFrequencyActive = false
+  let slotConfigurationPending = false
 
   function storedPreference(key, fallback) {
     try { return window.localStorage.getItem(`vhf-watch:${key}`) ?? fallback } catch { return fallback }
@@ -158,10 +159,12 @@
     }
     timelineActiveSlotAChannel = activeSlotAChannel
     if (!hadActiveSlotAChannel && replayTimeline.length > 0) selectLatestActiveTimeline()
-    regionSelect.value = status.channelRegion
-    slotAMode.value = status.slots.A.mode
-    slotAChannel.value = status.slots.A.configuredChannel.id
-    slotBChannel.value = status.slots.B.channel.id
+    if (!slotConfigurationPending) {
+      if (document.activeElement !== regionSelect) regionSelect.value = status.channelRegion
+      if (document.activeElement !== slotAMode) slotAMode.value = status.slots.A.mode
+      if (document.activeElement !== slotAChannel) slotAChannel.value = status.slots.A.configuredChannel.id
+      if (document.activeElement !== slotBChannel) slotBChannel.value = status.slots.B.channel.id
+    }
     slotADisplay.textContent = status.slots.A.currentChannel.label
     slotAFrequency.textContent = `${(status.slots.A.currentChannel.frequencyHz / 1_000_000).toFixed(3)} MHz`
     slotAModeLabel.textContent = status.slots.A.mode === 'scan' ? 'Scanning' : 'Fixed'
@@ -1003,6 +1006,8 @@
   async function configureSlots() {
     const selected = channels.find((channel) => channel.id === slotAChannel.value)
     if (selected?.requiresSingleFrequency) slotAMode.value = 'fixed'
+    const selection = { mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBChannel: slotBChannel.value }
+    slotConfigurationPending = true
     slotAMode.disabled = true
     slotAChannel.disabled = true
     slotBChannel.disabled = true
@@ -1010,12 +1015,13 @@
       const status = await request('slots', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBChannel: slotBChannel.value })
+        body: JSON.stringify(selection)
       })
       renderStatus(status)
     } catch (error) {
       setConnection('error', error.message)
     } finally {
+      slotConfigurationPending = false
       slotAMode.disabled = singleFrequencyActive
       slotAChannel.disabled = false
       slotBChannel.disabled = singleFrequencyActive
@@ -1023,6 +1029,8 @@
   }
 
   async function changeRegion() {
+    const selectedRegion = regionSelect.value
+    slotConfigurationPending = true
     regionSelect.disabled = true
     slotAChannel.disabled = true
     slotBChannel.disabled = true
@@ -1030,13 +1038,14 @@
       const status = await request('region', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region: regionSelect.value })
+        body: JSON.stringify({ region: selectedRegion })
       })
       await loadChannels()
       renderStatus(status)
     } catch (error) {
       setConnection('error', error.message)
     } finally {
+      slotConfigurationPending = false
       regionSelect.disabled = false
       slotAChannel.disabled = false
       slotAMode.disabled = singleFrequencyActive

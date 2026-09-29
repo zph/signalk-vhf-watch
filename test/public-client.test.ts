@@ -37,6 +37,9 @@ test('minimal web client keeps receiver monitoring and one unified activity work
   assert.match(html, /transcription-threads/)
 
   assert.match(script, /request\('slots'/)
+  assert.match(script, /slotConfigurationPending/)
+  assert.match(script, /document\.activeElement !== slotAChannel/)
+  assert.match(script, /const selection = \{ mode: slotAMode\.value, slotAChannel: slotAChannel\.value, slotBChannel: slotBChannel\.value \}/)
   assert.match(script, /single-frequency; pauses Slot B \+ DSC/)
   assert.match(script, /availableSlotB/)
   assert.match(script, /MINIMUM_REPLAY_SIGNAL_SECONDS/)

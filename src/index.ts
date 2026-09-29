@@ -8,6 +8,7 @@ import { VhfRuntime } from './runtime'
 import { TranscriptionManager } from './transcription'
 import { TranscriptArchive } from './transcript-archive'
 import { NarrationManager } from './narration'
+import { TuningSettingsStore } from './tuning-settings'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -19,7 +20,15 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
     schema: pluginSchema,
     start: (rawConfig) => {
       runtime?.stop()
-      const config = normalizeConfig(rawConfig)
+      const tuningSettings = new TuningSettingsStore(path.join(app.getDataDirPath(), 'tuning-settings.json'))
+      const savedTuning = tuningSettings.load()
+      const config = normalizeConfig({
+        ...(rawConfig && typeof rawConfig === 'object' ? rawConfig : {}),
+        ...(savedTuning.channelRegion ? { channelRegion: savedTuning.channelRegion } : {}),
+        ...(savedTuning.slotAMode ? { slotAMode: savedTuning.slotAMode } : {}),
+        ...(savedTuning.slotAChannel ? { initialChannel: savedTuning.slotAChannel } : {}),
+        ...(savedTuning.slotBChannel ? { slotBChannel: savedTuning.slotBChannel } : {})
+      })
       const dscCache = new DscMessageCache(path.join(app.getDataDirPath(), 'dsc-calls.json'), {
         ttlHours: config.dscRetentionHours,
         maxMessages: config.maxDscMessages,
@@ -35,7 +44,7 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)
       })
       transcription.attachNarrator(narration)
-      runtime = new VhfRuntime(config, dscCache, transcription, narration)
+      runtime = new VhfRuntime(config, dscCache, transcription, narration, (settings) => tuningSettings.save(settings))
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`
