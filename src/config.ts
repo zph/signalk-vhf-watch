@@ -42,7 +42,7 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   squelch: 20,
   sampleRate: 16_000,
   replayMinutes: 120,
-  segmentSeconds: 5,
+  segmentSeconds: 60,
   maxBufferMiB: 256,
   dscRetentionHours: 168,
   maxDscMessages: 100,
@@ -85,7 +85,11 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
       ? Number(value.sampleRate)
       : DEFAULT_CONFIG.sampleRate,
     replayMinutes: Math.min(120, Math.max(1, Math.floor(finiteNumber(value.replayMinutes, DEFAULT_CONFIG.replayMinutes)))),
-    segmentSeconds: Math.min(30, Math.max(2, Math.floor(finiteNumber(value.segmentSeconds, DEFAULT_CONFIG.segmentSeconds)))),
+    segmentSeconds: (() => {
+      const requested = Math.floor(finiteNumber(value.segmentSeconds, DEFAULT_CONFIG.segmentSeconds))
+      // Migrate the original five-second storage slices to the seamless one-minute format.
+      return requested === 5 ? 60 : Math.min(120, Math.max(2, requested))
+    })(),
     maxBufferMiB: Math.min(256, Math.max(16, Math.floor(finiteNumber(value.maxBufferMiB, DEFAULT_CONFIG.maxBufferMiB)))),
     dscRetentionHours: Math.min(720, Math.max(1, Math.floor(finiteNumber(value.dscRetentionHours, DEFAULT_CONFIG.dscRetentionHours)))),
     maxDscMessages: Math.min(1_000, Math.max(10, Math.floor(finiteNumber(value.maxDscMessages, DEFAULT_CONFIG.maxDscMessages)))),
@@ -138,7 +142,7 @@ export const pluginSchema = {
     squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
     replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 120 },
-    segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },
+    segmentSeconds: { type: 'integer', title: 'Replay storage slice (seconds; playback is seamless)', minimum: 2, maximum: 120, default: 60 },
     maxBufferMiB: { type: 'integer', title: 'Maximum replay memory per voice slot (MiB)', minimum: 16, maximum: 256, default: 256 },
     dscRetentionHours: { type: 'integer', title: 'DSC call retention (hours)', minimum: 1, maximum: 720, default: 168 },
     maxDscMessages: { type: 'integer', title: 'Maximum stored DSC calls', minimum: 10, maximum: 1000, default: 100 },

@@ -107,7 +107,7 @@ add Medium or Large model files without changing the plugin. Off-air NOAA
 marine forecasts showed that Base recovered substantially more radio speech and nearby place names
 than Tiny. Timestamp-aware decoding is retained for reliable long-window alignment; the plugin strips
 the timestamp labels before display. Adjacent
-five-second replay slices are combined into one-minute recognition windows. Successive windows reuse
+one-minute replay slices are exposed to the timeline while they are still growing and are combined into recognition windows. Successive windows reuse
 ten seconds of audio for linguistic context, then reconcile the repeated text with the preceding
 result so it is not shown twice. A shorter final window runs after the channel has been quiet for six
 seconds. The decode watchdog is at least 90 seconds and scales to twice the audio duration, so a full

@@ -15,10 +15,11 @@ resource cost on the 8 GiB Pi. A 180 Hz high-pass,
 preprocessing dependency. The production recommendation is therefore base.en Q5, two threads, the
 default audio context, and timestamp-aware decoding, with transcription still explicitly opt-in.
 
-The plugin's five-second replay slices were also tested independently. They fragmented sentences,
+The plugin's original five-second replay slices were also tested independently. They fragmented sentences,
 lost words at boundaries, and one returned only a single token. Fifteen-second windows still omitted
 substantial context; a 30-second window improved continuous speech, and the uninterrupted 44.3-second
-capture was markedly better. Transcription therefore targets 60-second windows, reuses 10 seconds of
+capture was markedly better. Storage now uses growing 60-second slices, while web playback stitches
+them into one continuous synthetic stream. Transcription targets 60-second windows, reuses 10 seconds of
 audio in the next window, and reconciles the repeated transcript prefix with the preceding result.
 
 Measured on `boat-pi` on 2026-09-29 while VHF Watch continued its 2.4 MS/s RTL-SDR capture of

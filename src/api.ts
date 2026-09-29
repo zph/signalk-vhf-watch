@@ -89,6 +89,44 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       'Content-Disposition': `inline; filename="vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav"`
     }).send(wav)
   })
+  read.get('/api/replay/:id/continuous.wav', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const id = Number(request.params.id)
+    const segment = runtime.replaySegment(id)
+    const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
+    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
+    const chunks = runtime.replayPcmFrom(id, squelch)
+    if (!segment || !chunks) {
+      response.status(404).json({ error: 'Replay segment not found' })
+      return
+    }
+    response.status(200)
+    response.set({
+      'Content-Type': 'audio/wav',
+      'Cache-Control': 'no-store, private',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `inline; filename="vhf-${segment.channel}-continuous.wav"`
+    })
+    response.flushHeaders()
+    response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
+    for (const chunk of chunks) response.write(chunk)
+    if (!runtime.canTailReplay(id)) {
+      response.end()
+      return
+    }
+    const event = segment.slot === 'A' ? 'rawAudio' : 'rawSlotBAudio'
+    const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
+      if (response.destroyed) return
+      const open = discriminatorNoise < discriminatorThreshold(squelch)
+      response.write(open ? chunk : Buffer.alloc(chunk.length))
+    }
+    runtime.on(event, onRawAudio)
+    request.on('close', () => {
+      runtime.off(event, onRawAudio)
+      if (!response.destroyed) response.end()
+    })
+  })
   read.get('/api/live.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -209,6 +247,7 @@ export function openApi(): object {
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
       '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
+      '/api/replay/{id}/continuous.wav': { get: { summary: 'Play seamless replay through the live edge', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
       '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },

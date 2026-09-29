@@ -18,6 +18,12 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.sidecarPath, defaultSidecarPath())
 })
 
+test('uses one-minute storage slices and migrates the original five-second setting', () => {
+  assert.equal(normalizeConfig({}).segmentSeconds, 60)
+  assert.equal(normalizeConfig({ segmentSeconds: 5 }).segmentSeconds, 60)
+  assert.equal(normalizeConfig({ segmentSeconds: 90 }).segmentSeconds, 90)
+})
+
 test('accepts scan mode and a second nearby voice channel', () => {
   const config = normalizeConfig({ slotAMode: 'scan', slotBChannel: '68' })
   assert.equal(config.slotAMode, 'scan')

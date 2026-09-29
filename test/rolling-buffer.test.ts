@@ -26,6 +26,35 @@ test('flushes partial audio under its original channel before retuning', () => {
   assert.equal(replay.list()[0]?.channel, '68')
 })
 
+test('joins consecutive replay PCM without WAV boundaries and stops at a retune', () => {
+  const replay = new RollingReplay(8_000, 1, 1, 'WX4')
+  const first = Buffer.alloc(16_000, 1)
+  const second = Buffer.alloc(16_000, 2)
+  replay.append(Buffer.concat([first, second]), Date.UTC(2026, 8, 29), 0.10)
+  const wx4 = replay.list().slice().reverse()
+  replay.setChannel('16')
+  replay.append(Buffer.alloc(16_000, 3), Date.UTC(2026, 8, 29, 0, 0, 2), 0.10)
+
+  const pcm = replay.pcmFrom(wx4[0]!.id, 20)
+  assert.deepEqual(pcm?.map((chunk) => chunk.length), [first.length, second.length])
+  assert.equal(Buffer.concat(pcm ?? []).includes(Buffer.from('RIFF')), false)
+  assert.equal(pcm?.[0]?.readUInt8(0), 1)
+  assert.equal(pcm?.[1]?.readUInt8(0), 2)
+})
+
+test('exposes a growing storage slice immediately with a stable playable id', () => {
+  const replay = new RollingReplay(8_000, 60, 120, 'WX4')
+  replay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 8, 29), 0.10)
+  const first = replay.list(20)[0]!
+  assert.equal(first.durationSeconds, 1)
+  assert.equal(replay.wavFor(first.id, 20)?.subarray(0, 4).toString(), 'RIFF')
+
+  replay.append(Buffer.alloc(16_000, 2), Date.UTC(2026, 8, 29, 0, 0, 1), 0.10)
+  const growing = replay.list(20)[0]!
+  assert.equal(growing.id, first.id)
+  assert.equal(growing.durationSeconds, 2)
+})
+
 test('caps retention by memory as well as time', () => {
   const segmentBytes = 8_000 * 2 * 2
   const replay = new RollingReplay(8_000, 2, 60, '16', segmentBytes + 44)

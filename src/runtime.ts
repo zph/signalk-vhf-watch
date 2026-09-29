@@ -63,6 +63,7 @@ export interface RuntimeStatus {
 export class VhfRuntime extends EventEmitter<{
   audio: [Buffer]
   rawAudio: [Buffer, number]
+  rawSlotBAudio: [Buffer, number]
   status: [RuntimeStatus]
 }> {
   readonly config: VhfWatchConfig
@@ -298,6 +299,13 @@ export class VhfRuntime extends EventEmitter<{
 
   replaySegment(id: number) { return this.replay.get(id) ?? this.replayB.get(id) }
   replayWavFor(id: number, squelch: number) { return this.replay.wavFor(id, squelch) ?? this.replayB.wavFor(id, squelch) }
+  replayPcmFrom(id: number, squelch: number) { return this.replay.pcmFrom(id, squelch) ?? this.replayB.pcmFrom(id, squelch) }
+  canTailReplay(id: number): boolean {
+    const segment = this.replaySegment(id)
+    if (!segment || !this.config.enabled) return false
+    if (segment.slot === 'A') return segment.channel === this.#channel.id
+    return !this.#singleFrequency && this.#slotB.id !== '70' && segment.channel === this.#slotB.id
+  }
   deleteReplay(id: number): boolean { return this.replay.delete(id) || this.replayB.delete(id) }
   clearReplay(): void { this.replay.clear(); this.replayB.clear() }
 
@@ -364,6 +372,7 @@ export class VhfRuntime extends EventEmitter<{
       for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
+      this.emit('rawSlotBAudio', chunk, discriminatorNoise)
     })
     receiver.on('state', (state) => {
       this.#receiverState = state

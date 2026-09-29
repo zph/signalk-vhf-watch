@@ -47,6 +47,8 @@
   let timelineWaitingAtEdge = false
   let timelineWindowMinutes = 120
   let timelineReceiverRows = []
+  let timelineActiveSlotAChannel
+  let timelineAwaitingChannel
   let singleFrequencyActive = false
 
   async function request(path, options) {
@@ -68,8 +70,32 @@
     return channels.find((channel) => channel.id === id)?.purpose || '—'
   }
 
+  function channelDisplay(id) {
+    const channel = channels.find((entry) => entry.id === id)
+    if (!channel) return `CH ${id}`
+    return channel.weather ? `${channel.label} · ${channel.purpose}` : `CH ${channel.label}`
+  }
+
+  function channelFrequencyDisplay(id) {
+    const frequencyHz = channelFrequency(id)
+    return frequencyHz ? `${(frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
+  }
+
   function renderStatus(status) {
     singleFrequencyActive = status.captureMode === 'single_frequency'
+    const activeSlotAChannel = status.slots.A.currentChannel.id
+    if (timelineActiveSlotAChannel && timelineActiveSlotAChannel !== activeSlotAChannel) {
+      timelineAwaitingChannel = activeSlotAChannel
+      timelineFollowingLive = true
+      timelineWaitingAtEdge = false
+      timelineSegmentId = undefined
+      timelineAudio.pause()
+      timelineAudio.removeAttribute('src')
+      timelineAudio.load()
+      timelineTime.textContent = `Waiting for ${channelDisplay(activeSlotAChannel)} audio…`
+      timelineOffset.textContent = channelFrequencyDisplay(activeSlotAChannel)
+    }
+    timelineActiveSlotAChannel = activeSlotAChannel
     regionSelect.value = status.channelRegion
     slotAMode.value = status.slots.A.mode
     slotAChannel.value = status.slots.A.configuredChannel.id
@@ -257,7 +283,7 @@
       const label = document.createElement('div')
       label.className = 'frequency-label'
       const channel = document.createElement('strong')
-      channel.textContent = `Slot ${row.slot} · CH ${row.channel}`
+      channel.textContent = `Slot ${row.slot} · ${channelDisplay(row.channel)}`
       const frequency = document.createElement('span')
       frequency.textContent = row.frequencyHz ? `${(row.frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
       label.append(channel, frequency)
@@ -291,7 +317,7 @@
         button.style.setProperty('--burst-opacity', (0.16 + strength * 0.84).toFixed(2))
         button.style.setProperty('--burst-glow', `${(4 + strength * 10).toFixed(1)}px`)
         const time = new Date(mark.runStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        button.setAttribute('aria-label', `Listen to Slot ${row.slot}, channel ${row.channel}, ${frequency.textContent}, activity burst at ${time}`)
+        button.setAttribute('aria-label', `Listen to Slot ${row.slot}, ${channelDisplay(row.channel)}, ${frequency.textContent}, activity burst at ${time}`)
         button.addEventListener('click', () => {
           timelineFollowingLive = false
           timelineWaitingAtEdge = false
@@ -321,10 +347,10 @@
     timelineRange.value = String(index)
     timelineSegmentId = segment.id
     timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · CH ${segment.channel}`
+    timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
     timelineOlder.disabled = index === 0
     timelineNewer.disabled = index === replayTimeline.length - 1
-    const source = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
+    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
     highlightFrequencyBurst()
@@ -343,6 +369,25 @@
       timelineOffset.textContent = 'The rolling buffer is filling.'
       timelineOlder.disabled = true
       timelineNewer.disabled = true
+      renderFrequencyMap()
+      return
+    }
+    if (timelineAwaitingChannel) {
+      const matchingIndex = replayTimeline.findLastIndex((segment) =>
+        segment.slot === 'A' && segment.channel === timelineAwaitingChannel
+      )
+      if (matchingIndex < 0) {
+        timelineRange.disabled = true
+        timelineLatest.disabled = true
+        timelineTime.textContent = `Waiting for ${channelDisplay(timelineAwaitingChannel)} audio…`
+        timelineOffset.textContent = channelFrequencyDisplay(timelineAwaitingChannel)
+        renderFrequencyMap()
+        return
+      }
+      timelineAwaitingChannel = undefined
+      timelineRange.disabled = false
+      timelineLatest.disabled = false
+      selectTimelineIndex(matchingIndex)
       renderFrequencyMap()
       return
     }
@@ -381,7 +426,7 @@
       ? ''
       : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
     const label = document.createElement('div')
-    label.textContent = `Slot ${segment.slot} · CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
+    label.textContent = `Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
     detail.append(label)
     if (Array.isArray(segment.activity)) {
       const namespace = 'http://www.w3.org/2000/svg'
@@ -632,6 +677,7 @@
   timelineOlder.addEventListener('click', () => moveTimeline(-60_000))
   timelineNewer.addEventListener('click', () => moveTimeline(60_000))
   timelineLatest.addEventListener('click', () => {
+    timelineAwaitingChannel = undefined
     timelineFollowingLive = true
     timelineWaitingAtEdge = false
     selectTimelineIndex(replayTimeline.length - 1, true)

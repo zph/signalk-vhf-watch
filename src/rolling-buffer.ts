@@ -100,7 +100,9 @@ export class RollingReplay {
   }
 
   list(squelch?: number): ReplaySegmentSummary[] {
-    return this.#segments.slice().reverse().map(({ wav, qualitySpans, ...segment }) => {
+    const pending = this.#pendingSegment()
+    const segments = pending ? [...this.#segments, pending] : this.#segments
+    return segments.slice().reverse().map(({ wav, qualitySpans, ...segment }) => {
       const measured = qualitySpans.flatMap((span) => span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise])
       return {
         ...segment,
@@ -112,7 +114,8 @@ export class RollingReplay {
   }
 
   get(id: number): ReplaySegment | undefined {
-    return this.#segments.find((segment) => segment.id === id)
+    return this.#segments.find((segment) => segment.id === id) ??
+      (this.#pending.length >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
   }
 
   wavFor(id: number, squelch: number): Buffer | undefined {
@@ -128,9 +131,31 @@ export class RollingReplay {
     return wav
   }
 
+  pcmFrom(id: number, squelch: number): Buffer[] | undefined {
+    const pending = this.#pendingSegment()
+    const segments = pending ? [...this.#segments, pending] : this.#segments
+    const start = segments.findIndex((segment) => segment.id === id)
+    if (start < 0) return undefined
+    const channel = segments[start]!.channel
+    const chunks: Buffer[] = []
+    for (const segment of segments.slice(start)) {
+      if (segment.channel !== channel) break
+      const wav = this.wavFor(segment.id, squelch)
+      if (wav) chunks.push(wav.subarray(44))
+    }
+    return chunks
+  }
+
   delete(id: number): boolean {
     const index = this.#segments.findIndex((segment) => segment.id === id)
-    if (index < 0) return false
+    if (index < 0) {
+      if (this.#pending.length < 2 || id !== this.#sequence + this.#sequenceStep) return false
+      this.#pending = Buffer.alloc(0)
+      this.#pendingQuality = []
+      this.#pendingStartedAt = Date.now()
+      this.#sequence += this.#sequenceStep
+      return true
+    }
     this.#segments.splice(index, 1)
     return true
   }
@@ -200,9 +225,27 @@ export class RollingReplay {
   }
 
   #store(pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {
+    this.#sequence += this.#sequenceStep
+    const segment = this.#createSegment(this.#sequence, pcm, startedAtMs, qualitySpans)
+    this.#segments.push(segment)
+    if (this.#segments.length > this.#maxSegments) this.#segments.splice(0, this.#segments.length - this.#maxSegments)
+    return segment
+  }
+
+  #pendingSegment(): ReplaySegment | undefined {
+    if (this.#pending.length < 2) return undefined
+    return this.#createSegment(
+      this.#sequence + this.#sequenceStep,
+      this.#pending,
+      this.#pendingStartedAt,
+      this.#pendingQuality.map((span) => ({ ...span }))
+    )
+  }
+
+  #createSegment(id: number, pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {
     const durationSeconds = pcm.length / 2 / this.#sampleRate
-    const segment: ReplaySegment = {
-      id: this.#sequence += this.#sequenceStep,
+    return {
+      id,
       slot: this.#slot,
       channel: this.#channel,
       startedAt: new Date(startedAtMs).toISOString(),
@@ -212,8 +255,5 @@ export class RollingReplay {
       wav: pcmToWav(pcm, this.#sampleRate),
       qualitySpans
     }
-    this.#segments.push(segment)
-    if (this.#segments.length > this.#maxSegments) this.#segments.splice(0, this.#segments.length - this.#maxSegments)
-    return segment
   }
 }
