@@ -1,5 +1,7 @@
 # Signal K VHF Watch
 
+**EXPERIMENTAL**
+
 Receive-only marine VHF monitoring for Signal K with a dedicated touch-friendly web interface,
 authenticated live audio, and a private rolling replay buffer.
 
