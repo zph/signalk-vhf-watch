@@ -7,6 +7,7 @@ interface WorkerConfig {
   voiceFrequencyHz: number
   dscFrequencyHz: number
   squelch: number
+  channelKind?: 'voice' | 'dsc' | 'both'
 }
 
 interface TuneMessage {
@@ -135,30 +136,34 @@ function gcd(left: number, right: number): number {
 }
 
 const config = workerData as WorkerConfig
-const voice = new NfmChannelizer(
-  config.iqSampleRate,
-  config.audioSampleRate,
-  config.voiceFrequencyHz - config.centerHz,
-  config.squelch
+const voice = config.channelKind === 'dsc' ? undefined : new NfmChannelizer(
+  config.iqSampleRate, config.audioSampleRate,
+  config.voiceFrequencyHz - config.centerHz, config.squelch
 )
 // DSC must never be squelched; its 24 kHz output gives exactly 20 samples per 1200-baud symbol.
-const dsc = new NfmChannelizer(config.iqSampleRate, 24_000, config.dscFrequencyHz - config.centerHz, 0)
+const dsc = config.channelKind === 'voice' ? undefined : new NfmChannelizer(
+  config.iqSampleRate, 24_000, config.dscFrequencyHz - config.centerHz, 0
+)
 
 parentPort?.on('message', (message: TuneMessage | IqMessage) => {
   try {
     if (message.type === 'tune') {
-      voice.tune(message.voiceFrequencyHz - config.centerHz)
+      voice?.tune(message.voiceFrequencyHz - config.centerHz)
       return
     }
     const samples = new Uint8Array(message.iq)
-    const voicePcm = voice.process(samples)
-    const dscPcm = dsc.process(samples)
-    const voiceBuffer = new ArrayBuffer(voicePcm.byteLength)
-    new Uint8Array(voiceBuffer).set(new Uint8Array(voicePcm.buffer, voicePcm.byteOffset, voicePcm.byteLength))
-    const dscBuffer = new ArrayBuffer(dscPcm.byteLength)
-    new Uint8Array(dscBuffer).set(new Uint8Array(dscPcm.buffer, dscPcm.byteOffset, dscPcm.byteLength))
-    parentPort?.postMessage({ type: 'voice', pcm: voiceBuffer }, [voiceBuffer])
-    parentPort?.postMessage({ type: 'dsc', pcm: dscBuffer }, [dscBuffer])
+    if (voice) {
+      const pcm = voice.process(samples)
+      const buffer = new ArrayBuffer(pcm.byteLength)
+      new Uint8Array(buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength))
+      parentPort?.postMessage({ type: 'voice', pcm: buffer }, [buffer])
+    }
+    if (dsc) {
+      const pcm = dsc.process(samples)
+      const buffer = new ArrayBuffer(pcm.byteLength)
+      new Uint8Array(buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength))
+      parentPort?.postMessage({ type: 'dsc', pcm: buffer }, [buffer])
+    }
     parentPort?.postMessage({ type: 'ready' })
   } catch (error) {
     parentPort?.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
