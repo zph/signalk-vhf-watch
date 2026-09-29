@@ -10,7 +10,6 @@
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
   const listenButton = $('#listen')
-  const liveAudio = $('#live-audio')
   const liveSquelch = $('#live-squelch')
   const liveStatus = $('#live-status')
   const replayList = $('#replay-list')
@@ -21,6 +20,9 @@
   const replaySquelch = $('#replay-squelch')
   let channels = []
   let listening = false
+  let liveAbort
+  let liveContext
+  let liveGeneration = 0
   let poll
   let replaySquelchTouched = false
 
@@ -150,8 +152,7 @@
       renderStatus(status)
       purpose.textContent = channelPurpose(channelSelect.value)
       if (listening) {
-        liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&channel=${encodeURIComponent(channelSelect.value)}&t=${Date.now()}`
-        await liveAudio.play()
+        await restartLiveStream()
       }
     } catch (error) {
       setConnection('error', error.message)
@@ -179,30 +180,95 @@
     }
   }
 
-  async function toggleListen() {
-    if (listening) {
-      liveAudio.pause()
-      liveAudio.removeAttribute('src')
-      liveAudio.load()
-      listening = false
-      listenButton.textContent = 'Listen live'
-      listenButton.classList.remove('listening')
-      liveStatus.textContent = 'Not streaming'
-      return
+  function stopLiveStream() {
+    liveGeneration += 1
+    liveAbort?.abort()
+    liveAbort = undefined
+    if (liveContext) void liveContext.close()
+    liveContext = undefined
+    listening = false
+    listenButton.textContent = 'Listen live'
+    listenButton.classList.remove('listening')
+    liveStatus.textContent = 'Not streaming'
+  }
+
+  async function pumpLivePcm(response, context, generation) {
+    const reader = response.body.getReader()
+    let pending = new Uint8Array(0)
+    let headerBytes = 44
+    let playAt = context.currentTime + 0.12
+    while (generation === liveGeneration) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error('Live stream ended')
+      let chunk = value
+      if (headerBytes > 0) {
+        const skipped = Math.min(headerBytes, chunk.length)
+        chunk = chunk.subarray(skipped)
+        headerBytes -= skipped
+      }
+      if (chunk.length === 0) continue
+      const joined = new Uint8Array(pending.length + chunk.length)
+      joined.set(pending)
+      joined.set(chunk, pending.length)
+      const usable = joined.length - joined.length % 2
+      pending = joined.slice(usable)
+      if (usable === 0) continue
+      const samples = usable / 2
+      const audioBuffer = context.createBuffer(1, samples, 16_000)
+      const output = audioBuffer.getChannelData(0)
+      const view = new DataView(joined.buffer, joined.byteOffset, usable)
+      for (let index = 0; index < samples; index += 1) {
+        output[index] = view.getInt16(index * 2, true) / 32_768
+      }
+      const source = context.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(context.destination)
+      playAt = Math.max(playAt, context.currentTime + 0.06)
+      source.start(playAt)
+      playAt += audioBuffer.duration
     }
-    liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`
+  }
+
+  async function startLiveStream() {
+    const generation = ++liveGeneration
+    liveAbort = new AbortController()
+    liveContext = new AudioContext({ sampleRate: 16_000 })
     try {
-      await liveAudio.play()
+      await liveContext.resume()
+      const response = await fetch(
+        `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`,
+        { credentials: 'include', signal: liveAbort.signal }
+      )
+      if (!response.ok || !response.body) throw new Error(`Live stream failed (${response.status})`)
       listening = true
       listenButton.textContent = 'Stop listening'
       listenButton.classList.add('listening')
       liveStatus.textContent = liveSquelch.value === '0'
         ? 'Streaming raw audio'
         : `Streaming · squelch ${liveSquelch.value} · silence means the channel is quiet`
+      void pumpLivePcm(response, liveContext, generation).catch((error) => {
+        if (generation !== liveGeneration || error.name === 'AbortError') return
+        stopLiveStream()
+        liveStatus.textContent = `Stream failed: ${error.message}`
+      })
     } catch (error) {
+      stopLiveStream()
       liveStatus.textContent = 'Stream failed'
       setConnection('error', `Audio could not start: ${error.message}`)
     }
+  }
+
+  async function restartLiveStream() {
+    stopLiveStream()
+    await startLiveStream()
+  }
+
+  async function toggleListen() {
+    if (listening) {
+      stopLiveStream()
+      return
+    }
+    await startLiveStream()
   }
 
   async function clearReplay() {
@@ -242,15 +308,7 @@
   listenButton.addEventListener('click', toggleListen)
   liveSquelch.addEventListener('change', async () => {
     if (!listening) return
-    liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`
-    try {
-      await liveAudio.play()
-      liveStatus.textContent = liveSquelch.value === '0'
-        ? 'Streaming raw audio'
-        : `Streaming · squelch ${liveSquelch.value} · silence means the channel is quiet`
-    } catch (error) {
-      liveStatus.textContent = `Stream failed: ${error.message}`
-    }
+    await restartLiveStream()
   })
   $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', clearReplay)
@@ -262,7 +320,7 @@
   })
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
-    liveAudio.pause()
+    stopLiveStream()
   })
   initialize()
 })()
