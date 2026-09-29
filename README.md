@@ -82,6 +82,11 @@ Replay is held only in process memory. Restarting Signal K clears it, and nothin
 configured time window is also capped by a separate memory limit (64 MiB by default), so higher
 sample rates cannot silently exhaust an onboard computer.
 
+The native receiver preserves low-rate unsquelched voice PCM in that bounded replay buffer together
+with discriminator-noise metadata. The Recent radio control can therefore apply a different squelch
+when a segment is played without changing live listening or future recordings; `Off / raw` is useful
+for investigating weak signals.
+
 Accepted DSC calls are different: they survive Signal K restarts in the plugin's private data
 directory. The cache is pruned by age (seven days by default), call count (100 by default), and a
 hard serialized-size limit (256 KiB by default). Incomplete, unknown-format, unknown-category, or
@@ -109,6 +114,11 @@ npm install
 npm test
 npm pack --dry-run
 ```
+
+Go is a build dependency only. Published artifacts should be complete architecture-specific npm
+packages containing `bin/<platform>-<architecture>/vhf-watch-sidecar`; the current experimental
+artifact contains Linux ARM64. A release build matrix should compile and test each static sidecar,
+insert it into the matching package, and attach those packages to the same GitHub release.
 
 The receiver, rolling buffer, HTTP API, and web UI are deliberately independent of Binnacle so this
 plugin can mature before a chart-client integration is added.

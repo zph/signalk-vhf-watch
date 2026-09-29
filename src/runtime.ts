@@ -25,6 +25,7 @@ export interface RuntimeStatus {
   receiving: boolean
   level: number
   sampleRate: number
+  squelch: number
   replayMinutes: number
   maxBufferMiB: number
   replaySegments: number
@@ -152,6 +153,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       receiving: this.#level > 0.003,
       level: this.#level,
       sampleRate: this.config.sampleRate,
+      squelch: this.config.squelch,
       replayMinutes: this.config.replayMinutes,
       maxBufferMiB: this.config.maxBufferMiB,
       replaySegments: segments.length,
@@ -211,8 +213,11 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     receiver.on('audio', (chunk) => {
       this.#lastAudioAt = new Date().toISOString()
       this.#level = this.#level * 0.7 + rmsLevel(chunk) * 0.3
-      this.replay.append(chunk)
+      if (!(receiver instanceof NativeSidecarReceiver)) this.replay.append(chunk)
       this.emit('audio', chunk)
+    })
+    receiver.on('replayAudio', (chunk, discriminatorNoise) => {
+      this.replay.append(chunk, Date.now(), discriminatorNoise)
     })
     receiver.on('state', (state) => {
       this.#receiverState = state

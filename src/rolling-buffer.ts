@@ -1,4 +1,10 @@
 import { pcmToWav, rmsLevel } from './wav'
+import { discriminatorThreshold } from './squelch'
+
+interface ReplayQualitySpan {
+  bytes: number
+  discriminatorNoise?: number
+}
 
 export interface ReplaySegment {
   id: number
@@ -8,9 +14,13 @@ export interface ReplaySegment {
   durationSeconds: number
   level: number
   wav: Buffer
+  qualitySpans: ReplayQualitySpan[]
 }
 
-export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav'> & { bytes: number }
+export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav' | 'qualitySpans'> & {
+  bytes: number
+  minimumDiscriminatorNoise?: number
+}
 
 export class RollingReplay {
   readonly #sampleRate: number
@@ -18,6 +28,7 @@ export class RollingReplay {
   readonly #maxSegments: number
   #channel: string
   #pending = Buffer.alloc(0)
+  #pendingQuality: ReplayQualitySpan[] = []
   #pendingStartedAt = Date.now()
   #sequence = 0
   #segments: ReplaySegment[] = []
@@ -43,15 +54,16 @@ export class RollingReplay {
     this.#pendingStartedAt = Date.now()
   }
 
-  append(chunk: Buffer, receivedAt = Date.now()): ReplaySegment[] {
+  append(chunk: Buffer, receivedAt = Date.now(), discriminatorNoise?: number): ReplaySegment[] {
     if (chunk.length === 0) return []
     if (this.#pending.length === 0) this.#pendingStartedAt = receivedAt
     this.#pending = Buffer.concat([this.#pending, chunk])
+    this.#pendingQuality.push({ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
     const created: ReplaySegment[] = []
     while (this.#pending.length >= this.#segmentBytes) {
       const pcm = this.#pending.subarray(0, this.#segmentBytes)
       this.#pending = Buffer.from(this.#pending.subarray(this.#segmentBytes))
-      created.push(this.#store(pcm, this.#pendingStartedAt))
+      created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(pcm.length)))
       this.#pendingStartedAt += (pcm.length / 2 / this.#sampleRate) * 1000
     }
     return created
@@ -59,26 +71,64 @@ export class RollingReplay {
 
   flush(): ReplaySegment | undefined {
     if (this.#pending.length < 2) return undefined
-    const segment = this.#store(this.#pending, this.#pendingStartedAt)
+    const segment = this.#store(this.#pending, this.#pendingStartedAt, this.#takeQuality(this.#pending.length))
     this.#pending = Buffer.alloc(0)
     this.#pendingStartedAt = Date.now()
     return segment
   }
 
   list(): ReplaySegmentSummary[] {
-    return this.#segments.slice().reverse().map(({ wav, ...segment }) => ({ ...segment, bytes: wav.length }))
+    return this.#segments.slice().reverse().map(({ wav, qualitySpans, ...segment }) => {
+      const measured = qualitySpans.flatMap((span) => span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise])
+      return {
+        ...segment,
+        bytes: wav.length,
+        ...(measured.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measured) })
+      }
+    })
   }
 
   get(id: number): ReplaySegment | undefined {
     return this.#segments.find((segment) => segment.id === id)
   }
 
+  wavFor(id: number, squelch: number): Buffer | undefined {
+    const segment = this.get(id)
+    if (!segment) return undefined
+    if (squelch <= 0 || segment.qualitySpans.length === 0) return segment.wav
+    const wav = Buffer.from(segment.wav)
+    const threshold = discriminatorThreshold(squelch)
+    let offset = 44
+    for (const span of segment.qualitySpans) {
+      if (span.discriminatorNoise !== undefined && span.discriminatorNoise >= threshold) {
+        wav.fill(0, offset, offset + span.bytes)
+      }
+      offset += span.bytes
+    }
+    return wav
+  }
+
   clear(): void {
     this.#segments = []
     this.#pending = Buffer.alloc(0)
+    this.#pendingQuality = []
   }
 
-  #store(pcm: Buffer, startedAtMs: number): ReplaySegment {
+  #takeQuality(byteLength: number): ReplayQualitySpan[] {
+    const taken: ReplayQualitySpan[] = []
+    let remaining = byteLength
+    while (remaining > 0 && this.#pendingQuality.length > 0) {
+      const span = this.#pendingQuality[0]!
+      const bytes = Math.min(remaining, span.bytes)
+      taken.push({ bytes, ...(span.discriminatorNoise === undefined ? {} : { discriminatorNoise: span.discriminatorNoise }) })
+      span.bytes -= bytes
+      remaining -= bytes
+      if (span.bytes === 0) this.#pendingQuality.shift()
+    }
+    return taken
+  }
+
+  #store(pcm: Buffer, startedAtMs: number, qualitySpans: ReplayQualitySpan[]): ReplaySegment {
     const durationSeconds = pcm.length / 2 / this.#sampleRate
     const segment: ReplaySegment = {
       id: ++this.#sequence,
@@ -87,7 +137,8 @@ export class RollingReplay {
       endedAt: new Date(startedAtMs + durationSeconds * 1000).toISOString(),
       durationSeconds,
       level: rmsLevel(pcm),
-      wav: pcmToWav(pcm, this.#sampleRate)
+      wav: pcmToWav(pcm, this.#sampleRate),
+      qualitySpans
     }
     this.#segments.push(segment)
     if (this.#segments.length > this.#maxSegments) this.#segments.splice(0, this.#segments.length - this.#maxSegments)

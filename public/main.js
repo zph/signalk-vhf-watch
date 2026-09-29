@@ -16,9 +16,11 @@
   const dscEmpty = $('#dsc-empty')
   const empty = $('#empty')
   const retention = $('#retention')
+  const replaySquelch = $('#replay-squelch')
   let channels = []
   let listening = false
   let poll
+  let replaySquelchTouched = false
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -46,6 +48,7 @@
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
+    if (!replaySquelchTouched) replaySquelch.value = String(status.squelch)
     const dsc = status.dscWatch?.continuous ? ' · DSC 70 continuous' : ''
     const metrics = status.receiverMetrics
     const health = metrics && (metrics.restarts || metrics.droppedIqChunks)
@@ -85,11 +88,14 @@
     time.textContent = new Date(segment.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     const detail = document.createElement('div')
     detail.className = 'replay-detail'
-    detail.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec · level ${Math.round(segment.level * 650)}%`
+    const quality = segment.minimumDiscriminatorNoise === undefined
+      ? ''
+      : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
+    detail.textContent = `CH ${segment.channel} · ${segment.durationSeconds.toFixed(1)} sec · raw level ${Math.round(segment.level * 650)}%${quality}`
     const audio = document.createElement('audio')
     audio.controls = true
     audio.preload = 'none'
-    audio.src = `${API}replay/${segment.id}.wav`
+    audio.src = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
     item.append(time, detail, audio)
     return item
   }
@@ -231,6 +237,10 @@
   $('#clear').addEventListener('click', clearReplay)
   $('#refresh-dsc').addEventListener('click', updateDsc)
   $('#clear-dsc').addEventListener('click', clearDsc)
+  replaySquelch.addEventListener('change', () => {
+    replaySquelchTouched = true
+    void updateReplay()
+  })
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
     liveAudio.pause()

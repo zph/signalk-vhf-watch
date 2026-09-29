@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 )
 
@@ -45,21 +46,19 @@ func TestWritesFramedLittleEndianPCM(t *testing.T) {
 	}
 }
 
-func TestDefaultSquelchMutesUncorrelatedIQNoise(t *testing.T) {
-	channel, err := newChannelizer(2_400_000, 16_000, 50_000, 20)
-	if err != nil {
+func TestWritesVoiceQualityWithUnsquelchedPCM(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeVoiceFrame(&output, []int16{-2, 3}, 0.425); err != nil {
 		t.Fatal(err)
 	}
-	iq := make([]byte, 2_400_000/5*2)
-	state := uint32(1)
-	for index := range iq {
-		state = state*1664525 + 1013904223
-		iq[index] = byte(state >> 24)
+	written := output.Bytes()
+	if written[0] != frameVoice || binary.LittleEndian.Uint32(written[1:5]) != 12 {
+		t.Fatalf("bad voice frame header: %v", written[:5])
 	}
-	pcm := channel.process(iq)
-	for index, sample := range pcm {
-		if sample != 0 {
-			t.Fatalf("noise sample %d was not squelched: %d (discriminator noise %.3f)", index, sample, channel.level)
-		}
+	if quality := math.Float64frombits(binary.LittleEndian.Uint64(written[5:13])); quality != 0.425 {
+		t.Fatalf("quality = %f", quality)
+	}
+	if !bytes.Equal(written[13:], []byte{0xfe, 0xff, 0x03, 0x00}) {
+		t.Fatalf("bad voice PCM: %v", written[13:])
 	}
 }

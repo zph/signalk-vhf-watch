@@ -3,6 +3,7 @@ import test from 'node:test'
 import { channelById } from '../src/channels'
 import { normalizeConfig } from '../src/config'
 import { canChannelize, nativeSidecarArgs, parseSidecarFrames, rtlSdrArgs } from '../src/receiver'
+import { discriminatorThreshold } from '../src/squelch'
 
 test('builds one receive-only wideband capture for voice and DSC', () => {
   const config = normalizeConfig({ receiverMode: 'rtl_sdr', device: 'vhf-radio', ppm: -3, squelch: 25, gainDb: 20 })
@@ -36,4 +37,10 @@ test('parses complete sidecar frames and retains a partial frame', () => {
   const parsed = parseSidecarFrames(Buffer.concat([first, partial]))
   assert.deepEqual(parsed.frames, [{ kind: 1, payload: voice }])
   assert.deepEqual(parsed.remaining, partial)
+})
+
+test('maps higher squelch settings to stricter discriminator-noise thresholds', () => {
+  assert.equal(discriminatorThreshold(0), Number.POSITIVE_INFINITY)
+  assert.equal(discriminatorThreshold(20), 0.35)
+  assert.ok(discriminatorThreshold(30) < discriminatorThreshold(20))
 })

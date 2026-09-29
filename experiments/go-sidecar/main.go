@@ -121,15 +121,9 @@ func (c *channelizer) process(iq []byte) []int16 {
 		c.deemphasis += deAlpha * (sample - c.deemphasis)
 		c.checksum += c.deemphasis
 		c.outputSamples++
-		// With no carrier, the FM discriminator jumps through nearly random phase angles. A real
-		// narrowband FM carrier makes adjacent phase changes coherent and therefore much smaller.
-		// Higher configured squelch requires a cleaner (lower-noise) discriminator signal.
-		threshold := math.Max(0.05, 0.6-float64(c.squelch)*0.0125)
-		scaled := 0.0
-		warmedUp := c.outputSamples > int64(c.outputRate/20)
-		if warmedUp && (c.squelch == 0 || c.level < threshold) {
-			scaled = c.deemphasis * 80_000
-		}
+		// Preserve unsquelched low-rate PCM. Signal K applies the configured live gate and retains
+		// this stream with the discriminator-noise value for adjustable replay squelch.
+		scaled := c.deemphasis * 80_000
 		output = append(output, int16(math.Max(-32768, math.Min(32767, math.Round(scaled)))))
 	}
 	return output
@@ -274,7 +268,7 @@ func runStream(opts options) error {
 		if count > 0 {
 			count -= count % 2
 			voicePCM, dscPCM := processBoth(voice, dsc, buffer[:count])
-			if err := writePCMFrame(os.Stdout, frameVoice, voicePCM); err != nil {
+			if err := writeVoiceFrame(os.Stdout, voicePCM, voice.level); err != nil {
 				_ = command.Process.Kill()
 				return err
 			}
@@ -342,6 +336,15 @@ func writePCMFrame(output io.Writer, kind byte, samples []int16) error {
 		binary.LittleEndian.PutUint16(payload[index*2:], uint16(sample))
 	}
 	return writeFrame(output, kind, payload)
+}
+
+func writeVoiceFrame(output io.Writer, samples []int16, discriminatorNoise float64) error {
+	payload := make([]byte, 8+len(samples)*2)
+	binary.LittleEndian.PutUint64(payload, math.Float64bits(discriminatorNoise))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(payload[8+index*2:], uint16(sample))
+	}
+	return writeFrame(output, frameVoice, payload)
 }
 func writeFrame(output io.Writer, kind byte, payload []byte) error {
 	header := [5]byte{kind}

@@ -32,3 +32,18 @@ test('caps retention by memory as well as time', () => {
   replay.append(Buffer.alloc(segmentBytes * 3))
   assert.equal(replay.list().length, 1)
 })
+
+test('preserves raw replay and applies selectable discriminator squelch on playback', () => {
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const noisy = Buffer.alloc(16_000, 0)
+  noisy.writeInt16LE(12_000, 0)
+  const clear = Buffer.alloc(16_000, 0)
+  clear.writeInt16LE(8_000, 0)
+  replay.append(noisy, Date.UTC(2026, 8, 29), 0.52)
+  replay.append(clear, Date.UTC(2026, 8, 29, 0, 0, 1), 0.20)
+  const id = replay.list()[0]!.id
+  assert.equal(replay.wavFor(id, 0)?.readInt16LE(44), 12_000)
+  assert.equal(replay.wavFor(id, 20)?.readInt16LE(44), 0)
+  assert.equal(replay.wavFor(id, 20)?.readInt16LE(44 + noisy.length), 8_000)
+  assert.equal(replay.list()[0]?.minimumDiscriminatorNoise, 0.20)
+})

@@ -38,17 +38,21 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
   read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
-    const segment = runtime.replay.get(Number(request.params.id))
-    if (!segment) {
+    const id = Number(request.params.id)
+    const segment = runtime.replay.get(id)
+    const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
+    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
+    const wav = runtime.replay.wavFor(id, squelch)
+    if (!segment || !wav) {
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
     response.set({
       'Content-Type': 'audio/wav',
-      'Content-Length': String(segment.wav.length),
+      'Content-Length': String(wav.length),
       'Cache-Control': 'private, max-age=3600',
       'Content-Disposition': `inline; filename="vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav"`
-    }).send(segment.wav)
+    }).send(wav)
   })
   read.get('/api/live.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)

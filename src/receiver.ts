@@ -4,6 +4,7 @@ import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import type { VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
+import { discriminatorThreshold } from './squelch'
 
 export const WIDEBAND_CENTER_HZ = 156_750_000
 export const WIDEBAND_SAMPLE_RATE = 2_400_000
@@ -12,6 +13,7 @@ export const CHANNEL_GUARD_HZ = 25_000
 
 export interface ReceiverEvents {
   audio: [Buffer]
+  replayAudio: [Buffer, number]
   dscAudio: [Buffer]
   error: [Error]
   metrics: [ReceiverMetrics]
@@ -123,7 +125,15 @@ export class NativeSidecarReceiver extends AudioReceiver {
         const parsed = parseSidecarFrames(this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]))
         this.#buffer = parsed.remaining
         for (const frame of parsed.frames) {
-          if (frame.kind === 1) this.emit('audio', frame.payload)
+          if (frame.kind === 1) {
+            if (frame.payload.length < 8) throw new Error('Truncated voice frame from VHF sidecar')
+            const discriminatorNoise = frame.payload.readDoubleLE(0)
+            const rawPcm = frame.payload.subarray(8)
+            this.#metrics.voiceDiscriminatorNoise = discriminatorNoise
+            const open = discriminatorNoise < discriminatorThreshold(this.#config.squelch)
+            this.emit('audio', open ? rawPcm : Buffer.alloc(rawPcm.length))
+            this.emit('replayAudio', rawPcm, discriminatorNoise)
+          }
           else if (frame.kind === 2) this.emit('dscAudio', frame.payload)
           else if (frame.kind === 3) {
             this.#restartDelayMs = 1_000
