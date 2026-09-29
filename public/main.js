@@ -28,6 +28,7 @@
   const timelineOlder = $('#timeline-older')
   const timelineNewer = $('#timeline-newer')
   const timelineLatest = $('#timeline-latest')
+  const timelineCleanup = $('#timeline-cleanup')
   const frequencyMap = $('#frequency-map')
   const frequencyEmpty = $('#frequency-empty')
   const transcriptionEnabled = $('#transcription-enabled')
@@ -37,6 +38,7 @@
   const archiveList = $('#archive-list')
   const archiveEmpty = $('#archive-empty')
   const archiveSummary = $('#archive-summary')
+  const archiveCleanup = $('#archive-cleanup')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   const SESSION_BREAK_SECONDS = 6
   let channels = []
@@ -477,7 +479,7 @@
     timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
     timelineOlder.disabled = index === 0
     timelineNewer.disabled = index === replayTimeline.length - 1
-    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
+    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
     highlightFrequencyBurst()
@@ -772,7 +774,8 @@
     audio.controls = true
     audio.preload = 'none'
     const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
-    audio.src = audioUrl
+    audio.src = `${audioUrl}&cleanup=${encodeURIComponent(archiveCleanup.value)}`
+    audio.dataset.baseUrl = audioUrl
     const actions = document.createElement('div')
     actions.className = 'archive-actions'
     const download = document.createElement('a')
@@ -925,6 +928,24 @@
   timelineNewer.addEventListener('click', () => moveTimeline(60_000))
   timelineLatest.addEventListener('click', () => {
     selectLatestActiveTimeline(true)
+  })
+  timelineCleanup.addEventListener('change', () => {
+    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
+    if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
+  })
+  archiveCleanup.addEventListener('change', () => {
+    for (const audio of archiveList.querySelectorAll('audio[data-base-url]')) {
+      const currentTime = audio.currentTime
+      const wasPlaying = !audio.paused
+      audio.src = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(archiveCleanup.value)}`
+      audio.load()
+      if (currentTime > 0) {
+        audio.addEventListener('loadedmetadata', () => {
+          audio.currentTime = Math.min(currentTime, Number.isFinite(audio.duration) ? audio.duration : currentTime)
+          if (wasPlaying) void audio.play().catch(() => {})
+        }, { once: true })
+      } else if (wasPlaying) void audio.play().catch(() => {})
+    }
   })
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)

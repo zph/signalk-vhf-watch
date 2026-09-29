@@ -91,7 +91,11 @@ computer.
 The native receiver preserves low-rate unsquelched voice PCM in that bounded replay buffer together
 with discriminator-noise metadata. The Recent radio control can therefore apply a different squelch
 when a segment is played without changing live listening or future recordings; `Off / raw` is useful
-for investigating weak signals.
+for investigating weak signals. Timeline and transcript playback also offer non-destructive cleanup:
+**Voice focus** limits audio to the useful speech band, while **Strong static reduction** narrows that
+band further and adaptively lowers steady noise between speech. The original buffered and archived
+audio is never rewritten, so operators can switch back to natural playback when cleanup masks a weak
+voice.
 
 ### Optional local transcription
 

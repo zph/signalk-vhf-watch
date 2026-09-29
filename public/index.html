@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=24" />
+  <link rel="stylesheet" href="./styles.css?v=25" />
 </head>
 <body>
   <main>
@@ -70,6 +70,16 @@
       <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
       <div class="timeline-scale"><span id="timeline-oldest">2 hr ago</span><span>Now</span></div>
       <audio id="timeline-audio" controls preload="none"></audio>
+      <div class="playback-options">
+        <label for="timeline-cleanup">Sound cleanup
+          <select id="timeline-cleanup">
+            <option value="raw">Natural · squelch only</option>
+            <option value="voice" selected>Voice focus · reduce hiss</option>
+            <option value="strong">Strong · suppress static</option>
+          </select>
+        </label>
+        <span>Cleanup affects playback only; stored audio stays unchanged.</span>
+      </div>
       <div class="timeline-actions">
         <button id="timeline-older" type="button" disabled>− 1 minute</button>
         <button id="timeline-newer" type="button" disabled>+ 1 minute</button>
@@ -143,7 +153,16 @@
           <p class="eyebrow">30 DAYS · 100 MIB MAXIMUM</p>
           <h2 id="archive-title">Transcript archive</h2>
         </div>
-        <button id="refresh-archive" type="button">Refresh</button>
+        <div class="section-actions">
+          <label class="squelch-control" for="archive-cleanup">Playback cleanup
+            <select id="archive-cleanup">
+              <option value="raw">Natural</option>
+              <option value="voice" selected>Voice focus</option>
+              <option value="strong">Strong static reduction</option>
+            </select>
+          </label>
+          <button id="refresh-archive" type="button">Refresh</button>
+        </div>
       </div>
       <p id="archive-summary" class="muted">Transcribed radio and its audio are stored privately in SQLite. Select a row for its timestamped log, playback, and advanced options.</p>
       <div id="archive-empty" class="empty">No archived transcripts yet.</div>
@@ -173,6 +192,6 @@
       Channel 70 is decoded continuously whenever it is assigned to Slot B, except during single-frequency weather reception.
     </footer>
   </main>
-  <script src="./main.js?v=24"></script>
+  <script src="./main.js?v=25"></script>
 </body>
 </html>

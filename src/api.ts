@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 import type { PluginRouter } from '@signalk/server-api'
 import type { ChannelRegion } from './channels'
+import { cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from './playback-cleanup'
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
@@ -121,10 +122,12 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Archived transcript not found' })
       return
     }
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    const playbackWav = cleanup === 'raw' ? wav : pcmToWav(cleanPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup), record.sampleRate)
     sendSeekableWav(
       request,
       response,
-      wav,
+      playbackWav,
       `vhf-transcript-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav`,
       'private, max-age=3600'
     )
@@ -150,10 +153,11 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     sendSeekableWav(
       request,
       response,
-      pcmToWav(pcm, first.sampleRate),
+      pcmToWav(cleanPlaybackPcm(pcm, first.sampleRate, cleanup), first.sampleRate),
       `vhf-transcript-${first.channel}-session.wav`,
       'no-store, private'
     )
@@ -170,10 +174,12 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    const playbackWav = cleanup === 'raw' ? wav : pcmToWav(cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup), runtime.config.sampleRate)
     sendSeekableWav(
       request,
       response,
-      wav,
+      playbackWav,
       `vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav`,
       'private, max-age=3600'
     )
@@ -201,10 +207,11 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     sendSeekableWav(
       request,
       response,
-      pcmToWav(pcm, runtime.config.sampleRate),
+      pcmToWav(cleanPlaybackPcm(pcm, runtime.config.sampleRate, cleanup), runtime.config.sampleRate),
       `vhf-${first.channel}-session.wav`,
       'no-store, private'
     )
@@ -230,7 +237,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     })
     response.flushHeaders()
     response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
-    for (const chunk of chunks) response.write(chunk)
+    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, parsePlaybackCleanup(request.query.cleanup))
+    for (const chunk of chunks) response.write(cleaner.process(chunk))
     if (!runtime.canTailReplay(id)) {
       response.end()
       return
@@ -239,7 +247,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
       if (response.destroyed) return
       const open = discriminatorNoise < discriminatorThreshold(squelch)
-      response.write(open ? chunk : Buffer.alloc(chunk.length))
+      response.write(cleaner.process(open ? chunk : Buffer.alloc(chunk.length)))
     }
     runtime.on(event, onRawAudio)
     request.on('close', () => {
@@ -260,11 +268,12 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
     const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
-    const onAudio = (chunk: Buffer): void => { if (!response.destroyed) response.write(chunk) }
+    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, parsePlaybackCleanup(request.query.cleanup))
+    const onAudio = (chunk: Buffer): void => { if (!response.destroyed) response.write(cleaner.process(chunk)) }
     const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
       if (response.destroyed) return
       const open = discriminatorNoise < discriminatorThreshold(squelch)
-      response.write(open ? chunk : Buffer.alloc(chunk.length))
+      response.write(cleaner.process(open ? chunk : Buffer.alloc(chunk.length)))
     }
     if (runtime.config.receiverMode === 'rtl_sdr') runtime.on('rawAudio', onRawAudio)
     else runtime.on('audio', onAudio)
