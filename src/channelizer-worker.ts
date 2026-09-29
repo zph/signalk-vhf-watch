@@ -151,6 +151,7 @@ parentPort?.on('message', (message: TuneMessage | IqMessage) => {
     new Uint8Array(dscBuffer).set(new Uint8Array(dscPcm.buffer, dscPcm.byteOffset, dscPcm.byteLength))
     parentPort?.postMessage({ type: 'voice', pcm: voiceBuffer }, [voiceBuffer])
     parentPort?.postMessage({ type: 'dsc', pcm: dscBuffer }, [dscBuffer])
+    parentPort?.postMessage({ type: 'ready' })
   } catch (error) {
     parentPort?.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) })
   }

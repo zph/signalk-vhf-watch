@@ -7,7 +7,8 @@ export interface VhfWatchConfig {
   receiverMode: ReceiverMode
   channelRegion: ChannelRegion
   initialChannel: string
-  deviceIndex: number
+  device: string
+  ppm: number
   gainDb?: number
   squelch: number
   sampleRate: number
@@ -21,7 +22,8 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   receiverMode: 'demo',
   channelRegion: 'US_CA',
   initialChannel: '16',
-  deviceIndex: 0,
+  device: '0',
+  ppm: 0,
   squelch: 20,
   sampleRate: 16_000,
   replayMinutes: 30,
@@ -52,7 +54,8 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     receiverMode,
     channelRegion,
     initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
-    deviceIndex: Math.max(0, Math.floor(finiteNumber(value.deviceIndex, DEFAULT_CONFIG.deviceIndex))),
+    device: String(value.device ?? value.deviceIndex ?? DEFAULT_CONFIG.device).trim() || DEFAULT_CONFIG.device,
+    ppm: Math.min(150, Math.max(-150, Math.round(finiteNumber(value.ppm, DEFAULT_CONFIG.ppm)))),
     ...(gain === undefined ? {} : { gainDb: gain }),
     squelch: Math.min(100, Math.max(0, Math.floor(finiteNumber(value.squelch, DEFAULT_CONFIG.squelch)))),
     sampleRate: [8_000, 16_000, 24_000, 32_000, 48_000].includes(Number(value.sampleRate))
@@ -83,7 +86,18 @@ export const pluginSchema = {
       default: 'US_CA'
     },
     initialChannel: { type: 'string', title: 'Channel at startup', default: '16' },
-    deviceIndex: { type: 'integer', title: 'RTL-SDR device index', minimum: 0, default: 0 },
+    device: {
+      type: 'string',
+      title: 'RTL-SDR device index or serial number',
+      default: '0'
+    },
+    ppm: {
+      type: 'integer',
+      title: 'Frequency correction (PPM)',
+      minimum: -150,
+      maximum: 150,
+      default: 0
+    },
     gainDb: { type: 'number', title: 'Manual tuner gain (dB; blank for automatic)', minimum: 0, maximum: 49.6 },
     squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },

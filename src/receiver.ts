@@ -14,7 +14,14 @@ export interface ReceiverEvents {
   audio: [Buffer]
   dscAudio: [Buffer]
   error: [Error]
+  metrics: [ReceiverMetrics]
   state: [string]
+}
+
+export interface ReceiverMetrics {
+  droppedIqChunks: number
+  droppedIqBytes: number
+  restarts: number
 }
 
 export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
@@ -24,9 +31,10 @@ export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
 
 export function rtlSdrArgs(config: VhfWatchConfig): string[] {
   return [
-    '-d', String(config.deviceIndex),
+    '-d', config.device,
     '-f', String(WIDEBAND_CENTER_HZ),
     '-s', String(WIDEBAND_SAMPLE_RATE),
+    '-p', String(config.ppm),
     ...(config.gainDb === undefined ? [] : ['-g', String(config.gainDb)]),
     '-'
   ]
@@ -37,7 +45,7 @@ export function canChannelize(frequencyHz: number): boolean {
 }
 
 interface ChannelizerMessage {
-  type: 'voice' | 'dsc' | 'state' | 'error'
+  type: 'voice' | 'dsc' | 'state' | 'error' | 'ready'
   pcm?: ArrayBuffer
   message?: string
 }
@@ -48,6 +56,12 @@ export class WidebandRtlReceiver extends AudioReceiver {
   #process?: ReturnType<typeof spawn>
   #worker?: Worker
   #oddByte?: Buffer
+  #active = false
+  #restartTimer?: ReturnType<typeof setTimeout>
+  #restartDelayMs = 1_000
+  #workerBusy = false
+  #pendingIq?: ArrayBuffer
+  #metrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
 
   constructor(config: VhfWatchConfig, channel: VhfChannel) {
     super()
@@ -56,11 +70,17 @@ export class WidebandRtlReceiver extends AudioReceiver {
   }
 
   start(): void {
-    if (this.#process) return
+    if (this.#active) return
     if (!canChannelize(this.#channel.frequencyHz)) {
       this.emit('error', new Error(`${this.#channel.label} is outside the continuous DSC capture window`))
       return
     }
+    this.#active = true
+    this.#startCapture()
+  }
+
+  #startCapture(): void {
+    if (!this.#active || this.#process) return
     this.emit('state', 'Starting wideband RTL-SDR')
     const worker = new Worker(path.join(__dirname, 'channelizer-worker.js'), {
       workerData: {
@@ -76,15 +96,25 @@ export class WidebandRtlReceiver extends AudioReceiver {
     worker.on('message', (value: ChannelizerMessage) => {
       if (value.type === 'voice' && value.pcm) this.emit('audio', Buffer.from(value.pcm))
       else if (value.type === 'dsc' && value.pcm) this.emit('dscAudio', Buffer.from(value.pcm))
-      else if (value.type === 'state' && value.message) this.emit('state', value.message)
+      else if (value.type === 'ready') this.#workerReady(worker)
+      else if (value.type === 'state' && value.message) {
+        this.#restartDelayMs = 1_000
+        this.emit('state', value.message)
+      }
       else if (value.type === 'error') this.emit('error', new Error(value.message ?? 'Channelizer failed'))
     })
-    worker.on('error', (error) => this.emit('error', error))
 
     const child = spawn('rtl_sdr', rtlSdrArgs(this.#config), {
       stdio: ['ignore', 'pipe', 'pipe']
     })
     this.#process = child
+    let finalized = false
+    const failed = (error: Error): void => {
+      if (finalized) return
+      finalized = true
+      this.#captureEnded(child, worker, error)
+    }
+    worker.on('error', failed)
     child.stdout.on('data', (chunk: Buffer) => {
       let iq = this.#oddByte ? Buffer.concat([this.#oddByte, chunk]) : chunk
       this.#oddByte = undefined
@@ -94,29 +124,69 @@ export class WidebandRtlReceiver extends AudioReceiver {
       }
       if (iq.length === 0 || this.#worker !== worker) return
       const copy = Uint8Array.from(iq)
-      worker.postMessage({ type: 'iq', iq: copy.buffer }, [copy.buffer])
+      if (this.#workerBusy) {
+        if (this.#pendingIq) {
+          this.#metrics.droppedIqChunks += 1
+          this.#metrics.droppedIqBytes += this.#pendingIq.byteLength
+          this.emit('metrics', { ...this.#metrics })
+        }
+        this.#pendingIq = copy.buffer
+      } else {
+        this.#postIq(worker, copy.buffer)
+      }
     })
     child.stderr.on('data', (chunk: Buffer) => {
       const message = chunk.toString('utf8').trim()
       if (message) this.emit('state', message.split('\n').at(-1) ?? message)
     })
-    child.on('error', (error) => {
-      this.#process = undefined
-      if (this.#worker === worker) {
-        this.#worker = undefined
-        void worker.terminate()
-      }
-      this.emit('error', error)
-    })
+    child.on('error', failed)
     child.on('exit', (code, signal) => {
-      this.#process = undefined
-      if (this.#worker === worker) {
-        this.#worker = undefined
-        void worker.terminate()
-      }
-      if (code !== 0 && signal !== 'SIGTERM') this.emit('error', new Error(`rtl_sdr exited with code ${code ?? 'unknown'}`))
-      else this.emit('state', 'Stopped')
+      if (finalized) return
+      finalized = true
+      const expected = !this.#active && signal === 'SIGTERM'
+      this.#captureEnded(child, worker, expected
+        ? undefined
+        : new Error(`rtl_sdr exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}`))
     })
+  }
+
+  #postIq(worker: Worker, iq: ArrayBuffer): void {
+    if (this.#worker !== worker) return
+    this.#workerBusy = true
+    worker.postMessage({ type: 'iq', iq }, [iq])
+  }
+
+  #workerReady(worker: Worker): void {
+    if (this.#worker !== worker) return
+    const pending = this.#pendingIq
+    this.#pendingIq = undefined
+    if (pending) this.#postIq(worker, pending)
+    else this.#workerBusy = false
+  }
+
+  #captureEnded(child: ReturnType<typeof spawn>, worker: Worker, error?: Error): void {
+    if (this.#process === child) this.#process = undefined
+    if (this.#worker === worker) {
+      this.#worker = undefined
+      void worker.terminate()
+    }
+    this.#workerBusy = false
+    this.#pendingIq = undefined
+    this.#oddByte = undefined
+    if (!this.#active) {
+      this.emit('state', 'Stopped')
+      return
+    }
+    this.#metrics.restarts += 1
+    this.emit('metrics', { ...this.#metrics })
+    if (error) this.emit('error', error)
+    const delay = this.#restartDelayMs
+    this.emit('state', `Receiver unavailable; retrying in ${delay / 1_000}s`)
+    this.#restartTimer = setTimeout(() => {
+      this.#restartTimer = undefined
+      this.#startCapture()
+    }, delay)
+    this.#restartDelayMs = Math.min(delay * 2, 30_000)
   }
 
   tune(channel: VhfChannel): void {
@@ -129,6 +199,9 @@ export class WidebandRtlReceiver extends AudioReceiver {
   }
 
   stop(): void {
+    this.#active = false
+    if (this.#restartTimer) clearTimeout(this.#restartTimer)
+    this.#restartTimer = undefined
     const child = this.#process
     this.#process = undefined
     child?.kill('SIGTERM')
@@ -136,6 +209,9 @@ export class WidebandRtlReceiver extends AudioReceiver {
     this.#worker = undefined
     void worker?.terminate()
     this.#oddByte = undefined
+    this.#workerBusy = false
+    this.#pendingIq = undefined
+    if (!child) this.emit('state', 'Stopped')
   }
 }
 

@@ -31,6 +31,12 @@ opens the tuner once at 2.4 MS/s and sends its IQ stream to a worker-backed chan
 NFM streams provide the selected voice channel and an uninterrupted 24 kHz Channel 70 DSC decoder.
 Changing voice channels inside the capture window does not restart or retune the hardware.
 
+Select the tuner by its stable serial number when possible; a numeric device index is retained for
+single-SDR and backward-compatible configurations. Set the receiver's measured PPM correction in
+the plugin configuration. If the capture process or USB device fails, VHF Watch retries with bounded
+exponential backoff. Status reports receiver restart counts and IQ chunks dropped when the
+channelizer cannot keep up, so a trial can distinguish quiet RF from an unhealthy processing path.
+
 The shared capture is centered at 156.750 MHz. It covers Channel 70 and the nearby simplex marine
 voice channels simultaneously. Duplex coast-side and weather channels around 160–162 MHz are
 outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those
@@ -41,6 +47,11 @@ cannot own the same USB tuner at the same time. Stop AIS-Catcher before selectin
 receiver source. AIS at 161.975/162.025 MHz and Channel 70/voice near 156–157 MHz do not fit in one
 instantaneous capture window. Use a second receiver when continuous AIS and marine voice/DSC are
 both required.
+
+For a controlled one-SDR trial, stop `ais-catcher.service`, enable VHF Watch, and verify its status
+before listening. Reverse that order when restoring AIS: disable VHF Watch or stop Signal K's
+receiver, start AIS-catcher, and verify that fresh AIS messages resume. Never run both processes
+against the same tuner and treat repeated device-open failures as harmless contention.
 
 When Signal K runs in Podman, pass the SDR through to the container, preferably by stable USB path or
 device identity rather than a changing bus number. The container image must include `rtl_sdr`.
@@ -66,6 +77,21 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 Replay is held only in process memory. Restarting Signal K clears it, and nothing is uploaded. The
 configured time window is also capped by a separate memory limit (64 MiB by default), so higher
 sample rates cannot silently exhaust an onboard computer.
+
+DSC decoding follows ITU-R M.493's ten-bit character table and 1,300/2,100 Hz VHF signalling. It is
+experimental and must be validated against known-good, legally obtained over-the-air IQ captures;
+never generate a distress alert for testing.
+
+To replay a demodulated DSC recording through the same decoder used by the plugin, convert it to
+24 kHz, mono, signed 16-bit PCM WAV and run:
+
+```sh
+npm run build
+npm run decode:dsc-wav -- /path/to/capture.wav
+```
+
+The command exits unsuccessfully when it finds no complete DSC message, making a documented capture
+suitable for a manual regression check without transmitting anything.
 
 ## Development
 

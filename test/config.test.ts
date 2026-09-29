@@ -17,10 +17,16 @@ test('validates the startup channel against its regional plan', () => {
   assert.equal(normalizeConfig({ channelRegion: 'US', initialChannel: '04A' }).initialChannel, '16')
 })
 
-test('accepts RTL-SDR settings and migrates the old rtl_fm mode', () => {
+test('accepts RTL-SDR settings and migrates legacy mode and device index', () => {
   const config = normalizeConfig({ receiverMode: 'rtl_fm', initialChannel: 'wx2', deviceIndex: 2, gainDb: 27.4 })
   assert.equal(config.receiverMode, 'rtl_sdr')
   assert.equal(config.initialChannel, 'WX2')
-  assert.equal(config.deviceIndex, 2)
+  assert.equal(config.device, '2')
   assert.equal(config.gainDb, 27.4)
+})
+
+test('accepts a stable RTL-SDR serial and clamps frequency correction', () => {
+  const config = normalizeConfig({ device: '00000001', ppm: 999 })
+  assert.equal(config.device, '00000001')
+  assert.equal(config.ppm, 150)
 })

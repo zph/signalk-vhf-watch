@@ -109,7 +109,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
 export function openApi(): object {
   return {
     openapi: '3.0.3',
-    info: { title: 'Signal K VHF Watch API', version: '0.2.0' },
+    info: { title: 'Signal K VHF Watch API', version: '0.3.0' },
     paths: {
       '/api/status': { get: { summary: 'Get receiver status', responses: { '200': { description: 'Status' } } } },
       '/api/channels': { get: { summary: 'List supported receive channels', responses: { '200': { description: 'Channels' } } } },

@@ -31,6 +31,11 @@ function synthesizeDsc(symbols: number[], leadingSamples = 7): Buffer {
 }
 
 test('checks DSC BCH characters and detects corruption', () => {
+  // Literal ITU-R M.493 Table A1-1 vectors: 0 = BBBBBBBYYY, 1 = YBBBBBBYYB,
+  // and 127 = YYYYYYYBBB. Bits are listed in transmission order.
+  assert.equal(bchEncode(0), 0b0000000111)
+  assert.equal(bchEncode(1), 0b1000000110)
+  assert.equal(bchEncode(127), 0b1111111000)
   assert.deepEqual(bchCheck(bchEncode(125)), { data: 125, valid: true })
   assert.equal(bchCheck(bchEncode(112) ^ 1).valid, false)
 })

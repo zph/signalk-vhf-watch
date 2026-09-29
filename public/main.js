@@ -47,7 +47,11 @@
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
     const dsc = status.dscWatch?.continuous ? ' · DSC 70 continuous' : ''
-    receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}`
+    const metrics = status.receiverMetrics
+    const health = metrics && (metrics.restarts || metrics.droppedIqChunks)
+      ? ` · ${metrics.restarts} restarts · ${metrics.droppedIqChunks} IQ drops`
+      : ''
+    receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB private buffer · ${status.replaySegments} segments · ${status.liveListeners} live listener${status.liveListeners === 1 ? '' : 's'}`
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
   }

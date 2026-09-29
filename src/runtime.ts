@@ -9,7 +9,8 @@ import {
   WIDEBAND_CENTER_HZ,
   WIDEBAND_SAMPLE_RATE,
   WidebandRtlReceiver,
-  type AudioReceiver
+  type AudioReceiver,
+  type ReceiverMetrics
 } from './receiver'
 import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
@@ -27,6 +28,7 @@ export interface RuntimeStatus {
   maxBufferMiB: number
   replaySegments: number
   liveListeners: number
+  receiverMetrics: ReceiverMetrics
   lastAudioAt?: string
   dscWatch: {
     enabled: boolean
@@ -60,6 +62,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
   #dscLevel = 0
   #lastDscSignalAt?: string
   #dscContinuous = false
+  #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscMessages: DscMessage[] = []
 
@@ -149,6 +152,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
       maxBufferMiB: this.config.maxBufferMiB,
       replaySegments: segments.length,
       liveListeners: this.#liveListeners,
+      receiverMetrics: { ...this.#receiverMetrics },
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),
       dscWatch: {
         enabled: this.config.receiverMode === 'rtl_sdr' && this.config.enabled,
@@ -207,6 +211,11 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     })
     receiver.on('state', (state) => {
       this.#receiverState = state
+      if (state.startsWith('Wideband capture')) this.#error = undefined
+      this.#emitStatus()
+    })
+    receiver.on('metrics', (metrics) => {
+      this.#receiverMetrics = metrics
       this.#emitStatus()
     })
     receiver.on('dscAudio', (chunk) => {

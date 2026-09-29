@@ -1,6 +1,7 @@
 /*
- * VHF DSC framing follows ITU-R M.493. The compact BCH/framing approach here was independently
- * adapted from GopherTrunk's Apache-2.0 DSC receiver; see THIRD_PARTY_NOTICES.md.
+ * VHF DSC framing follows ITU-R M.493. The streaming/framing structure was independently adapted
+ * from GopherTrunk's Apache-2.0 DSC receiver; see THIRD_PARTY_NOTICES.md. Character coding follows
+ * the M.493 ten-bit table directly: seven information bits followed by a three-bit zero count.
  */
 
 export interface DscPosition {
@@ -52,21 +53,32 @@ const DX_STRIDE = CHARACTER_BITS * 2
 const CHARACTER_MASK = (1 << CHARACTER_BITS) - 1
 const EOS = new Set([117, 122, 127])
 
+function zeroCount(data: number): number {
+  let ones = 0
+  for (let bit = 0; bit < 7; bit += 1) ones += (data >> bit) & 1
+  return 7 - ones
+}
+
+// Retain the original exported names for API compatibility. M.493 calls this a ten-bit
+// error-detecting code, not a polynomial BCH/CRC: information bits are sent least-significant-bit
+// first and the final three bits contain the number of zero (B) information elements.
 export function bchEncode(data: number): number {
   const clean = data & 0x7f
-  let dividend = clean << 3
-  for (let bit = 9; bit >= 3; bit -= 1) {
-    if ((dividend & (1 << bit)) !== 0) dividend ^= 0x0b << (bit - 3)
+  let codeword = 0
+  for (let bit = 0; bit < 7; bit += 1) {
+    codeword = (codeword << 1) | ((clean >> bit) & 1)
   }
-  return (clean << 3) | (dividend & 0x07)
+  return (codeword << 3) | zeroCount(clean)
 }
 
 export function bchCheck(codeword: number): { data: number; valid: boolean } {
-  let remainder = codeword & CHARACTER_MASK
-  for (let bit = 9; bit >= 3; bit -= 1) {
-    if ((remainder & (1 << bit)) !== 0) remainder ^= 0x0b << (bit - 3)
+  const clean = codeword & CHARACTER_MASK
+  const wireData = clean >> 3
+  let data = 0
+  for (let bit = 0; bit < 7; bit += 1) {
+    data |= ((wireData >> (6 - bit)) & 1) << bit
   }
-  return { data: (codeword >> 3) & 0x7f, valid: (remainder & 0x07) === 0 }
+  return { data, valid: (clean & 0x07) === zeroCount(data) }
 }
 
 function decodeMmsi(symbols: number[]): string | undefined {
