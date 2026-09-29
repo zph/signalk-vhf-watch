@@ -147,6 +147,13 @@ export class TranscriptArchive {
     return row ? zstdDecompressSync(row.audio_zstd) : undefined
   }
 
+  updateTranscript(id: number, transcript: string): TranscriptArchiveRecord | undefined {
+    const result = this.#database.prepare(
+      'UPDATE transcript_archive SET transcript = ? WHERE id = ?'
+    ).run(transcript, id)
+    return Number(result.changes) === 0 ? undefined : this.record(id)
+  }
+
   status(): TranscriptArchiveStatus {
     const row = this.#database.prepare(`
       SELECT COUNT(*) AS records, COALESCE(SUM(compressed_bytes), 0) AS compressed_bytes

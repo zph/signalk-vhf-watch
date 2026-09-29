@@ -9,10 +9,11 @@ same. This validates the RTL-SDR, antenna, Go FM demodulator, and PCM handoff wi
 The synthetic-sample recommendation to use audio context 768 did not survive this test. Tiny.en Q5
 with that reduced context returned only a couple of words (or marked the speech as foreign), while
 the same model with its default context produced a recognizable paragraph of the marine forecast.
-Base.en Q5 improved some proper names but retained its higher resource cost. A 180 Hz high-pass,
+Base.en Q5 substantially improved proper names and recovered speech that Tiny omitted, at an acceptable
+resource cost on the 8 GiB Pi. A 180 Hz high-pass,
 3.8 kHz low-pass, and loudness normalization did not improve recognition enough to justify adding a
-preprocessing dependency. The production recommendation is therefore tiny.en Q5, two threads, and
-the default audio context, with transcription still explicitly opt-in.
+preprocessing dependency. The production recommendation is therefore base.en Q5, two threads, the
+default audio context, and timestamp-aware decoding, with transcription still explicitly opt-in.
 
 The plugin's five-second replay slices were also tested independently. They fragmented sentences,
 lost words at boundaries, and one returned only a single token. Fifteen-second windows still omitted
@@ -52,7 +53,7 @@ pressure. During every run the receiver reported zero IQ drops and zero restarts
 baseline was about 6% of one CPU; Signal K as a whole was about 22–25% of one CPU immediately after
 restart.
 
-The prototype therefore uses `tiny.en-q5_1`, two threads, and the model's default audio context. Jobs are serialized,
+Production therefore uses `base.en-q5_1`, two threads, timestamp-aware decoding, and the model's default audio context. Jobs are serialized,
 bounded, and only queued for replay slices containing at least 0.35 seconds that pass RF squelch.
 Transcription remains off by default and is an optional, separately installed package.
 

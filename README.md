@@ -99,9 +99,10 @@ directory and survives Signal K restarts. Disabling it stops the worker and clea
 Transcription requires the separately installed `vhf-whisper-runtime` Debian package. The receiver,
 DSC decoder, live audio, and replay remain fully functional without it, and the UI will refuse to
 enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
-`whisper.cpp` `tiny.en-q5_1` model with two CPU threads and its normal audio context. An off-air NOAA
-marine forecast showed that the smaller 768-token audio context could be faster but failed badly on
-continuous radio speech, so the packaged runtime deliberately keeps the model default. Adjacent
+`whisper.cpp` `base.en-q5_1` model with two CPU threads and its normal audio context. Off-air NOAA
+marine forecasts showed that Base recovered substantially more radio speech and nearby place names
+than Tiny. Timestamp-aware decoding is retained for reliable long-window alignment; the plugin strips
+the timestamp labels before display. Adjacent
 five-second replay slices are combined into one-minute recognition windows. Successive windows reuse
 ten seconds of audio for linguistic context, then reconcile the repeated text with the preceding
 result so it is not shown twice. A shorter final window runs after the channel has been quiet for six
@@ -122,7 +123,7 @@ Pi (or an ARM64 Debian builder), then install the resulting file with `apt insta
 
 ```sh
 packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin \
-  /path/to/whisper.cpp/models/ggml-tiny.en-q5_1.bin /tmp
+  /path/to/whisper.cpp/models/ggml-base.en-q5_1.bin /tmp
 ```
 
 The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in

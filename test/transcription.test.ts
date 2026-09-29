@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
-import { reconcileTranscriptOverlap, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
+import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
 
 test('reconciles fuzzy text repeated by overlapping transcription windows', () => {
@@ -17,6 +17,13 @@ test('allows decoding to run longer than its one-minute audio window', () => {
   assert.equal(transcriptionTimeoutMs(15), 90_000)
   assert.equal(transcriptionTimeoutMs(60), 120_000)
   assert.equal(transcriptionTimeoutMs(75), 150_000)
+})
+
+test('removes Whisper timestamps without discarding decoded speech', () => {
+  assert.equal(cleanWhisperOutput([
+    '[00:00:00.000 --> 00:00:07.440]   miles per hour becoming southwest',
+    '[00:00:07.440 --> 00:00:14.560]   mostly sunny in the morning'
+  ].join('\n')), 'miles per hour becoming southwest mostly sunny in the morning')
 })
 
 test('transcription defaults off, requires its runtime, and persists explicit activation', async () => {

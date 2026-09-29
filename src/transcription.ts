@@ -21,7 +21,7 @@ export interface TranscriptionStatus {
   available: boolean
   state: 'disabled' | 'unavailable' | 'idle' | 'transcribing'
   queued: number
-  engine: 'whisper.cpp tiny.en q5_1'
+  engine: 'whisper.cpp base.en q5_1'
   command: string
   archive?: TranscriptArchiveStatus
   error?: string
@@ -97,6 +97,16 @@ export function transcriptionTimeoutMs(durationSeconds: number): number {
   )
 }
 
+export function cleanWhisperOutput(output: string): string {
+  return output
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, ''))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export class TranscriptionManager {
   readonly #settingsPath: string
   readonly #command: string
@@ -133,7 +143,7 @@ export class TranscriptionManager {
       available,
       state: !this.#enabled ? 'disabled' : !available ? 'unavailable' : this.#running ? 'transcribing' : 'idle',
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
-      engine: 'whisper.cpp tiny.en q5_1',
+      engine: 'whisper.cpp base.en q5_1',
       command: this.#command,
       ...(this.#archive ? { archive: this.#archive.status() } : {}),
       ...(this.#error ? { error: this.#error } : {})
@@ -327,7 +337,7 @@ export class TranscriptionManager {
           reject(new Error(signal === 'SIGKILL' ? 'Transcription timed out' : stderr.trim() || `Whisper exited ${code}`))
           return
         }
-        resolve(stdout.replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim())
+        resolve(cleanWhisperOutput(stdout))
       })
     })
   }

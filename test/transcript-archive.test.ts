@@ -30,6 +30,8 @@ test('stores playable zstd audio and transcript metadata in a private SQLite dat
   assert.equal(stored.transcript, 'voice on 16')
   assert.equal(stored.minimumDiscriminatorNoise, 0.12)
   assert.deepEqual(archive.wav(stored.id), input.wav)
+  assert.equal(archive.updateTranscript(stored.id, 'rebuilt with base')?.transcript, 'rebuilt with base')
+  assert.equal(archive.updateTranscript(99_999, 'missing'), undefined)
   assert.equal(archive.status().records, 1)
   assert.equal(statSync(databasePath).mode & 0o777, 0o600)
   archive.close()
