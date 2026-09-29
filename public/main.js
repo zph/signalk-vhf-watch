@@ -38,6 +38,7 @@
   const archiveEmpty = $('#archive-empty')
   const archiveSummary = $('#archive-summary')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
+  const SESSION_BREAK_SECONDS = 6
   let channels = []
   let poll
   let replaySquelchTouched = false
@@ -199,6 +200,95 @@
     return segment.activity.reduce((sum, value) => sum + value, 0) / segment.activity.length * segment.durationSeconds
   }
 
+  function edgeQuietSeconds(segment, leading) {
+    if (!Array.isArray(segment.activity) || segment.activity.length === 0) return 0
+    const values = leading ? segment.activity : segment.activity.slice().reverse()
+    let quietBins = 0
+    for (const value of values) {
+      if (value > 0) break
+      quietBins += 1
+    }
+    return quietBins * segment.durationSeconds / segment.activity.length
+  }
+
+  function downsampleActivity(values, maximumBins = 240) {
+    if (values.length <= maximumBins) return values
+    const result = []
+    const width = values.length / maximumBins
+    for (let index = 0; index < maximumBins; index += 1) {
+      const start = Math.floor(index * width)
+      const end = Math.max(start + 1, Math.ceil((index + 1) * width))
+      result.push(Math.max(...values.slice(start, end)))
+    }
+    return result
+  }
+
+  function replaySession(segments) {
+    const first = segments[0]
+    const last = segments.at(-1)
+    const measured = segments.flatMap((segment) => segment.minimumDiscriminatorNoise === undefined ? [] : [segment.minimumDiscriminatorNoise])
+    const transcriptionStates = segments.flatMap((segment) => segment.transcription ? [segment.transcription] : [])
+    const texts = transcriptionStates.flatMap((transcription) => transcription.status === 'complete' && transcription.text ? [transcription.text] : [])
+    const error = transcriptionStates.find((transcription) => transcription.status === 'error')
+    const active = transcriptionStates.find((transcription) => ['queued', 'transcribing'].includes(transcription.status))
+    const transcription = error
+      ? error
+      : active
+        ? active
+        : texts.length > 0
+          ? { status: 'complete', text: texts.join(' ') }
+          : undefined
+    return {
+      ...first,
+      ids: segments.map((segment) => segment.id),
+      endedAt: last.endedAt,
+      durationSeconds: segments.reduce((sum, segment) => sum + segment.durationSeconds, 0),
+      activity: downsampleActivity(segments.flatMap((segment) => segment.activity ?? [])),
+      ...(measured.length > 0 ? { minimumDiscriminatorNoise: Math.min(...measured) } : {}),
+      ...(transcription ? { transcription } : {})
+    }
+  }
+
+  function groupReplaySessions(segments) {
+    const groups = []
+    for (const segment of segments.slice().reverse()) {
+      const group = groups.at(-1)
+      const previous = group?.at(-1)
+      const timeGapSeconds = previous ? (Date.parse(segment.startedAt) - Date.parse(previous.endedAt)) / 1000 : Number.POSITIVE_INFINITY
+      const quietSeconds = previous ? edgeQuietSeconds(previous, false) + edgeQuietSeconds(segment, true) : Number.POSITIVE_INFINITY
+      const joins = previous && previous.slot === segment.slot && previous.channel === segment.channel &&
+        timeGapSeconds >= -1 && timeGapSeconds <= 2 && quietSeconds < SESSION_BREAK_SECONDS
+      if (joins) group.push(segment)
+      else groups.push([segment])
+    }
+    return groups.map(replaySession).reverse()
+  }
+
+  function groupArchiveSessions(records) {
+    const groups = []
+    for (const record of records.slice().reverse()) {
+      const group = groups.at(-1)
+      const previous = group?.at(-1)
+      const gapSeconds = previous ? (Date.parse(record.startedAt) - Date.parse(previous.endedAt)) / 1000 : Number.POSITIVE_INFINITY
+      if (previous && previous.channel === record.channel && previous.sampleRate === record.sampleRate && gapSeconds <= SESSION_BREAK_SECONDS) {
+        group.push(record)
+      } else groups.push([record])
+    }
+    return groups.map((group) => {
+      const first = group[0]
+      const last = group.at(-1)
+      const measured = group.flatMap((record) => record.minimumDiscriminatorNoise === undefined ? [] : [record.minimumDiscriminatorNoise])
+      return {
+        ...first,
+        ids: group.map((record) => record.id),
+        endedAt: last.endedAt,
+        durationSeconds: group.reduce((sum, record) => sum + record.durationSeconds, 0),
+        transcript: group.map((record) => record.transcript).filter(Boolean).join(' '),
+        ...(measured.length > 0 ? { minimumDiscriminatorNoise: Math.min(...measured) } : {})
+      }
+    }).reverse()
+  }
+
   function timelineIndexNear(timestamp) {
     if (replayTimeline.length === 0) return -1
     let nearest = 0
@@ -356,6 +446,34 @@
     highlightFrequencyBurst()
   }
 
+  function latestActiveTimelineIndex() {
+    return replayTimeline.findLastIndex((segment) =>
+      segment.slot === 'A' && segment.channel === timelineActiveSlotAChannel
+    )
+  }
+
+  function selectLatestActiveTimeline(autoplay = false) {
+    const index = latestActiveTimelineIndex()
+    if (index < 0) {
+      timelineAwaitingChannel = timelineActiveSlotAChannel
+      timelineRange.disabled = true
+      timelineLatest.disabled = true
+      timelineTime.textContent = `Waiting for ${channelDisplay(timelineActiveSlotAChannel)} audio…`
+      timelineOffset.textContent = channelFrequencyDisplay(timelineActiveSlotAChannel)
+      timelineAudio.pause()
+      timelineAudio.removeAttribute('src')
+      timelineAudio.load()
+      renderFrequencyMap()
+      return
+    }
+    timelineAwaitingChannel = undefined
+    timelineFollowingLive = true
+    timelineWaitingAtEdge = false
+    timelineRange.disabled = false
+    timelineLatest.disabled = false
+    selectTimelineIndex(index, autoplay)
+  }
+
   function updateTimeline(segments) {
     replayTimeline = segments.slice().reverse()
     timelineRange.disabled = replayTimeline.length === 0
@@ -401,9 +519,12 @@
       return
     }
     const selectedIndex = timelineFollowingLive
-      ? (currentIndex >= 0 ? currentIndex : replayTimeline.length - 1)
+      ? (currentIndex >= 0 && replayTimeline[currentIndex]?.channel === timelineActiveSlotAChannel
+          ? currentIndex
+          : latestActiveTimelineIndex())
       : Math.max(0, currentIndex)
-    selectTimelineIndex(selectedIndex)
+    if (selectedIndex < 0) selectLatestActiveTimeline()
+    else selectTimelineIndex(selectedIndex)
     renderFrequencyMap()
   }
 
@@ -471,16 +592,16 @@
     const audio = document.createElement('audio')
     audio.controls = true
     audio.preload = 'none'
-    audio.src = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
+    audio.src = `${API}replay-session.wav?ids=${encodeURIComponent(segment.ids.join(','))}&squelch=${encodeURIComponent(replaySquelch.value)}`
     const deleteButton = document.createElement('button')
     deleteButton.className = 'danger replay-delete'
     deleteButton.type = 'button'
     deleteButton.textContent = 'Delete'
-    deleteButton.setAttribute('aria-label', `Delete radio segment from ${time.textContent}`)
+    deleteButton.setAttribute('aria-label', `Delete radio session from ${time.textContent}`)
     deleteButton.addEventListener('click', async () => {
       deleteButton.disabled = true
       try {
-        await request(`replay/${segment.id}`, { method: 'DELETE' })
+        for (const id of segment.ids) await request(`replay/${id}`, { method: 'DELETE' })
         await updateReplay()
       } catch (error) {
         deleteButton.disabled = false
@@ -495,12 +616,13 @@
     try {
       const { segments } = await request(`replay?squelch=${encodeURIComponent(replaySquelch.value)}`)
       updateTimeline(segments)
-      const visibleSegments = segments.filter((segment) => {
-        const activeSeconds = replayActiveSeconds(segment)
+      const sessions = groupReplaySessions(segments)
+      const visibleSessions = sessions.filter((session) => {
+        const activeSeconds = replayActiveSeconds(session)
         return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
       })
-      replayList.replaceChildren(...visibleSegments.map(replayRow))
-      empty.hidden = visibleSegments.length > 0
+      replayList.replaceChildren(...visibleSessions.map(replayRow))
+      empty.hidden = visibleSessions.length > 0
       empty.textContent = segments.length === 0
         ? 'Waiting for the first replay segment…'
         : `No radio activity passes squelch ${replaySquelch.value} yet.`
@@ -557,7 +679,7 @@
     const audio = document.createElement('audio')
     audio.controls = true
     audio.preload = 'none'
-    audio.src = `${API}transcripts/${record.id}.wav`
+    audio.src = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
     item.append(time, detail, audio)
     return item
   }
@@ -565,8 +687,9 @@
   async function updateArchive() {
     try {
       const { records, archive } = await request('transcripts?limit=500')
-      archiveList.replaceChildren(...records.map(archiveRow))
-      archiveEmpty.hidden = records.length > 0
+      const sessions = groupArchiveSessions(records)
+      archiveList.replaceChildren(...sessions.map(archiveRow))
+      archiveEmpty.hidden = sessions.length > 0
       archiveEmpty.textContent = 'No archived transcripts yet.'
       if (archive) {
         archiveSummary.textContent = `${archive.records} records · ${(archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${archive.retentionDays} days`
@@ -677,10 +800,7 @@
   timelineOlder.addEventListener('click', () => moveTimeline(-60_000))
   timelineNewer.addEventListener('click', () => moveTimeline(60_000))
   timelineLatest.addEventListener('click', () => {
-    timelineAwaitingChannel = undefined
-    timelineFollowingLive = true
-    timelineWaitingAtEdge = false
-    selectTimelineIndex(replayTimeline.length - 1, true)
+    selectLatestActiveTimeline(true)
   })
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)

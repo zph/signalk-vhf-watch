@@ -4,7 +4,15 @@ import type { ChannelRegion } from './channels'
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
-import { wavHeader } from './wav'
+import { pcmToWav, wavHeader } from './wav'
+
+function requestedIds(value: unknown, maximum: number): number[] | undefined {
+  if (typeof value !== 'string') return undefined
+  const ids = value.split(',').map(Number)
+  return ids.length > 0 && ids.length <= maximum && ids.every((id) => Number.isSafeInteger(id) && id > 0)
+    ? ids
+    : undefined
+}
 
 function runtimeOr503(getRuntime: () => VhfRuntime | undefined, response: Response): VhfRuntime | undefined {
   const runtime = getRuntime()
@@ -70,6 +78,33 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       'Content-Disposition': `inline; filename="vhf-transcript-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav"`
     }).send(wav)
   })
+  read.get('/api/transcript-session.wav', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const ids = requestedIds(request.query.ids, 500)
+    const records = ids?.map((id) => runtime.transcription.archiveRecord(id))
+    if (!ids || !records || records.some((record) => !record)) {
+      response.status(404).json({ error: 'Transcript session not found' })
+      return
+    }
+    const resolved = records as NonNullable<(typeof records)[number]>[]
+    const first = resolved[0]!
+    const valid = resolved.every((record, index) =>
+      record.channel === first.channel && record.sampleRate === first.sampleRate &&
+      (index === 0 || Date.parse(record.startedAt) >= Date.parse(resolved[index - 1]!.startedAt))
+    )
+    const wavs = valid ? ids.map((id) => runtime.transcription.archiveWav(id)) : []
+    if (!valid || wavs.some((wav) => !wav)) {
+      response.status(400).json({ error: 'Transcript session is not a continuous channel recording' })
+      return
+    }
+    const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
+    response.set({
+      'Content-Type': 'audio/wav',
+      'Cache-Control': 'no-store, private',
+      'Content-Disposition': `inline; filename="vhf-transcript-${first.channel}-session.wav"`
+    }).send(pcmToWav(pcm, first.sampleRate))
+  })
   read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -88,6 +123,35 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       'Cache-Control': 'private, max-age=3600',
       'Content-Disposition': `inline; filename="vhf-${segment.channel}-${segment.startedAt.replace(/[:.]/g, '-')}.wav"`
     }).send(wav)
+  })
+  read.get('/api/replay-session.wav', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const ids = requestedIds(request.query.ids, 240)
+    const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
+    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
+    const segments = ids?.map((id) => runtime.replaySegment(id))
+    if (!ids || !segments || segments.some((segment) => !segment)) {
+      response.status(404).json({ error: 'Replay session not found' })
+      return
+    }
+    const resolved = segments as NonNullable<(typeof segments)[number]>[]
+    const first = resolved[0]!
+    const valid = resolved.every((segment, index) =>
+      segment.slot === first.slot && segment.channel === first.channel &&
+      (index === 0 || Date.parse(segment.startedAt) >= Date.parse(resolved[index - 1]!.startedAt))
+    )
+    const wavs = valid ? ids.map((id) => runtime.replayWavFor(id, squelch)) : []
+    if (!valid || wavs.some((wav) => !wav)) {
+      response.status(400).json({ error: 'Replay session is not a continuous channel recording' })
+      return
+    }
+    const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
+    response.set({
+      'Content-Type': 'audio/wav',
+      'Cache-Control': 'no-store, private',
+      'Content-Disposition': `inline; filename="vhf-${first.channel}-session.wav"`
+    }).send(pcmToWav(pcm, runtime.config.sampleRate))
   })
   read.get('/api/replay/:id/continuous.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -248,8 +312,10 @@ export function openApi(): object {
       '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/replay/{id}/continuous.wav': { get: { summary: 'Play seamless replay through the live edge', responses: { '200': { description: 'Streaming WAV audio' } } } },
+      '/api/replay-session.wav': { get: { summary: 'Play one synthesized historical radio session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
       '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
+      '/api/transcript-session.wav': { get: { summary: 'Play one synthesized archived transcript session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/dsc': {
         get: { summary: 'List decoded DSC Channel 70 calls', responses: { '200': { description: 'DSC calls' } } },
