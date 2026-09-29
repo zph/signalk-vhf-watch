@@ -64,6 +64,23 @@
     return response.json()
   }
 
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.append(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    textarea.remove()
+    if (!copied) throw new Error('clipboard access is unavailable')
+  }
+
   function setConnection(kind, label) {
     connection.className = `connection ${kind}`
     connection.lastChild.textContent = label
@@ -285,6 +302,7 @@
       return {
         ...first,
         ids: group.map((record) => record.id),
+        records: group,
         endedAt: last.endedAt,
         durationSeconds: group.reduce((sum, record) => sum + record.durationSeconds, 0),
         transcript: group.map((record) => record.transcript).filter(Boolean).join(' '),
@@ -689,26 +707,96 @@
 
   function archiveRow(record) {
     const item = document.createElement('li')
-    item.className = 'replay-item archive-item'
-    const time = document.createElement('div')
-    time.className = 'replay-time'
+    item.className = 'archive-item'
+    const details = document.createElement('details')
+    details.className = 'archive-details'
+    details.dataset.sessionKey = record.ids.join(',')
+    const summary = document.createElement('summary')
+    summary.className = 'archive-summary-row'
+    const time = document.createElement('time')
+    time.className = 'archive-time'
+    time.dateTime = record.startedAt
     time.textContent = new Date(record.startedAt).toLocaleString([], {
       month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
     })
-    const detail = document.createElement('div')
-    detail.className = 'replay-detail'
-    const metadata = document.createElement('div')
+    const channel = document.createElement('strong')
+    channel.textContent = channelDisplay(record.channel)
+    const duration = document.createElement('span')
+    duration.textContent = `${record.durationSeconds.toFixed(1)} sec`
+    const count = document.createElement('span')
+    count.textContent = `${record.records.length} log ${record.records.length === 1 ? 'entry' : 'entries'}`
+    summary.append(time, channel, duration, count)
+
+    const body = document.createElement('div')
+    body.className = 'archive-body'
+    const log = document.createElement('div')
+    log.className = 'archive-log'
+    log.setAttribute('role', 'log')
+    log.setAttribute('aria-label', `Full transcript for ${time.textContent}`)
+    for (const entry of record.records) {
+      const line = document.createElement('div')
+      line.className = 'archive-log-line'
+      const stamp = document.createElement('time')
+      stamp.dateTime = entry.startedAt
+      stamp.textContent = new Date(entry.startedAt).toLocaleString([], {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      })
+      const text = document.createElement('span')
+      text.textContent = entry.transcript || '[no speech recognized]'
+      line.append(stamp, text)
+      log.append(line)
+    }
+
+    const metadata = document.createElement('dl')
+    metadata.className = 'archive-metadata'
     const quality = record.minimumDiscriminatorNoise === undefined ? '' : ` · RF noise ${record.minimumDiscriminatorNoise.toFixed(2)}`
-    metadata.textContent = `CH ${record.channel} · ${record.durationSeconds.toFixed(1)} sec${quality}`
-    const transcript = document.createElement('div')
-    transcript.className = 'transcript archive-transcript'
-    transcript.textContent = record.transcript || 'No speech recognized.'
-    detail.append(metadata, transcript)
+    const audioBytes = record.records.reduce((sum, entry) => sum + entry.audioBytes, 0)
+    const compressedBytes = record.records.reduce((sum, entry) => sum + entry.compressedBytes, 0)
+    const metadataRows = [
+      ['Recording', `${new Date(record.startedAt).toLocaleString()} – ${new Date(record.endedAt).toLocaleString()}`],
+      ['Channel', `${channelDisplay(record.channel)} · ${channelFrequencyDisplay(record.channel)}`],
+      ['Audio', `${record.durationSeconds.toFixed(1)} sec · ${record.sampleRate.toLocaleString()} Hz mono${quality}`],
+      ['Storage', `${record.ids.length} SQLite ${record.ids.length === 1 ? 'record' : 'records'} · ${(compressedBytes / 1024).toFixed(0)} KiB compressed from ${(audioBytes / 1024).toFixed(0)} KiB`],
+      ['Record IDs', record.ids.map((id) => `#${id}`).join(', ')]
+    ]
+    for (const [term, value] of metadataRows) {
+      const dt = document.createElement('dt')
+      dt.textContent = term
+      const dd = document.createElement('dd')
+      dd.textContent = value
+      metadata.append(dt, dd)
+    }
+
     const audio = document.createElement('audio')
     audio.controls = true
     audio.preload = 'none'
-    audio.src = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
-    item.append(time, detail, audio)
+    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
+    audio.src = audioUrl
+    const actions = document.createElement('div')
+    actions.className = 'archive-actions'
+    const download = document.createElement('a')
+    download.className = 'button-link'
+    download.href = audioUrl
+    download.download = `vhf-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav`
+    download.textContent = 'Download WAV'
+    const copy = document.createElement('button')
+    copy.type = 'button'
+    copy.textContent = 'Copy transcript'
+    copy.addEventListener('click', async () => {
+      try {
+        const text = record.records.map((entry) => `[${entry.startedAt}] ${entry.transcript || '[no speech recognized]'}`).join('\n')
+        await copyText(text)
+        copy.textContent = 'Copied'
+        window.setTimeout(() => { copy.textContent = 'Copy transcript' }, 1_500)
+      } catch (error) {
+        setConnection('error', `Could not copy transcript: ${error.message}`)
+      }
+    })
+    actions.append(download, copy)
+    body.append(log, metadata, audio, actions)
+    details.append(summary, body)
+    item.append(details)
     return item
   }
 
@@ -718,7 +806,11 @@
       const sessions = groupArchiveSessions(records)
       const signature = sessionRenderSignature(sessions, true)
       if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
+        const expanded = new Set([...archiveList.querySelectorAll('details[open]')].map((details) => details.dataset.sessionKey))
         archiveList.replaceChildren(...sessions.map(archiveRow))
+        for (const details of archiveList.querySelectorAll('details')) {
+          if (expanded.has(details.dataset.sessionKey)) details.open = true
+        }
         archiveRenderSignature = signature
       }
       archiveEmpty.hidden = sessions.length > 0
