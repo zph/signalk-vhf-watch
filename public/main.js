@@ -27,6 +27,8 @@
   const timelineOlder = $('#timeline-older')
   const timelineNewer = $('#timeline-newer')
   const timelineLatest = $('#timeline-latest')
+  const frequencyMap = $('#frequency-map')
+  const frequencyEmpty = $('#frequency-empty')
   const transcriptionEnabled = $('#transcription-enabled')
   const transcriptionStatus = $('#transcription-status')
   const archiveList = $('#archive-list')
@@ -40,6 +42,7 @@
   let timelineSegmentId
   let timelineFollowingLive = true
   let timelineWaitingAtEdge = false
+  let timelineWindowMinutes = 120
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -82,6 +85,7 @@
       : ''
     receiverState.textContent = status.error || `${status.receiverState} · ${status.mode === 'demo' ? 'Demo source' : 'Wideband RTL-SDR'}${dsc}${health}`
     retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB per voice slot · ${status.replaySegments} private segments across both slots`
+    timelineWindowMinutes = status.replayMinutes
     const transcription = status.transcription
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
@@ -141,6 +145,103 @@
     return nearest
   }
 
+  function channelFrequency(channelId) {
+    return channels.find((channel) => channel.id === channelId)?.frequencyHz
+  }
+
+  function radioStrength(segment, activity) {
+    const noise = segment.minimumDiscriminatorNoise
+    const rfStrength = noise === undefined ? 0.45 : Math.max(0, Math.min(1, (0.5 - noise) / 0.45))
+    return Math.max(0.12, Math.min(1, activity * 0.65 + rfStrength * 0.35))
+  }
+
+  function activityRuns(segment) {
+    if (!Array.isArray(segment.activity) || segment.activity.length === 0) return []
+    let start = -1
+    let end = -1
+    let maximum = 0
+    for (const [index, value] of segment.activity.entries()) {
+      if (value <= 0) continue
+      if (start < 0) start = index
+      end = index + 1
+      maximum = Math.max(maximum, value)
+    }
+    return start < 0 ? [] : [{ start, end, activity: maximum }]
+  }
+
+  function highlightFrequencyBurst() {
+    for (const burst of frequencyMap.querySelectorAll('.frequency-burst')) {
+      burst.classList.toggle('selected', burst.dataset.segmentId === String(timelineSegmentId))
+    }
+  }
+
+  function renderFrequencyMap() {
+    const endTime = Date.now()
+    const startTime = endTime - timelineWindowMinutes * 60_000
+    const timeSpan = endTime - startTime
+    const rows = new Map()
+
+    for (const [segmentIndex, segment] of replayTimeline.entries()) {
+      const frequencyHz = channelFrequency(segment.channel)
+      const key = `${segment.slot}:${frequencyHz || segment.channel}`
+      if (!rows.has(key)) rows.set(key, { slot: segment.slot, channel: segment.channel, frequencyHz, marks: [] })
+      const segmentStart = Date.parse(segment.startedAt)
+      const segmentDuration = Math.max(1, segment.durationSeconds * 1000)
+      for (const run of activityRuns(segment)) {
+        const runStart = segmentStart + segmentDuration * run.start / segment.activity.length
+        const runEnd = segmentStart + segmentDuration * run.end / segment.activity.length
+        if (runEnd < startTime || runStart > endTime) continue
+        rows.get(key).marks.push({ segment, segmentIndex, runStart, runEnd, activity: run.activity })
+      }
+    }
+
+    const populatedRows = [...rows.values()]
+      .filter((row) => row.marks.length > 0)
+      .sort((left, right) => (left.frequencyHz || Number.MAX_SAFE_INTEGER) - (right.frequencyHz || Number.MAX_SAFE_INTEGER) || left.slot.localeCompare(right.slot))
+
+    const rowElements = populatedRows.map((row) => {
+      const wrapper = document.createElement('div')
+      wrapper.className = 'frequency-row'
+      const label = document.createElement('div')
+      label.className = 'frequency-label'
+      const channel = document.createElement('strong')
+      channel.textContent = `Slot ${row.slot} · CH ${row.channel}`
+      const frequency = document.createElement('span')
+      frequency.textContent = row.frequencyHz ? `${(row.frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
+      label.append(channel, frequency)
+      const track = document.createElement('div')
+      track.className = 'frequency-track'
+      for (const mark of row.marks) {
+        const left = Math.max(0, Math.min(100, (mark.runStart - startTime) / timeSpan * 100))
+        const right = Math.max(left, Math.min(100, (mark.runEnd - startTime) / timeSpan * 100))
+        const strength = radioStrength(mark.segment, mark.activity)
+        const button = document.createElement('button')
+        button.className = 'frequency-burst'
+        button.type = 'button'
+        button.dataset.segmentId = String(mark.segment.id)
+        button.style.setProperty('--burst-left', `${left}%`)
+        button.style.setProperty('--burst-width', `${Math.max(0.08, right - left)}%`)
+        button.style.setProperty('--burst-strength', strength.toFixed(2))
+        button.style.setProperty('--burst-opacity', (0.16 + strength * 0.84).toFixed(2))
+        button.style.setProperty('--burst-glow', `${(4 + strength * 10).toFixed(1)}px`)
+        const time = new Date(mark.runStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        button.setAttribute('aria-label', `Listen to Slot ${row.slot}, channel ${row.channel}, ${frequency.textContent}, activity burst at ${time}`)
+        button.addEventListener('click', () => {
+          timelineFollowingLive = false
+          timelineWaitingAtEdge = false
+          selectTimelineIndex(mark.segmentIndex, true)
+        })
+        track.append(button)
+      }
+      wrapper.append(label, track)
+      return wrapper
+    })
+    frequencyMap.replaceChildren(...rowElements)
+    frequencyMap.hidden = populatedRows.length === 0
+    frequencyEmpty.hidden = populatedRows.length > 0
+    highlightFrequencyBurst()
+  }
+
   function selectTimelineIndex(requestedIndex, autoplay = false) {
     if (replayTimeline.length === 0) return
     const index = Math.max(0, Math.min(replayTimeline.length - 1, requestedIndex))
@@ -156,6 +257,7 @@
     const source = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
+    highlightFrequencyBurst()
   }
 
   function updateTimeline(segments) {
@@ -171,6 +273,7 @@
       timelineOffset.textContent = 'The rolling buffer is filling.'
       timelineOlder.disabled = true
       timelineNewer.disabled = true
+      renderFrequencyMap()
       return
     }
     const oldest = new Date(replayTimeline[0].startedAt)
@@ -179,12 +282,14 @@
     if (timelineFollowingLive && timelineWaitingAtEdge && currentIndex >= 0 && currentIndex < replayTimeline.length - 1) {
       timelineWaitingAtEdge = false
       selectTimelineIndex(currentIndex + 1, true)
+      renderFrequencyMap()
       return
     }
     const selectedIndex = timelineFollowingLive
       ? (currentIndex >= 0 ? currentIndex : replayTimeline.length - 1)
       : Math.max(0, currentIndex)
     selectTimelineIndex(selectedIndex)
+    renderFrequencyMap()
   }
 
   function moveTimeline(milliseconds) {

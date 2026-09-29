@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=15" />
+  <link rel="stylesheet" href="./styles.css?v=16" />
 </head>
 <body>
   <main>
@@ -57,6 +57,15 @@
       <div class="timeline-selection" aria-live="polite">
         <strong id="timeline-time">Waiting for audio…</strong>
         <span id="timeline-offset">The rolling buffer is filling.</span>
+      </div>
+      <div class="frequency-overview">
+        <div class="frequency-overview-heading">
+          <strong>Frequency activity</strong>
+          <span><i aria-hidden="true"></i> stronger signal · tap to listen</span>
+        </div>
+        <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
+        <p id="frequency-empty" class="frequency-empty">Activity bursts will appear here as the rolling buffer fills.</p>
+        <div class="frequency-scale" aria-hidden="true"><span>2 hr ago</span><span>1 hr ago</span><span>Now</span></div>
       </div>
       <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
       <div class="timeline-scale"><span id="timeline-oldest">2 hr ago</span><span>Now</span></div>
@@ -150,6 +159,6 @@
       Channel 70 is decoded continuously whenever it is assigned to Slot B.
     </footer>
   </main>
-  <script src="./main.js?v=15"></script>
+  <script src="./main.js?v=16"></script>
 </body>
 </html>

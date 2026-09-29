@@ -73,6 +73,29 @@ h2 { margin-bottom: 4px; font-size: 1.5rem; }
 .timeline-selection { margin: 18px 0 8px; }
 .timeline-selection strong { color: var(--text); font-size: clamp(1.25rem, 4vw, 1.8rem); }
 .timeline-selection span, .timeline-scale { color: var(--muted); font-size: .78rem; }
+.frequency-overview { margin: 16px 0 10px; }
+.frequency-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: .78rem; }
+.frequency-overview-heading > span { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.frequency-overview-heading i { width: 58px; height: 8px; border-radius: 999px; background: linear-gradient(90deg, rgba(53, 209, 230, .15), var(--cyan)); }
+.frequency-map { display: grid; gap: 6px; }
+.frequency-row { display: grid; grid-template-columns: minmax(118px, 150px) 1fr; align-items: center; gap: 10px; }
+.frequency-label { min-width: 0; font-variant-numeric: tabular-nums; }
+.frequency-label strong, .frequency-label span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frequency-label strong { font-size: .72rem; }
+.frequency-label span { color: var(--muted); font-size: .66rem; }
+.frequency-track { position: relative; height: 30px; overflow: hidden; border-radius: 7px; background: repeating-linear-gradient(90deg, rgba(155, 178, 193, .08) 0, rgba(155, 178, 193, .08) 1px, transparent 1px, transparent 25%), #061019; }
+.frequency-burst {
+  position: absolute; top: 3px; bottom: 3px; left: var(--burst-left); width: max(4px, var(--burst-width)); min-height: 0; padding: 0;
+  border: 0; border-radius: 3px; background: var(--cyan); opacity: var(--burst-opacity);
+  box-shadow: 0 0 var(--burst-glow) rgba(53, 209, 230, var(--burst-strength));
+}
+.frequency-burst:hover, .frequency-burst:focus-visible { opacity: 1; outline: 2px solid var(--text); outline-offset: -2px; }
+.frequency-burst.selected { background: var(--orange); opacity: 1; box-shadow: 0 0 12px rgba(255, 174, 87, .9); }
+.frequency-empty { margin: 0; padding: 18px 12px; border-radius: 7px; color: var(--muted); background: #061019; text-align: center; font-size: .78rem; }
+.frequency-scale { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 4px; padding-left: 160px; color: var(--muted); font-size: .66rem; font-variant-numeric: tabular-nums; }
+.frequency-scale span:nth-child(1) { text-align: left; }
+.frequency-scale span:nth-child(2) { text-align: center; }
+.frequency-scale span:nth-child(3) { text-align: right; }
 #timeline-range { width: 100%; height: 34px; accent-color: var(--cyan); cursor: pointer; }
 #timeline-range:disabled { cursor: default; opacity: .45; }
 .timeline-scale { margin-top: -5px; }
@@ -141,6 +164,9 @@ footer strong { color: var(--green); }
   .connection { margin-top: 7px; padding: 7px 10px; }
   .radio-card, .listen-card { align-items: stretch; flex-direction: column; gap: 18px; }
   .timeline-selection { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .frequency-row { grid-template-columns: 98px 1fr; gap: 7px; }
+  .frequency-track { height: 40px; }
+  .frequency-scale { grid-template-columns: 1fr 1fr 1fr; padding-left: 105px; }
   .timeline-actions button { flex: 1 1 50%; }
   .listen-card button { width: 100%; }
   .live-controls { justify-content: stretch; }
