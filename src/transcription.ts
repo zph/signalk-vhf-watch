@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ReplaySegment } from './rolling-buffer'
 import { discriminatorThreshold } from './squelch'
+import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchiveStatus } from './transcript-archive'
 import { pcmToWav } from './wav'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
@@ -19,6 +20,7 @@ export interface TranscriptionStatus {
   queued: number
   engine: 'whisper.cpp tiny.en q5_1'
   command: string
+  archive?: TranscriptArchiveStatus
   error?: string
 }
 
@@ -34,6 +36,7 @@ interface TranscriptionBatch {
 interface TranscriptionOptions {
   batchSeconds?: number
   idleMs?: number
+  archive?: TranscriptArchive
 }
 
 export class TranscriptionManager {
@@ -41,6 +44,7 @@ export class TranscriptionManager {
   readonly #command: string
   readonly #batchSeconds: number
   readonly #idleMs: number
+  readonly #archive?: TranscriptArchive
   #enabled: boolean
   #queue: TranscriptionBatch[] = []
   #pending: ReplaySegment[] = []
@@ -49,12 +53,14 @@ export class TranscriptionManager {
   #running = false
   #child?: ChildProcess
   #error?: string
+  #closed = false
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
     this.#command = command
     this.#batchSeconds = options.batchSeconds ?? TRANSCRIPTION_BATCH_SECONDS
     this.#idleMs = options.idleMs ?? TRANSCRIPTION_BATCH_IDLE_MS
+    this.#archive = options.archive
     this.#enabled = this.#load().enabled
   }
 
@@ -67,6 +73,7 @@ export class TranscriptionManager {
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
       engine: 'whisper.cpp tiny.en q5_1',
       command: this.#command,
+      ...(this.#archive ? { archive: this.#archive.status() } : {}),
       ...(this.#error ? { error: this.#error } : {})
     }
   }
@@ -130,6 +137,25 @@ export class TranscriptionManager {
     this.#child?.kill('SIGTERM')
   }
 
+  close(): void {
+    if (this.#closed) return
+    this.stop()
+    this.#archive?.close()
+    this.#closed = true
+  }
+
+  archiveRecords(limit?: number): TranscriptArchiveRecord[] {
+    return this.#archive?.list(limit) ?? []
+  }
+
+  archiveRecord(id: number): TranscriptArchiveRecord | undefined {
+    return this.#archive?.record(id)
+  }
+
+  archiveWav(id: number): Buffer | undefined {
+    return this.#archive?.wav(id)
+  }
+
   #schedulePending(): void {
     if (this.#pendingTimer) clearTimeout(this.#pendingTimer)
     this.#pendingTimer = setTimeout(() => {
@@ -174,6 +200,11 @@ export class TranscriptionManager {
           for (const segment of batch.segments) segment.transcription = { status: 'complete', text: '' }
           batch.segments.at(-1)!.transcription = { status: 'complete', text }
           this.#error = undefined
+          try {
+            this.#archiveBatch(batch, text)
+          } catch (error) {
+            this.#error = `Transcript archive: ${error instanceof Error ? error.message : String(error)}`
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           for (const segment of batch.segments) segment.transcription = { status: 'error', text: '', error: message }
@@ -210,6 +241,27 @@ export class TranscriptionManager {
         }
         resolve(stdout.replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim())
       })
+    })
+  }
+
+  #archiveBatch(batch: TranscriptionBatch, transcript: string): void {
+    if (!this.#archive) return
+    const first = batch.segments[0]!
+    const last = batch.segments.at(-1)!
+    const measuredNoise = batch.segments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
+      span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise]
+    )))
+    const sampleRate = first.wav.readUInt32LE(24)
+    const pcm = Buffer.concat(batch.segments.map((segment) => segment.wav.subarray(44)))
+    this.#archive.add({
+      startedAt: first.startedAt,
+      endedAt: last.endedAt,
+      channel: first.channel,
+      durationSeconds: batch.durationSeconds,
+      sampleRate,
+      ...(measuredNoise.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measuredNoise) }),
+      transcript,
+      wav: pcmToWav(pcm, sampleRate)
     })
   }
 

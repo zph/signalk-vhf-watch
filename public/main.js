@@ -29,6 +29,9 @@
   const timelineLatest = $('#timeline-latest')
   const transcriptionEnabled = $('#transcription-enabled')
   const transcriptionStatus = $('#transcription-status')
+  const archiveList = $('#archive-list')
+  const archiveEmpty = $('#archive-empty')
+  const archiveSummary = $('#archive-summary')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   let channels = []
   let poll
@@ -87,6 +90,9 @@
       : transcription.available
         ? `Local transcription off · ${transcription.engine} is installed and ready`
         : 'Local transcription off · install vhf-whisper-runtime to enable it'
+    if (transcription.archive) {
+      archiveSummary.textContent = `${transcription.archive.records} records · ${(transcription.archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(transcription.archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${transcription.archive.retentionDays} days`
+    }
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
   }
 
@@ -311,6 +317,46 @@
     }
   }
 
+  function archiveRow(record) {
+    const item = document.createElement('li')
+    item.className = 'replay-item archive-item'
+    const time = document.createElement('div')
+    time.className = 'replay-time'
+    time.textContent = new Date(record.startedAt).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+    })
+    const detail = document.createElement('div')
+    detail.className = 'replay-detail'
+    const metadata = document.createElement('div')
+    const quality = record.minimumDiscriminatorNoise === undefined ? '' : ` · RF noise ${record.minimumDiscriminatorNoise.toFixed(2)}`
+    metadata.textContent = `CH ${record.channel} · ${record.durationSeconds.toFixed(1)} sec${quality}`
+    const transcript = document.createElement('div')
+    transcript.className = 'transcript archive-transcript'
+    transcript.textContent = record.transcript || 'No speech recognized.'
+    detail.append(metadata, transcript)
+    const audio = document.createElement('audio')
+    audio.controls = true
+    audio.preload = 'none'
+    audio.src = `${API}transcripts/${record.id}.wav`
+    item.append(time, detail, audio)
+    return item
+  }
+
+  async function updateArchive() {
+    try {
+      const { records, archive } = await request('transcripts?limit=500')
+      archiveList.replaceChildren(...records.map(archiveRow))
+      archiveEmpty.hidden = records.length > 0
+      archiveEmpty.textContent = 'No archived transcripts yet.'
+      if (archive) {
+        archiveSummary.textContent = `${archive.records} records · ${(archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${archive.retentionDays} days`
+      }
+    } catch (error) {
+      archiveEmpty.hidden = false
+      archiveEmpty.textContent = error.message
+    }
+  }
+
   async function configureSlots() {
     slotAMode.disabled = true
     slotAChannel.disabled = true
@@ -374,10 +420,11 @@
   async function initialize() {
     try {
       await loadChannels()
-      await Promise.all([updateStatus(), updateReplay(), updateDsc()])
+      await Promise.all([updateStatus(), updateReplay(), updateDsc(), updateArchive()])
       poll = window.setInterval(updateStatus, 1000)
       window.setInterval(updateReplay, 5000)
       window.setInterval(updateDsc, 5000)
+      window.setInterval(updateArchive, 15_000)
     } catch (error) {
       setConnection('error', error.message)
     }
@@ -394,6 +441,7 @@
   })
   $('#refresh-dsc').addEventListener('click', updateDsc)
   $('#clear-dsc').addEventListener('click', clearDsc)
+  $('#refresh-archive').addEventListener('click', updateArchive)
   replaySquelch.addEventListener('change', () => {
     replaySquelchTouched = true
     void updateReplay()
@@ -425,6 +473,7 @@
       })
       renderStatus(status)
       await updateReplay()
+      await updateArchive()
     } catch (error) {
       setConnection('error', error.message)
       await updateStatus()

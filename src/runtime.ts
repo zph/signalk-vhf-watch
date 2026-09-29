@@ -142,6 +142,7 @@ export class VhfRuntime extends EventEmitter<{
     this.replayB.flush()
     this.#receiverState = 'Stopped'
     this.#emitStatus()
+    this.transcription.close()
   }
 
   tune(channelId: string): RuntimeStatus {

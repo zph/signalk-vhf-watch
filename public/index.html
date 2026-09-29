@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=14" />
+  <link rel="stylesheet" href="./styles.css?v=15" />
 </head>
 <body>
   <main>
@@ -114,6 +114,19 @@
       <ol id="replay-list" class="replay-list" aria-live="polite"></ol>
     </section>
 
+    <section class="replay-section" aria-labelledby="archive-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">30 DAYS · 100 MIB MAXIMUM</p>
+          <h2 id="archive-title">Transcript archive</h2>
+        </div>
+        <button id="refresh-archive" type="button">Refresh</button>
+      </div>
+      <p id="archive-summary" class="muted">Transcribed radio and its audio are stored privately in SQLite.</p>
+      <div id="archive-empty" class="empty">No archived transcripts yet.</div>
+      <ol id="archive-list" class="replay-list archive-list" aria-live="polite"></ol>
+    </section>
+
     <dialog id="clear-replay-dialog" aria-labelledby="clear-replay-title" aria-describedby="clear-replay-description">
       <form method="dialog">
         <h2 id="clear-replay-title">Delete all recent radio?</h2>
@@ -137,6 +150,6 @@
       Channel 70 is decoded continuously whenever it is assigned to Slot B.
     </footer>
   </main>
-  <script src="./main.js?v=14"></script>
+  <script src="./main.js?v=15"></script>
 </body>
 </html>

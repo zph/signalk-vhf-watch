@@ -15,7 +15,7 @@
     "test": "npm run clean && npm run build && npm run build:test && node --test .test-dist/test/*.test.js",
     "prepack": "npm run build"
   },
-  "engines": { "node": ">=22.13" },
+  "engines": { "node": ">=22.15" },
   "keywords": [
     "signalk-node-server-plugin",
     "signalk-webapp",

@@ -78,6 +78,8 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `GET /api/replay/:id.wav` — one replay segment
 - `DELETE /api/replay` — clear the rolling buffer
 - `DELETE /api/replay/:id` — delete one retained replay segment
+- `GET /api/transcripts` — retained transcript/audio metadata
+- `GET /api/transcripts/:id.wav` — play one retained transcript's audio
 
 Replay is held only in process memory. Restarting Signal K clears it, and nothing is uploaded. The
 configured time window is also capped by a separate memory limit (64 MiB by default), so higher
@@ -103,6 +105,14 @@ continuous radio speech, so the packaged runtime deliberately keeps the model de
 five-second replay slices are combined into a 15-second recognition window to avoid cutting radio
 sentences into unusably short fragments. Batches that pass the configured RF squelch are processed
 one at a time; audio is not uploaded.
+
+Completed batches are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
+channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
+compressed WAV. The Transcript archive section can play every retained record after a Signal K
+restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
+whichever happens first; the oldest records are removed first. The database and its containing
+directory are created with service-account-only permissions. This archive requires Node.js 22.15 or
+newer for the built-in SQLite and Zstandard implementations.
 
 For an ARM64 package built from the matching `whisper.cpp` release, run the packaging helper on the
 Pi (or an ARM64 Debian builder), then install the resulting file with `apt install ./vhf-whisper-runtime_*.deb`:

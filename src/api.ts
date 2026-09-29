@@ -40,6 +40,33 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const runtime = runtimeOr503(getRuntime, response)
     if (runtime) response.set('Cache-Control', 'no-store').json({ messages: runtime.dscMessages() })
   })
+  read.get('/api/transcripts', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const requested = Number(request.query.limit ?? 500)
+    const limit = Number.isFinite(requested) ? Math.min(2_000, Math.max(1, Math.floor(requested))) : 500
+    response.set('Cache-Control', 'no-store').json({
+      records: runtime.transcription.archiveRecords(limit),
+      archive: runtime.transcription.status().archive
+    })
+  })
+  read.get('/api/transcripts/:id.wav', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const id = Number(request.params.id)
+    const record = Number.isSafeInteger(id) && id > 0 ? runtime.transcription.archiveRecord(id) : undefined
+    const wav = record ? runtime.transcription.archiveWav(id) : undefined
+    if (!record || !wav) {
+      response.status(404).json({ error: 'Archived transcript not found' })
+      return
+    }
+    response.set({
+      'Content-Type': 'audio/wav',
+      'Content-Length': String(wav.length),
+      'Cache-Control': 'private, max-age=3600',
+      'Content-Disposition': `inline; filename="vhf-transcript-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav"`
+    }).send(wav)
+  })
   read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
@@ -167,6 +194,8 @@ export function openApi(): object {
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
       '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
+      '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
+      '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/dsc': {
         get: { summary: 'List decoded DSC Channel 70 calls', responses: { '200': { description: 'DSC calls' } } },

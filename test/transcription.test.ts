@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
 import { TranscriptionManager } from '../src/transcription'
+import { TranscriptArchive } from '../src/transcript-archive'
 
 test('transcription defaults off, requires its runtime, and persists explicit activation', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-'))
@@ -34,7 +35,7 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.deepEqual(segment!.transcription, { status: 'complete', text: 'channel one six test' })
-  manager.stop()
+  manager.close()
 })
 
 test('batches adjacent replay slices into a longer radio-speech window', async () => {
@@ -43,7 +44,8 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
   chmodSync(command, 0o755)
-  const manager = new TranscriptionManager(settings, command, { batchSeconds: 6, idleMs: 10 })
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(settings, command, { batchSeconds: 6, idleMs: 10, archive })
   await manager.setEnabled(true)
   const replay = new RollingReplay(8_000, 2, 1, '16')
   const segments = [0, 1, 2].map((index) => replay.append(
@@ -60,5 +62,9 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
     { status: 'complete', text: '' }
   ])
   assert.deepEqual(segments[2]!.transcription, { status: 'complete', text: '96044' })
-  manager.stop()
+  assert.equal(manager.status().archive?.records, 1)
+  assert.equal(archive.list()[0]?.transcript, '96044')
+  assert.equal(archive.list()[0]?.channel, '16')
+  assert.equal(archive.wav(archive.list()[0]!.id)?.length, 96_044)
+  manager.close()
 })

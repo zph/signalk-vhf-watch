@@ -115,6 +115,8 @@ button.danger { color: var(--red); }
 .transcript strong { color: var(--cyan); }
 .replay-item audio { width: min(360px, 38vw); height: 38px; }
 .replay-delete { min-width: 88px; }
+.archive-item { grid-template-columns: minmax(145px, auto) 1fr auto; }
+.archive-transcript { max-width: 58ch; line-height: 1.45; }
 dialog {
   width: min(440px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line);
   border-radius: 18px; color: var(--text); background: var(--panel); box-shadow: 0 24px 90px rgba(0, 0, 0, .6);
@@ -148,4 +150,6 @@ footer strong { color: var(--green); }
   .replay-item { grid-template-columns: 75px 1fr; }
   .replay-item audio { grid-column: 1 / -1; width: 100%; }
   .replay-delete { grid-column: 1 / -1; width: 100%; }
+  .archive-item { grid-template-columns: 1fr; }
+  .archive-item audio { grid-column: 1; }
 }

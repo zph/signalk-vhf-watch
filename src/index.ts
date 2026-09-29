@@ -5,6 +5,7 @@ import { normalizeConfig, pluginSchema } from './config'
 import { DscMessageCache } from './dsc-cache'
 import { VhfRuntime } from './runtime'
 import { TranscriptionManager } from './transcription'
+import { TranscriptArchive } from './transcript-archive'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -22,7 +23,11 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         maxMessages: config.maxDscMessages,
         maxBytes: config.maxDscCacheKiB * 1024
       })
-      const transcription = new TranscriptionManager(path.join(app.getDataDirPath(), 'transcription-settings.json'))
+      const transcription = new TranscriptionManager(
+        path.join(app.getDataDirPath(), 'transcription-settings.json'),
+        undefined,
+        { archive: new TranscriptArchive(path.join(app.getDataDirPath(), 'transcript-archive', 'transcripts.sqlite3')) }
+      )
       runtime = new VhfRuntime(config, dscCache, transcription)
       runtime.on('status', (status) => {
         const message = status.error
