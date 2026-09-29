@@ -7,6 +7,8 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
+const UI_VERSION = 27
+
 interface ByteRange {
   start: number
   end: number
@@ -80,7 +82,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
   const read = router.access('readonly')
   read.get('/api/status', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
-    if (runtime) response.set('Cache-Control', 'no-store').json(runtime.status())
+    if (runtime) response.set('Cache-Control', 'no-store').json({ ...runtime.status(), uiVersion: UI_VERSION })
   })
   read.get('/api/channels', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)

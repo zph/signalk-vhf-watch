@@ -1,5 +1,6 @@
 (() => {
   'use strict'
+  const CLIENT_BUILD = 27
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -30,6 +31,7 @@
   const timelineOldest = $('#timeline-oldest')
   const timelineAudio = $('#timeline-audio')
   const timelineLatest = $('#timeline-latest')
+  const timelineDescription = $('#timeline-description')
   const timelineCleanup = $('#timeline-cleanup')
   const frequencyMap = $('#frequency-map')
   const frequencyEmpty = $('#frequency-empty')
@@ -44,6 +46,11 @@
   const voiceEventSummary = $('#voice-event-summary')
   const dscCallCount = $('#dsc-call-count')
   const archiveBytes = $('#archive-bytes')
+  const processingPanel = $('#processing-panel')
+  const processingCount = $('#processing-count')
+  const processingList = $('#processing-list')
+  const settingsPanel = $('#settings-panel')
+  const receiverFootnote = $('#receiver-footnote')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   const SESSION_BREAK_SECONDS = 6
   let channels = []
@@ -59,6 +66,23 @@
   let timelineAwaitingChannel
   let archiveRenderSignature = ''
   let singleFrequencyActive = false
+
+  function storedPreference(key, fallback) {
+    try { return window.localStorage.getItem(`vhf-watch:${key}`) ?? fallback } catch { return fallback }
+  }
+
+  function savePreference(key, value) {
+    try { window.localStorage.setItem(`vhf-watch:${key}`, String(value)) } catch { /* private browsing or disabled storage */ }
+  }
+
+  const storedSquelch = storedPreference('replay-squelch', '')
+  if (replaySquelch.querySelector(`option[value="${storedSquelch}"]`)) {
+    replaySquelch.value = storedSquelch
+    replaySquelchTouched = true
+  }
+  const storedCleanup = storedPreference('timeline-cleanup', '')
+  if (timelineCleanup.querySelector(`option[value="${storedCleanup}"]`)) timelineCleanup.value = storedCleanup
+  settingsPanel.open = storedPreference('settings-open', 'false') === 'true'
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -108,6 +132,16 @@
   }
 
   function renderStatus(status) {
+    if (status.uiVersion && status.uiVersion !== CLIENT_BUILD) {
+      const reloadKey = `vhf-watch:reload:${status.uiVersion}`
+      if (!window.sessionStorage.getItem(reloadKey)) {
+        window.sessionStorage.setItem(reloadKey, 'true')
+        const url = new URL(window.location.href)
+        url.searchParams.set('ui', status.uiVersion)
+        window.location.replace(url)
+        return
+      }
+    }
     singleFrequencyActive = status.captureMode === 'single_frequency'
     const activeSlotAChannel = status.slots.A.currentChannel.id
     const hadActiveSlotAChannel = Boolean(timelineActiveSlotAChannel)
@@ -144,7 +178,16 @@
         : status.slots.B.channel.purpose
     slotAMode.disabled = singleFrequencyActive
     slotBChannel.disabled = singleFrequencyActive
-    dscModeLabel.textContent = singleFrequencyActive ? 'Channel 70 · paused for weather' : 'Channel 70 · continuous'
+    dscModeLabel.textContent = singleFrequencyActive
+      ? 'Retained history · Channel 70 paused for weather'
+      : status.slots.B.kind === 'dsc'
+        ? 'Channel 70 · continuous'
+        : `Retained history · Channel 70 paused while Slot B monitors ${channelDisplay(status.slots.B.channel.id)}`
+    receiverFootnote.textContent = singleFrequencyActive
+      ? 'Receive only. Channel 70 is paused during single-frequency reception.'
+      : status.slots.B.kind === 'dsc'
+        ? 'Receive only. Channel 70 is watched continuously.'
+        : `Receive only. Channel 70 is paused while Slot B monitors ${channelDisplay(status.slots.B.channel.id)}.`
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -158,6 +201,7 @@
     receiverState.textContent = status.error || `${status.receiverState} · ${source}${dsc}${health}`
     retention.textContent = `Latest ${status.replayMinutes} minutes · ${status.maxBufferMiB} MiB safety cap per voice slot · ${status.replaySegments} private playable segments`
     timelineWindowMinutes = status.replayMinutes
+    timelineDescription.textContent = `Past ${status.replayMinutes} minutes · select a burst to listen`
     const receiverRows = [{
       slot: 'A',
       channel: status.slots.A.currentChannel.id,
@@ -190,7 +234,9 @@
     transcriptionThreads.disabled = transcription.availableModels.length === 0
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
-    transcriptionStatus.textContent = transcription.enabled
+    transcriptionStatus.textContent = transcription.error
+      ? `Transcription needs attention · ${transcription.error}`
+      : transcription.enabled
       ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''} · ${transcription.engine} · ${transcription.threads} threads`
       : transcription.available
         ? `Local transcription off · ${transcription.engine} is installed and ready`
@@ -476,13 +522,15 @@
     const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
+    timelineLatest.textContent = timelineFollowingLive ? 'Following live' : 'Go live'
+    timelineLatest.setAttribute('aria-pressed', String(timelineFollowingLive))
     highlightFrequencyBurst()
   }
 
   function latestActiveTimelineIndex() {
-    return replayTimeline.findLastIndex((segment) =>
-      segment.slot === 'A' && segment.channel === timelineActiveSlotAChannel
-    )
+    return replayTimeline.findLastIndex((segment) => timelineReceiverRows.some((receiver) => (
+      segment.slot === receiver.slot && segment.channel === receiver.channel
+    )))
   }
 
   function selectLatestActiveTimeline(autoplay = false) {
@@ -574,9 +622,38 @@
         return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
       })
       voiceEventSummary.textContent = String(visibleSessions.length)
+      renderProcessingQueue(sessions.filter((session) => ['queued', 'transcribing', 'error'].includes(session.transcription?.status)))
     } catch (error) {
       setConnection('error', error.message)
     }
+  }
+
+  function renderProcessingQueue(sessions) {
+    processingPanel.hidden = sessions.length === 0
+    processingCount.textContent = String(sessions.length)
+    processingList.replaceChildren(...sessions.map((session) => {
+      const item = document.createElement('li')
+      const description = document.createElement('span')
+      const state = session.transcription.status === 'error'
+        ? `Error · ${session.transcription.error || 'transcription failed'}`
+        : session.transcription.status === 'queued' ? 'Queued' : 'Transcribing'
+      description.textContent = `${new Date(session.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · ${channelDisplay(session.channel)} · ${state}`
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.textContent = 'Remove'
+      remove.addEventListener('click', async () => {
+        remove.disabled = true
+        try {
+          await Promise.all(session.ids.map((id) => request(`replay/${id}`, { method: 'DELETE' })))
+          await updateReplay()
+        } catch (error) {
+          setConnection('error', error.message)
+          remove.disabled = false
+        }
+      })
+      item.append(description, remove)
+      return item
+    }))
   }
 
   function dscRow(message) {
@@ -586,9 +663,11 @@
     time.dateTime = message.receivedAt
     time.textContent = new Date(message.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     const detail = document.createElement('p')
-    const source = message.selfMmsi ? `MMSI ${message.selfMmsi}` : 'unknown station'
+    const source = message.selfMmsi ? `From MMSI ${message.selfMmsi}` : 'unknown station'
+    const target = message.targetMmsi ? ` · to MMSI ${message.targetMmsi}` : ''
+    const distressTime = message.timeUtc ? ` · reported ${message.timeUtc} UTC` : ''
     const position = message.position ? ` · ${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}` : ''
-    detail.textContent = `${message.category.toUpperCase()} · ${message.format} · ${source}${message.nature ? ` · ${message.nature}` : ''}${position}${message.validCharacters ? '' : ' · CHECK DECODE'}`
+    detail.textContent = `${message.category.toUpperCase()} · ${message.format} · ${source}${target}${message.nature ? ` · ${message.nature}` : ''}${distressTime}${position}${message.validCharacters ? '' : ' · CHECK DECODE'}`
     item.append(time, detail)
     return item
   }
@@ -611,7 +690,12 @@
   }
 
   function archiveOffsetSeconds(record, entry) {
-    return Math.max(0, (Date.parse(entry.startedAt) - Date.parse(record.startedAt)) / 1_000)
+    let offset = 0
+    for (const candidate of record.records) {
+      if (candidate.id === entry.id) break
+      offset += candidate.durationSeconds
+    }
+    return offset
   }
 
   function selectTranscriptMoment(details, entryId, offsetSeconds, autoplay) {
@@ -656,6 +740,8 @@
       const { view, offset, samples } = wavSamples(await response.arrayBuffer())
       const bars = document.createElement('div')
       bars.className = 'waveform-bars'
+      bars.setAttribute('role', 'img')
+      bars.setAttribute('aria-label', 'Audio waveform')
       const binCount = 120
       const peaks = []
       for (let bin = 0; bin < binCount; bin += 1) {
@@ -723,8 +809,6 @@
     const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
     const waveform = document.createElement('div')
     waveform.className = 'archive-waveform'
-    waveform.setAttribute('role', 'img')
-    waveform.setAttribute('aria-label', `Audio waveform with ${record.records.length} linked transcript timestamps`)
     const loading = document.createElement('span')
     loading.className = 'waveform-loading'
     loading.textContent = 'Open to load waveform…'
@@ -741,17 +825,21 @@
     squelchLabel.textContent = 'Playback squelch'
     const squelch = document.createElement('select')
     squelch.innerHTML = '<option value="0">Off / raw</option><option value="10">Low</option><option value="20" selected>Medium</option><option value="30">High</option><option value="40">Very high</option>'
+    const preferenceKey = `archive:${record.ids.join(',')}`
+    const preferredSquelch = storedPreference(`${preferenceKey}:squelch`, replaySquelch.value)
+    if (squelch.querySelector(`option[value="${preferredSquelch}"]`)) squelch.value = preferredSquelch
     squelchLabel.append(squelch)
     const cleanupLabel = document.createElement('label')
     cleanupLabel.textContent = 'Background noise'
     const cleanup = document.createElement('select')
     cleanup.innerHTML = '<option value="raw">Natural</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option>'
+    const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
+    if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
     controls.append(squelchLabel, cleanupLabel)
 
     const log = document.createElement('div')
     log.className = 'archive-log'
-    log.setAttribute('role', 'log')
     log.setAttribute('aria-label', `Full transcript for ${time.textContent}`)
     for (const entry of record.records) {
       const offsetSeconds = archiveOffsetSeconds(record, entry)
@@ -808,7 +896,12 @@
     const download = document.createElement('a')
     download.className = 'button-link'
     download.download = `vhf-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav`
-    download.textContent = 'Download WAV'
+    download.textContent = 'Download current playback'
+    const originalDownload = document.createElement('a')
+    originalDownload.className = 'button-link'
+    originalDownload.href = `${audioUrl}&cleanup=raw&squelch=0`
+    originalDownload.download = `vhf-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}-original.wav`
+    originalDownload.textContent = 'Original WAV'
     const copy = document.createElement('button')
     copy.type = 'button'
     copy.textContent = 'Copy transcript'
@@ -822,8 +915,12 @@
         setConnection('error', `Could not copy transcript: ${error.message}`)
       }
     })
-    actions.append(download, copy)
-    const updatePlayback = () => setArchivePlayback(audio, download, cleanup.value, squelch.value)
+    actions.append(download, originalDownload, copy)
+    const updatePlayback = () => {
+      savePreference(`${preferenceKey}:cleanup`, cleanup.value)
+      savePreference(`${preferenceKey}:squelch`, squelch.value)
+      setArchivePlayback(audio, download, cleanup.value, squelch.value)
+    }
     cleanup.addEventListener('change', updatePlayback)
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
@@ -962,6 +1059,7 @@
   $('#clear-dsc').addEventListener('click', clearDsc)
   replaySquelch.addEventListener('change', () => {
     replaySquelchTouched = true
+    savePreference('replay-squelch', replaySquelch.value)
     void updateReplay()
   })
   timelineRange.addEventListener('input', () => {
@@ -973,6 +1071,7 @@
     selectLatestActiveTimeline(true)
   })
   timelineCleanup.addEventListener('change', () => {
+    savePreference('timeline-cleanup', timelineCleanup.value)
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
   })
@@ -1021,6 +1120,7 @@
 
   transcriptionModel.addEventListener('change', saveTranscriptionRuntime)
   transcriptionThreads.addEventListener('change', saveTranscriptionRuntime)
+  settingsPanel.addEventListener('toggle', () => savePreference('settings-open', settingsPanel.open))
   window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)

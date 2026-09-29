@@ -3,10 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=26" />
+  <link rel="stylesheet" href="./styles.css?v=27" />
 </head>
 <body>
   <main class="app-shell">
@@ -36,7 +38,7 @@
       <div class="meter-block">
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
-        <p id="receiver-state">Receiver stopped</p>
+        <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
       </div>
     </section>
 
@@ -46,9 +48,9 @@
           <div class="panel-heading timeline-heading">
             <div>
               <h2 id="timeline-title">Activity</h2>
-              <p>Past two hours · select a burst to listen</p>
+              <p id="timeline-description">Rolling buffer · select a burst to listen</p>
             </div>
-            <button id="timeline-latest" class="button compact" type="button">Latest</button>
+            <button id="timeline-latest" class="button compact" type="button">Go live</button>
           </div>
           <div class="timeline-selection" aria-live="polite">
             <strong id="timeline-time">Waiting for audio…</strong>
@@ -57,7 +59,7 @@
           <div class="frequency-overview">
             <div class="frequency-overview-heading">
               <strong>Frequency activity</strong>
-              <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> voice</span>
+              <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> above squelch</span>
             </div>
             <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
             <p id="frequency-empty" class="frequency-empty">Listening — no bursts above squelch yet.</p>
@@ -86,16 +88,21 @@
           </div>
           <div id="archive-empty" class="empty">No archived transcripts yet.</div>
           <ol id="archive-list" class="archive-list" aria-live="polite"></ol>
+          <details id="processing-panel" class="processing-panel" hidden>
+            <summary><strong>Processing</strong> <span id="processing-count">0</span></summary>
+            <p>Recordings waiting for transcription or needing attention.</p>
+            <ol id="processing-list" class="processing-list"></ol>
+          </details>
         </section>
       </div>
 
       <aside class="side-column">
         <section class="panel summary-panel" aria-labelledby="summary-title">
-          <h2 id="summary-title">Today</h2>
+          <h2 id="summary-title">Storage &amp; status</h2>
           <dl>
-            <div><dt>Voice events</dt><dd id="voice-event-summary">0</dd></div>
-            <div><dt>DSC calls</dt><dd id="dsc-call-count">0</dd></div>
-            <div><dt>Archived audio</dt><dd id="archive-bytes">0 MiB</dd></div>
+            <div><dt>Rolling activity</dt><dd id="voice-event-summary">0</dd></div>
+            <div><dt>Retained DSC calls</dt><dd id="dsc-call-count">0</dd></div>
+            <div><dt>30-day archive</dt><dd id="archive-bytes">0 MiB</dd></div>
           </dl>
         </section>
 
@@ -108,11 +115,13 @@
           </div>
           <div id="dsc-empty" class="empty compact-empty">Waiting for a validated call…</div>
           <ol id="dsc-list" class="dsc-list" aria-live="polite"></ol>
+          <p class="panel-note">Validated calls · private, restart-safe, bounded cache.</p>
         </section>
 
-        <details class="panel settings-panel">
-          <summary>Receiver settings <span aria-hidden="true">⌄</span></summary>
+        <details id="settings-panel" class="panel settings-panel">
+          <summary>Listening &amp; tuning <span aria-hidden="true">⌄</span></summary>
           <div class="settings-body">
+            <p class="settings-note">Channel choices apply to this running session. Hardware and storage limits are managed in Signal K plugin configuration.</p>
             <label for="region">Channel plan
               <select id="region">
                 <option value="US_CA">United States + Canada</option>
@@ -130,7 +139,7 @@
               <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
             </label>
             <hr />
-            <label for="replay-squelch">Default detection squelch
+            <label for="replay-squelch">Activity / playback squelch
               <select id="replay-squelch">
                 <option value="0">Off / raw</option>
                 <option value="10">Low · 10</option>
@@ -178,8 +187,8 @@
       </form>
     </dialog>
 
-    <footer>No transmit controls exist. Channel 70 remains continuous except during single-frequency weather reception.</footer>
+    <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
-  <script src="./main.js?v=26"></script>
+  <script src="./main.js?v=27"></script>
 </body>
 </html>
