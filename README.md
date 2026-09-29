@@ -105,7 +105,9 @@ continuous radio speech, so the packaged runtime deliberately keeps the model de
 five-second replay slices are combined into one-minute recognition windows. Successive windows reuse
 ten seconds of audio for linguistic context, then reconcile the repeated text with the preceding
 result so it is not shown twice. A shorter final window runs after the channel has been quiet for six
-seconds. Batches that pass the configured RF squelch are processed one at a time; audio is not uploaded.
+seconds. The decode watchdog is at least 90 seconds and scales to twice the audio duration, so a full
+one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
+processed one at a time; audio is not uploaded.
 
 Completed batches are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-

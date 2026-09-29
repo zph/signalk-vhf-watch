@@ -13,6 +13,8 @@ export const MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS = 0.35
 export const TRANSCRIPTION_BATCH_SECONDS = 60
 export const TRANSCRIPTION_OVERLAP_SECONDS = 10
 export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
+export const MINIMUM_TRANSCRIPTION_TIMEOUT_MS = 90_000
+export const TRANSCRIPTION_TIMEOUT_AUDIO_MULTIPLIER = 2
 
 export interface TranscriptionStatus {
   enabled: boolean
@@ -86,6 +88,13 @@ export function reconcileTranscriptOverlap(previousText: string, currentText: st
     }
   }
   return currentOriginal.slice(removeWords).join(' ').trim()
+}
+
+export function transcriptionTimeoutMs(durationSeconds: number): number {
+  return Math.max(
+    MINIMUM_TRANSCRIPTION_TIMEOUT_MS,
+    Math.ceil(durationSeconds * TRANSCRIPTION_TIMEOUT_AUDIO_MULTIPLIER * 1_000)
+  )
 }
 
 export class TranscriptionManager {
@@ -307,7 +316,7 @@ export class TranscriptionManager {
       this.#child = child
       let stdout = ''
       let stderr = ''
-      const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000)
+      const timeout = setTimeout(() => child.kill('SIGKILL'), transcriptionTimeoutMs(batch.durationSeconds))
       child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-65_536) })
       child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8_192) })
       child.on('error', (error) => reject(error))
