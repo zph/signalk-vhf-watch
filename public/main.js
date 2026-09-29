@@ -290,6 +290,7 @@
       const { messages } = await request('dsc')
       dscList.replaceChildren(...messages.map(dscRow))
       dscEmpty.hidden = messages.length > 0
+      dscEmpty.textContent = 'Waiting for a decoded DSC call…'
     } catch (error) {
       dscEmpty.hidden = false
       dscEmpty.textContent = error.message
