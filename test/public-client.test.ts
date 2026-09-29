@@ -14,6 +14,8 @@ test('dedicated web client exposes live listening and replay without transmit co
   assert.match(html, /No transmit controls exist/)
   assert.match(script, /live\.wav/)
   assert.match(script, /replay/)
+  assert.match(html, /live-squelch/)
+  assert.match(script, /Streaming raw audio/)
   assert.match(script, /dsc/)
   assert.doesNotMatch(script, /push.?to.?talk|\bptt\b|transmit/i)
 })

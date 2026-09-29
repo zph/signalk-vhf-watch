@@ -3,6 +3,7 @@ import type { PluginRouter } from '@signalk/server-api'
 import type { ChannelRegion } from './channels'
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
+import { discriminatorThreshold } from './squelch'
 import { wavHeader } from './wav'
 
 function runtimeOr503(getRuntime: () => VhfRuntime | undefined, response: Response): VhfRuntime | undefined {
@@ -65,11 +66,20 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     })
     response.flushHeaders()
     response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
+    const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
+    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
     const onAudio = (chunk: Buffer): void => { if (!response.destroyed) response.write(chunk) }
-    runtime.on('audio', onAudio)
+    const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
+      if (response.destroyed) return
+      const open = discriminatorNoise < discriminatorThreshold(squelch)
+      response.write(open ? chunk : Buffer.alloc(chunk.length))
+    }
+    if (runtime.config.receiverMode === 'rtl_sdr') runtime.on('rawAudio', onRawAudio)
+    else runtime.on('audio', onAudio)
     runtime.listenerJoined()
     request.on('close', () => {
       runtime.off('audio', onAudio)
+      runtime.off('rawAudio', onRawAudio)
       runtime.listenerLeft()
       if (!response.destroyed) response.end()
     })

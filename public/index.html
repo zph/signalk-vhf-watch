@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07121c" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=5" />
 </head>
 <body>
   <main>
@@ -43,7 +43,19 @@
         <h2 id="live-title">Live receiver</h2>
         <p>The browser will only connect after you press Listen.</p>
       </div>
-      <button id="listen" class="primary" type="button">Listen live</button>
+      <div class="live-controls">
+        <label class="squelch-control" for="live-squelch">Live squelch
+          <select id="live-squelch">
+            <option value="0">Off / raw</option>
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="30">30</option>
+            <option value="40">40</option>
+          </select>
+        </label>
+        <button id="listen" class="primary" type="button">Listen live</button>
+        <span id="live-status" class="muted" aria-live="polite">Not streaming</span>
+      </div>
       <audio id="live-audio" preload="none"></audio>
     </section>
 
@@ -100,6 +112,6 @@
       Channel 70 is continuously reserved for DSC and unavailable as voice audio.
     </footer>
   </main>
-  <script src="./main.js"></script>
+  <script src="./main.js?v=5"></script>
 </body>
 </html>

@@ -11,6 +11,8 @@
   const receiverState = $('#receiver-state')
   const listenButton = $('#listen')
   const liveAudio = $('#live-audio')
+  const liveSquelch = $('#live-squelch')
+  const liveStatus = $('#live-status')
   const replayList = $('#replay-list')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
@@ -148,7 +150,7 @@
       renderStatus(status)
       purpose.textContent = channelPurpose(channelSelect.value)
       if (listening) {
-        liveAudio.src = `${API}live.wav?channel=${encodeURIComponent(channelSelect.value)}&t=${Date.now()}`
+        liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&channel=${encodeURIComponent(channelSelect.value)}&t=${Date.now()}`
         await liveAudio.play()
       }
     } catch (error) {
@@ -185,15 +187,20 @@
       listening = false
       listenButton.textContent = 'Listen live'
       listenButton.classList.remove('listening')
+      liveStatus.textContent = 'Not streaming'
       return
     }
-    liveAudio.src = `${API}live.wav?t=${Date.now()}`
+    liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`
     try {
       await liveAudio.play()
       listening = true
       listenButton.textContent = 'Stop listening'
       listenButton.classList.add('listening')
+      liveStatus.textContent = liveSquelch.value === '0'
+        ? 'Streaming raw audio'
+        : `Streaming · squelch ${liveSquelch.value} · silence means the channel is quiet`
     } catch (error) {
+      liveStatus.textContent = 'Stream failed'
       setConnection('error', `Audio could not start: ${error.message}`)
     }
   }
@@ -233,6 +240,18 @@
   channelSelect.addEventListener('change', tune)
   regionSelect.addEventListener('change', changeRegion)
   listenButton.addEventListener('click', toggleListen)
+  liveSquelch.addEventListener('change', async () => {
+    if (!listening) return
+    liveAudio.src = `${API}live.wav?squelch=${encodeURIComponent(liveSquelch.value)}&t=${Date.now()}`
+    try {
+      await liveAudio.play()
+      liveStatus.textContent = liveSquelch.value === '0'
+        ? 'Streaming raw audio'
+        : `Streaming · squelch ${liveSquelch.value} · silence means the channel is quiet`
+    } catch (error) {
+      liveStatus.textContent = `Stream failed: ${error.message}`
+    }
+  })
   $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', clearReplay)
   $('#refresh-dsc').addEventListener('click', updateDsc)

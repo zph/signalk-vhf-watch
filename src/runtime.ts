@@ -50,7 +50,11 @@ export interface RuntimeStatus {
   receiveOnly: true
 }
 
-export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [RuntimeStatus] }> {
+export class VhfRuntime extends EventEmitter<{
+  audio: [Buffer]
+  rawAudio: [Buffer, number]
+  status: [RuntimeStatus]
+}> {
   readonly config: VhfWatchConfig
   readonly replay: RollingReplay
   #channel: VhfChannel
@@ -218,6 +222,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     })
     receiver.on('replayAudio', (chunk, discriminatorNoise) => {
       this.replay.append(chunk, Date.now(), discriminatorNoise)
+      this.emit('rawAudio', chunk, discriminatorNoise)
     })
     receiver.on('state', (state) => {
       this.#receiverState = state
