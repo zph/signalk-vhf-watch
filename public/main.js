@@ -9,14 +9,18 @@
   const slotBChannel = $('#slot-b-channel')
   const slotAPurpose = $('#slot-a-purpose')
   const slotBPurpose = $('#slot-b-purpose')
+  const slotADisplay = $('#slot-a-display')
+  const slotAFrequency = $('#slot-a-frequency')
+  const slotAModeLabel = $('#slot-a-mode-label')
+  const slotBDisplay = $('#slot-b-display')
+  const slotBFrequency = $('#slot-b-frequency')
+  const slotBModeLabel = $('#slot-b-mode-label')
   const signalBar = $('#signal-bar')
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
-  const replayList = $('#replay-list')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
   const dscModeLabel = $('#dsc-mode-label')
-  const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
   const clearReplayDialog = $('#clear-replay-dialog')
@@ -25,8 +29,6 @@
   const timelineOffset = $('#timeline-offset')
   const timelineOldest = $('#timeline-oldest')
   const timelineAudio = $('#timeline-audio')
-  const timelineOlder = $('#timeline-older')
-  const timelineNewer = $('#timeline-newer')
   const timelineLatest = $('#timeline-latest')
   const timelineCleanup = $('#timeline-cleanup')
   const frequencyMap = $('#frequency-map')
@@ -38,7 +40,10 @@
   const archiveList = $('#archive-list')
   const archiveEmpty = $('#archive-empty')
   const archiveSummary = $('#archive-summary')
-  const archiveCleanup = $('#archive-cleanup')
+  const voiceEventCount = $('#voice-event-count')
+  const voiceEventSummary = $('#voice-event-summary')
+  const dscCallCount = $('#dsc-call-count')
+  const archiveBytes = $('#archive-bytes')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
   const SESSION_BREAK_SECONDS = 6
   let channels = []
@@ -52,7 +57,6 @@
   let timelineReceiverRows = []
   let timelineActiveSlotAChannel
   let timelineAwaitingChannel
-  let replayRenderSignature = ''
   let archiveRenderSignature = ''
   let singleFrequencyActive = false
 
@@ -124,6 +128,12 @@
     slotAMode.value = status.slots.A.mode
     slotAChannel.value = status.slots.A.configuredChannel.id
     slotBChannel.value = status.slots.B.channel.id
+    slotADisplay.textContent = status.slots.A.currentChannel.label
+    slotAFrequency.textContent = `${(status.slots.A.currentChannel.frequencyHz / 1_000_000).toFixed(3)} MHz`
+    slotAModeLabel.textContent = status.slots.A.mode === 'scan' ? 'Scanning' : 'Fixed'
+    slotBDisplay.textContent = status.slots.B.channel.label
+    slotBFrequency.textContent = `${(status.slots.B.channel.frequencyHz / 1_000_000).toFixed(3)} MHz`
+    slotBModeLabel.textContent = status.slots.B.kind === 'paused' ? 'Paused' : status.slots.B.kind === 'dsc' ? 'Continuous' : 'Fixed'
     slotAPurpose.textContent = status.slots.A.mode === 'scan'
       ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
       : status.slots.A.configuredChannel.purpose
@@ -134,7 +144,7 @@
         : status.slots.B.channel.purpose
     slotAMode.disabled = singleFrequencyActive
     slotBChannel.disabled = singleFrequencyActive
-    dscModeLabel.textContent = singleFrequencyActive ? 'CHANNEL 70 · PAUSED FOR WEATHER' : 'CHANNEL 70 · CONTINUOUS'
+    dscModeLabel.textContent = singleFrequencyActive ? 'Channel 70 · paused for weather' : 'Channel 70 · continuous'
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -328,20 +338,6 @@
     })))
   }
 
-  function timelineIndexNear(timestamp) {
-    if (replayTimeline.length === 0) return -1
-    let nearest = 0
-    let nearestDistance = Number.POSITIVE_INFINITY
-    for (const [index, segment] of replayTimeline.entries()) {
-      const distance = Math.abs(Date.parse(segment.startedAt) - timestamp)
-      if (distance < nearestDistance) {
-        nearest = index
-        nearestDistance = distance
-      }
-    }
-    return nearest
-  }
-
   function channelFrequency(channelId) {
     return channels.find((channel) => channel.id === channelId)?.frequencyHz
   }
@@ -477,8 +473,6 @@
     timelineSegmentId = segment.id
     timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
-    timelineOlder.disabled = index === 0
-    timelineNewer.disabled = index === replayTimeline.length - 1
     const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
@@ -529,8 +523,6 @@
       timelineSegmentId = undefined
       timelineTime.textContent = 'Waiting for audio…'
       timelineOffset.textContent = 'The rolling buffer is filling.'
-      timelineOlder.disabled = true
-      timelineNewer.disabled = true
       renderFrequencyMap()
       return
     }
@@ -572,90 +564,6 @@
     renderFrequencyMap()
   }
 
-  function moveTimeline(milliseconds) {
-    const current = replayTimeline.find((segment) => segment.id === timelineSegmentId)
-    if (!current) return
-    timelineFollowingLive = false
-    selectTimelineIndex(timelineIndexNear(Date.parse(current.startedAt) + milliseconds))
-  }
-
-  function replayRow(segment) {
-    const item = document.createElement('li')
-    item.className = 'replay-item'
-    const time = document.createElement('div')
-    time.className = 'replay-time'
-    time.textContent = new Date(segment.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    const detail = document.createElement('div')
-    detail.className = 'replay-detail'
-    const quality = segment.minimumDiscriminatorNoise === undefined
-      ? ''
-      : ` · RF noise ${segment.minimumDiscriminatorNoise.toFixed(2)}`
-    const label = document.createElement('div')
-    label.textContent = `Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)} · ${segment.durationSeconds.toFixed(1)} sec${quality}`
-    detail.append(label)
-    if (Array.isArray(segment.activity)) {
-      const namespace = 'http://www.w3.org/2000/svg'
-      const chart = document.createElementNS(namespace, 'svg')
-      chart.classList.add('activity-chart')
-      chart.setAttribute('viewBox', `0 0 ${segment.activity.length * 2} 20`)
-      chart.setAttribute('role', 'img')
-      const activeSeconds = replayActiveSeconds(segment) ?? 0
-      chart.setAttribute('aria-label', `${activeSeconds.toFixed(1)} seconds of detected sound`)
-      for (const [index, value] of segment.activity.entries()) {
-        const bar = document.createElementNS(namespace, 'rect')
-        const height = Math.max(1, value * 18)
-        bar.setAttribute('x', String(index * 2))
-        bar.setAttribute('y', String(20 - height))
-        bar.setAttribute('width', '1.5')
-        bar.setAttribute('height', String(height))
-        chart.append(bar)
-      }
-      const caption = document.createElement('span')
-      caption.className = 'activity-caption'
-      caption.textContent = `${activeSeconds.toFixed(1)} sec passes squelch ${replaySquelch.value}`
-      detail.append(chart, caption)
-    }
-    if (segment.transcription?.status === 'complete' && segment.transcription.text) {
-      const transcript = document.createElement('div')
-      transcript.className = 'transcript'
-      const heading = document.createElement('strong')
-      heading.textContent = 'Transcript: '
-      transcript.append(heading, document.createTextNode(segment.transcription.text))
-      detail.append(transcript)
-    } else if (['queued', 'transcribing'].includes(segment.transcription?.status)) {
-      const transcript = document.createElement('div')
-      transcript.className = 'transcript'
-      transcript.textContent = segment.transcription.status === 'queued' ? 'Transcript queued…' : 'Transcribing locally…'
-      detail.append(transcript)
-    } else if (segment.transcription?.status === 'error') {
-      const transcript = document.createElement('div')
-      transcript.className = 'transcript'
-      transcript.textContent = `Transcription failed: ${segment.transcription.error}`
-      detail.append(transcript)
-    }
-    const audio = document.createElement('audio')
-    audio.controls = true
-    audio.preload = 'none'
-    audio.src = `${API}replay-session.wav?ids=${encodeURIComponent(segment.ids.join(','))}&squelch=${encodeURIComponent(replaySquelch.value)}`
-    const deleteButton = document.createElement('button')
-    deleteButton.className = 'danger replay-delete'
-    deleteButton.type = 'button'
-    deleteButton.textContent = 'Delete'
-    deleteButton.setAttribute('aria-label', `Delete radio session from ${time.textContent}`)
-    deleteButton.addEventListener('click', async () => {
-      deleteButton.disabled = true
-      try {
-        for (const id of segment.ids) await request(`replay/${id}`, { method: 'DELETE' })
-        await updateReplay()
-      } catch (error) {
-        deleteButton.disabled = false
-        setConnection('error', error.message)
-      }
-    })
-    item.append(time, detail, audio, deleteButton)
-    return item
-  }
-
   async function updateReplay() {
     try {
       const { segments } = await request(`replay?squelch=${encodeURIComponent(replaySquelch.value)}`)
@@ -665,29 +573,19 @@
         const activeSeconds = replayActiveSeconds(session)
         return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
       })
-      const signature = sessionRenderSignature(visibleSessions, true)
-      if (signature !== replayRenderSignature && !hasPlayingAudio(replayList)) {
-        replayList.replaceChildren(...visibleSessions.map(replayRow))
-        replayRenderSignature = signature
-      }
-      empty.hidden = visibleSessions.length > 0
-      empty.textContent = segments.length === 0
-        ? 'Waiting for the first replay segment…'
-        : `No radio activity passes squelch ${replaySquelch.value} yet.`
+      voiceEventSummary.textContent = String(visibleSessions.length)
     } catch (error) {
-      empty.hidden = false
-      empty.textContent = error.message
+      setConnection('error', error.message)
     }
   }
 
   function dscRow(message) {
     const item = document.createElement('li')
-    item.className = `replay-item dsc-${message.category}`
-    const time = document.createElement('div')
-    time.className = 'replay-time'
+    item.className = `dsc-item dsc-${message.category}`
+    const time = document.createElement('time')
+    time.dateTime = message.receivedAt
     time.textContent = new Date(message.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    const detail = document.createElement('div')
-    detail.className = 'replay-detail'
+    const detail = document.createElement('p')
     const source = message.selfMmsi ? `MMSI ${message.selfMmsi}` : 'unknown station'
     const position = message.position ? ` · ${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}` : ''
     detail.textContent = `${message.category.toUpperCase()} · ${message.format} · ${source}${message.nature ? ` · ${message.nature}` : ''}${position}${message.validCharacters ? '' : ' · CHECK DECODE'}`
@@ -699,11 +597,104 @@
     try {
       const { messages } = await request('dsc')
       dscList.replaceChildren(...messages.map(dscRow))
+      dscCallCount.textContent = String(messages.length)
       dscEmpty.hidden = messages.length > 0
       dscEmpty.textContent = 'Waiting for a decoded DSC call…'
     } catch (error) {
       dscEmpty.hidden = false
       dscEmpty.textContent = error.message
+    }
+  }
+
+  function transcriptMomentId(entry) {
+    return `transcript-${entry.id}`
+  }
+
+  function archiveOffsetSeconds(record, entry) {
+    return Math.max(0, (Date.parse(entry.startedAt) - Date.parse(record.startedAt)) / 1_000)
+  }
+
+  function selectTranscriptMoment(details, entryId, offsetSeconds, autoplay) {
+    for (const line of details.querySelectorAll('.archive-log-line')) line.classList.toggle('is-selected', line.id === `transcript-${entryId}`)
+    const audio = details.querySelector('audio')
+    const seek = () => {
+      audio.currentTime = Math.min(offsetSeconds, Number.isFinite(audio.duration) ? audio.duration : offsetSeconds)
+      if (autoplay) void audio.play().catch(() => {})
+    }
+    if (audio.readyState >= 1) seek()
+    else audio.addEventListener('loadedmetadata', seek, { once: true })
+  }
+
+  function bindTranscriptMoment(link, details, entry, offsetSeconds) {
+    link.addEventListener('click', (event) => {
+      event.preventDefault()
+      details.open = true
+      window.history.pushState(null, '', link.hash)
+      selectTranscriptMoment(details, entry.id, offsetSeconds, true)
+      document.getElementById(transcriptMomentId(entry))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
+  }
+
+  function wavSamples(arrayBuffer) {
+    const view = new DataView(arrayBuffer)
+    let offset = 12
+    while (offset + 8 <= view.byteLength) {
+      const chunk = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3))
+      const length = view.getUint32(offset + 4, true)
+      if (chunk === 'data') return { view, offset: offset + 8, samples: Math.floor(length / 2) }
+      offset += 8 + length + (length % 2)
+    }
+    throw new Error('WAV data chunk is missing')
+  }
+
+  async function renderArchiveWaveform(waveform, audioUrl) {
+    if (waveform.dataset.loaded) return
+    waveform.dataset.loaded = 'loading'
+    try {
+      const response = await fetch(`${audioUrl}&cleanup=raw&squelch=0`, { credentials: 'include' })
+      if (!response.ok) throw new Error(`Waveform request failed (${response.status})`)
+      const { view, offset, samples } = wavSamples(await response.arrayBuffer())
+      const bars = document.createElement('div')
+      bars.className = 'waveform-bars'
+      const binCount = 120
+      const peaks = []
+      for (let bin = 0; bin < binCount; bin += 1) {
+        const start = Math.floor(samples * bin / binCount)
+        const end = Math.max(start + 1, Math.floor(samples * (bin + 1) / binCount))
+        let peak = 0
+        for (let sample = start; sample < end; sample += Math.max(1, Math.floor((end - start) / 80))) {
+          peak = Math.max(peak, Math.abs(view.getInt16(offset + sample * 2, true)))
+        }
+        peaks.push(peak)
+      }
+      const maximum = Math.max(1, ...peaks)
+      for (const peak of peaks) {
+        const bar = document.createElement('i')
+        bar.className = 'waveform-bar'
+        bar.style.setProperty('--level', String(Math.max(.06, peak / maximum)))
+        bars.append(bar)
+      }
+      waveform.querySelector('.waveform-loading')?.remove()
+      waveform.prepend(bars)
+      waveform.dataset.loaded = 'true'
+    } catch (error) {
+      waveform.dataset.loaded = 'error'
+      waveform.querySelector('.waveform-loading').textContent = 'Waveform unavailable'
+    }
+  }
+
+  function setArchivePlayback(audio, download, cleanup, squelch) {
+    const currentTime = audio.currentTime
+    const wasPlaying = !audio.paused
+    const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}`
+    audio.src = source
+    download.href = source
+    audio.load()
+    if (currentTime > 0 || wasPlaying) {
+      audio.addEventListener('loadedmetadata', () => {
+        audio.currentTime = Math.min(currentTime, Number.isFinite(audio.duration) ? audio.duration : currentTime)
+        if (wasPlaying) void audio.play().catch(() => {})
+      }, { once: true })
     }
   }
 
@@ -718,36 +709,79 @@
     const time = document.createElement('time')
     time.className = 'archive-time'
     time.dateTime = record.startedAt
-    time.textContent = new Date(record.startedAt).toLocaleString([], {
-      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
-    })
+    time.textContent = new Date(record.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     const channel = document.createElement('strong')
     channel.textContent = channelDisplay(record.channel)
     const duration = document.createElement('span')
-    duration.textContent = `${record.durationSeconds.toFixed(1)} sec`
+    duration.textContent = `${record.durationSeconds.toFixed(0)} sec`
     const count = document.createElement('span')
-    count.textContent = `${record.records.length} log ${record.records.length === 1 ? 'entry' : 'entries'}`
+    count.textContent = `${record.records.length} transcript ${record.records.length === 1 ? 'line' : 'lines'}`
     summary.append(time, channel, duration, count)
 
     const body = document.createElement('div')
     body.className = 'archive-body'
+    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
+    const waveform = document.createElement('div')
+    waveform.className = 'archive-waveform'
+    waveform.setAttribute('role', 'img')
+    waveform.setAttribute('aria-label', `Audio waveform with ${record.records.length} linked transcript timestamps`)
+    const loading = document.createElement('span')
+    loading.className = 'waveform-loading'
+    loading.textContent = 'Open to load waveform…'
+    waveform.append(loading)
+
+    const audio = document.createElement('audio')
+    audio.controls = true
+    audio.preload = 'metadata'
+    audio.dataset.baseUrl = audioUrl
+
+    const controls = document.createElement('div')
+    controls.className = 'archive-controls'
+    const squelchLabel = document.createElement('label')
+    squelchLabel.textContent = 'Playback squelch'
+    const squelch = document.createElement('select')
+    squelch.innerHTML = '<option value="0">Off / raw</option><option value="10">Low</option><option value="20" selected>Medium</option><option value="30">High</option><option value="40">Very high</option>'
+    squelchLabel.append(squelch)
+    const cleanupLabel = document.createElement('label')
+    cleanupLabel.textContent = 'Background noise'
+    const cleanup = document.createElement('select')
+    cleanup.innerHTML = '<option value="raw">Natural</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option>'
+    cleanupLabel.append(cleanup)
+    controls.append(squelchLabel, cleanupLabel)
+
     const log = document.createElement('div')
     log.className = 'archive-log'
     log.setAttribute('role', 'log')
     log.setAttribute('aria-label', `Full transcript for ${time.textContent}`)
     for (const entry of record.records) {
+      const offsetSeconds = archiveOffsetSeconds(record, entry)
       const line = document.createElement('div')
+      line.id = transcriptMomentId(entry)
       line.className = 'archive-log-line'
-      const stamp = document.createElement('time')
-      stamp.dateTime = entry.startedAt
+      const stamp = document.createElement('a')
+      stamp.className = 'transcript-time-link'
+      stamp.href = `#${line.id}`
+      stamp.dataset.audioOffset = String(offsetSeconds)
       stamp.textContent = new Date(entry.startedAt).toLocaleString([], {
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit'
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
       })
+      stamp.setAttribute('aria-label', `Play transcript from ${stamp.textContent}`)
+      bindTranscriptMoment(stamp, details, entry, offsetSeconds)
       const text = document.createElement('span')
       text.textContent = entry.transcript || '[no speech recognized]'
       line.append(stamp, text)
       log.append(line)
+
+      const marker = document.createElement('a')
+      marker.className = 'transcript-marker'
+      marker.href = stamp.href
+      marker.style.setProperty('--marker-left', `${Math.min(99.5, offsetSeconds / Math.max(1, record.durationSeconds) * 100)}%`)
+      marker.setAttribute('aria-label', `Transcript marker at ${stamp.textContent}`)
+      const markerLabel = document.createElement('span')
+      markerLabel.textContent = new Date(entry.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      marker.append(markerLabel)
+      bindTranscriptMoment(marker, details, entry, offsetSeconds)
+      waveform.append(marker)
     }
 
     const metadata = document.createElement('dl')
@@ -759,8 +793,7 @@
       ['Recording', `${new Date(record.startedAt).toLocaleString()} – ${new Date(record.endedAt).toLocaleString()}`],
       ['Channel', `${channelDisplay(record.channel)} · ${channelFrequencyDisplay(record.channel)}`],
       ['Audio', `${record.durationSeconds.toFixed(1)} sec · ${record.sampleRate.toLocaleString()} Hz mono${quality}`],
-      ['Storage', `${record.ids.length} SQLite ${record.ids.length === 1 ? 'record' : 'records'} · ${(compressedBytes / 1024).toFixed(0)} KiB compressed from ${(audioBytes / 1024).toFixed(0)} KiB`],
-      ['Record IDs', record.ids.map((id) => `#${id}`).join(', ')]
+      ['Storage', `${record.ids.length} records · ${(compressedBytes / 1024).toFixed(0)} KiB compressed from ${(audioBytes / 1024).toFixed(0)} KiB`]
     ]
     for (const [term, value] of metadataRows) {
       const dt = document.createElement('dt')
@@ -770,17 +803,10 @@
       metadata.append(dt, dd)
     }
 
-    const audio = document.createElement('audio')
-    audio.controls = true
-    audio.preload = 'none'
-    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
-    audio.src = `${audioUrl}&cleanup=${encodeURIComponent(archiveCleanup.value)}`
-    audio.dataset.baseUrl = audioUrl
     const actions = document.createElement('div')
     actions.className = 'archive-actions'
     const download = document.createElement('a')
     download.className = 'button-link'
-    download.href = audioUrl
     download.download = `vhf-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}.wav`
     download.textContent = 'Download WAV'
     const copy = document.createElement('button')
@@ -797,10 +823,29 @@
       }
     })
     actions.append(download, copy)
-    body.append(log, metadata, audio, actions)
+    const updatePlayback = () => setArchivePlayback(audio, download, cleanup.value, squelch.value)
+    cleanup.addEventListener('change', updatePlayback)
+    squelch.addEventListener('change', updatePlayback)
+    updatePlayback()
+    details.addEventListener('toggle', () => {
+      if (details.open) void renderArchiveWaveform(waveform, audioUrl)
+    })
+    body.append(waveform, audio, controls, log, metadata, actions)
     details.append(summary, body)
     item.append(details)
     return item
+  }
+
+  function openTranscriptFromHash() {
+    const match = window.location.hash.match(/^#transcript-(\d+)$/)
+    if (!match) return
+    const line = document.getElementById(`transcript-${match[1]}`)
+    if (!line) return
+    const details = line.closest('details')
+    const link = line.querySelector('.transcript-time-link')
+    details.open = true
+    selectTranscriptMoment(details, Number(match[1]), Number(link.dataset.audioOffset), false)
+    window.requestAnimationFrame(() => line.scrollIntoView({ block: 'center' }))
   }
 
   async function updateArchive() {
@@ -815,11 +860,14 @@
           if (expanded.has(details.dataset.sessionKey)) details.open = true
         }
         archiveRenderSignature = signature
+        openTranscriptFromHash()
       }
       archiveEmpty.hidden = sessions.length > 0
+      voiceEventCount.textContent = String(sessions.length)
       archiveEmpty.textContent = 'No archived transcripts yet.'
       if (archive) {
         archiveSummary.textContent = `${archive.records} records · ${(archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${archive.retentionDays} days`
+        archiveBytes.textContent = `${(archive.compressedBytes / 1024 / 1024).toFixed(1)} MiB`
       }
     } catch (error) {
       archiveEmpty.hidden = false
@@ -907,14 +955,11 @@
   slotAChannel.addEventListener('change', configureSlots)
   slotBChannel.addEventListener('change', configureSlots)
   regionSelect.addEventListener('change', changeRegion)
-  $('#refresh').addEventListener('click', updateReplay)
   $('#clear').addEventListener('click', () => clearReplayDialog.showModal())
   clearReplayDialog.addEventListener('close', () => {
     if (clearReplayDialog.returnValue === 'delete') void clearReplay()
   })
-  $('#refresh-dsc').addEventListener('click', updateDsc)
   $('#clear-dsc').addEventListener('click', clearDsc)
-  $('#refresh-archive').addEventListener('click', updateArchive)
   replaySquelch.addEventListener('change', () => {
     replaySquelchTouched = true
     void updateReplay()
@@ -924,28 +969,12 @@
     timelineWaitingAtEdge = false
     selectTimelineIndex(Number(timelineRange.value))
   })
-  timelineOlder.addEventListener('click', () => moveTimeline(-60_000))
-  timelineNewer.addEventListener('click', () => moveTimeline(60_000))
   timelineLatest.addEventListener('click', () => {
     selectLatestActiveTimeline(true)
   })
   timelineCleanup.addEventListener('change', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
-  })
-  archiveCleanup.addEventListener('change', () => {
-    for (const audio of archiveList.querySelectorAll('audio[data-base-url]')) {
-      const currentTime = audio.currentTime
-      const wasPlaying = !audio.paused
-      audio.src = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(archiveCleanup.value)}`
-      audio.load()
-      if (currentTime > 0) {
-        audio.addEventListener('loadedmetadata', () => {
-          audio.currentTime = Math.min(currentTime, Number.isFinite(audio.duration) ? audio.duration : currentTime)
-          if (wasPlaying) void audio.play().catch(() => {})
-        }, { once: true })
-      } else if (wasPlaying) void audio.play().catch(() => {})
-    }
   })
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
@@ -992,6 +1021,7 @@
 
   transcriptionModel.addEventListener('change', saveTranscriptionRuntime)
   transcriptionThreads.addEventListener('change', saveTranscriptionRuntime)
+  window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
   })

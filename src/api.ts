@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import type { PluginRouter } from '@signalk/server-api'
 import type { ChannelRegion } from './channels'
-import { cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from './playback-cleanup'
+import { cleanArchivedPlaybackPcm, cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from './playback-cleanup'
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
@@ -71,6 +71,11 @@ function runtimeOr503(getRuntime: () => VhfRuntime | undefined, response: Respon
   return runtime
 }
 
+function archiveSquelch(request: Request): number {
+  const requested = Number(request.query.squelch ?? 0)
+  return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 0
+}
+
 export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntime | undefined): void {
   const read = router.access('readonly')
   read.get('/api/status', (_request: Request, response: Response) => {
@@ -123,7 +128,10 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
-    const playbackWav = cleanup === 'raw' ? wav : pcmToWav(cleanPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup), record.sampleRate)
+    const squelch = archiveSquelch(request)
+    const playbackWav = cleanup === 'raw' && squelch === 0
+      ? wav
+      : pcmToWav(cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup, squelch), record.sampleRate)
     sendSeekableWav(
       request,
       response,
@@ -154,10 +162,11 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    const squelch = archiveSquelch(request)
     sendSeekableWav(
       request,
       response,
-      pcmToWav(cleanPlaybackPcm(pcm, first.sampleRate, cleanup), first.sampleRate),
+      pcmToWav(cleanArchivedPlaybackPcm(pcm, first.sampleRate, cleanup, squelch), first.sampleRate),
       `vhf-transcript-${first.channel}-session.wav`,
       'no-store, private'
     )

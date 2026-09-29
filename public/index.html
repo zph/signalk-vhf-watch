@@ -3,42 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#07121c" />
+  <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=25" />
+  <link rel="stylesheet" href="./styles.css?v=26" />
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <p class="eyebrow">SIGNAL K · RECEIVE ONLY</p>
-        <h1>VHF Watch</h1>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">⌁</span>
+        <div>
+          <h1>VHF Watch</h1>
+          <p>Signal K · receive only</p>
+        </div>
       </div>
       <div id="connection" class="connection waiting"><span></span>Connecting</div>
     </header>
 
-    <section class="radio-card" aria-labelledby="receiver-title">
-      <div class="channel-block slot-controls">
-        <label for="region">Channel plan</label>
-        <select id="region">
-          <option value="US_CA">United States + Canada</option>
-          <option value="US">United States</option>
-          <option value="CA">Canada</option>
-        </select>
-        <div class="slot-row">
-          <label id="receiver-title" for="slot-a-channel"><strong>Slot A</strong> · voice
-            <select id="slot-a-mode"><option value="fixed">Fixed</option><option value="scan">Scan</option></select>
-          </label>
-          <select id="slot-a-channel" aria-describedby="slot-a-purpose"></select>
-          <p id="slot-a-purpose">—</p>
-        </div>
-        <div class="slot-row">
-          <label for="slot-b-channel"><strong>Slot B</strong> · fixed voice or DSC</label>
-          <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
-          <p id="slot-b-purpose">—</p>
-        </div>
-      </div>
+    <section class="receiver-strip" aria-labelledby="receiver-title">
+      <h2 id="receiver-title" class="sr-only">Receiver watch</h2>
+      <article class="channel-status">
+        <div class="channel-heading"><span>Voice watch · Slot A</span><strong id="slot-a-mode-label">Fixed</strong></div>
+        <div class="channel-number"><span id="slot-a-display">16</span><small id="slot-a-frequency">156.800 MHz</small></div>
+        <p id="slot-a-purpose">International distress, safety and calling</p>
+      </article>
+      <article class="channel-status">
+        <div class="channel-heading"><span>Digital watch · Slot B</span><strong id="slot-b-mode-label">Continuous</strong></div>
+        <div class="channel-number"><span id="slot-b-display">70</span><small id="slot-b-frequency">156.525 MHz</small></div>
+        <p id="slot-b-purpose">Digital selective calling</p>
+      </article>
       <div class="meter-block">
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
@@ -46,152 +40,146 @@
       </div>
     </section>
 
-    <section class="timeline-card" aria-labelledby="timeline-title">
-      <div class="timeline-heading">
-        <div>
-          <p class="eyebrow">PAST TWO HOURS</p>
-          <h2 id="timeline-title">Radio timeline</h2>
-        </div>
-        <button id="timeline-latest" type="button">Latest</button>
-      </div>
-      <div class="timeline-selection" aria-live="polite">
-        <strong id="timeline-time">Waiting for audio…</strong>
-        <span id="timeline-offset">The rolling buffer is filling.</span>
-      </div>
-      <div class="frequency-overview">
-        <div class="frequency-overview-heading">
-          <strong>Frequency activity</strong>
-          <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> passes squelch · tap to listen</span>
-        </div>
-        <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
-        <p id="frequency-empty" class="frequency-empty">Listening — no bursts above squelch yet.</p>
-        <div class="frequency-scale" aria-hidden="true"><span>2 hr ago</span><span>1 hr ago</span><span>Now</span></div>
-      </div>
-      <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
-      <div class="timeline-scale"><span id="timeline-oldest">2 hr ago</span><span>Now</span></div>
-      <audio id="timeline-audio" controls preload="none"></audio>
-      <div class="playback-options">
-        <label for="timeline-cleanup">Sound cleanup
-          <select id="timeline-cleanup">
-            <option value="raw">Natural · squelch only</option>
-            <option value="voice" selected>Voice focus · reduce hiss</option>
-            <option value="strong">Strong · suppress static</option>
-          </select>
-        </label>
-        <span>Cleanup affects playback only; stored audio stays unchanged.</span>
-      </div>
-      <div class="timeline-actions">
-        <button id="timeline-older" type="button" disabled>− 1 minute</button>
-        <button id="timeline-newer" type="button" disabled>+ 1 minute</button>
-      </div>
-      <p class="muted">Choose any recorded moment. Playback is stitched seamlessly through stored audio and the live edge.</p>
-    </section>
-
-    <section class="replay-section" aria-labelledby="dsc-title">
-      <div class="section-heading">
-        <div>
-          <p id="dsc-mode-label" class="eyebrow">CHANNEL 70 · CONTINUOUS</p>
-          <h2 id="dsc-title">Digital selective calls</h2>
-        </div>
-        <div class="section-actions">
-          <button id="refresh-dsc" type="button">Refresh</button>
-          <button id="clear-dsc" class="danger" type="button">Clear</button>
-        </div>
-      </div>
-      <p class="muted">Validated calls survive restarts and expire automatically from a bounded private cache.</p>
-      <div id="dsc-empty" class="empty">Waiting for a decoded DSC call…</div>
-      <ol id="dsc-list" class="replay-list" aria-live="polite"></ol>
-    </section>
-
-    <section class="replay-section" aria-labelledby="replay-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">ROLLING BUFFER</p>
-          <h2 id="replay-title">Recent radio</h2>
-        </div>
-        <div class="section-actions">
-          <label class="squelch-control" for="replay-squelch">Playback squelch
-            <select id="replay-squelch">
-              <option value="0">Off / raw</option>
-              <option value="10">10</option>
-              <option value="20" selected>20</option>
-              <option value="30">30</option>
-              <option value="40">40</option>
-            </select>
-          </label>
-          <label class="transcription-control" for="transcription-enabled">
-            <input id="transcription-enabled" type="checkbox" />
-            Transcribe voice
-          </label>
-          <label class="transcription-setting" for="transcription-model">Model
-            <select id="transcription-model" aria-label="Whisper model"></select>
-          </label>
-          <label class="transcription-setting" for="transcription-threads">CPU threads
-            <select id="transcription-threads" aria-label="Whisper CPU threads">
-              <option value="1">1</option>
-              <option value="2" selected>2</option>
-              <option value="4">4</option>
-              <option value="6">6</option>
-              <option value="8">8</option>
-              <option value="12">12</option>
-              <option value="16">16</option>
-            </select>
-          </label>
-          <button id="refresh" type="button">Refresh</button>
-          <button id="clear" class="danger" type="button">Delete all</button>
-        </div>
-      </div>
-      <p id="retention" class="muted">Audio remains in this Signal K process only.</p>
-      <p id="transcription-status" class="muted">Transcription is off.</p>
-      <div id="empty" class="empty">Waiting for the first replay segment…</div>
-      <ol id="replay-list" class="replay-list" aria-live="polite"></ol>
-    </section>
-
-    <section class="replay-section" aria-labelledby="archive-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">30 DAYS · 100 MIB MAXIMUM</p>
-          <h2 id="archive-title">Transcript archive</h2>
-        </div>
-        <div class="section-actions">
-          <label class="squelch-control" for="archive-cleanup">Playback cleanup
-            <select id="archive-cleanup">
+    <div class="workspace">
+      <div class="primary-column">
+        <section class="panel timeline-card" aria-labelledby="timeline-title">
+          <div class="panel-heading timeline-heading">
+            <div>
+              <h2 id="timeline-title">Activity</h2>
+              <p>Past two hours · select a burst to listen</p>
+            </div>
+            <button id="timeline-latest" class="button compact" type="button">Latest</button>
+          </div>
+          <div class="timeline-selection" aria-live="polite">
+            <strong id="timeline-time">Waiting for audio…</strong>
+            <span id="timeline-offset">The rolling buffer is filling.</span>
+          </div>
+          <div class="frequency-overview">
+            <div class="frequency-overview-heading">
+              <strong>Frequency activity</strong>
+              <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> voice</span>
+            </div>
+            <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
+            <p id="frequency-empty" class="frequency-empty">Listening — no bursts above squelch yet.</p>
+            <div class="frequency-scale" aria-hidden="true"><span>2 hr ago</span><span>1 hr ago</span><span>Now</span></div>
+          </div>
+          <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
+          <div class="timeline-scale"><span id="timeline-oldest">2 hr ago</span><span>Now</span></div>
+          <audio id="timeline-audio" controls preload="none"></audio>
+          <div class="inline-setting">
+            <label for="timeline-cleanup">Playback sound</label>
+            <select id="timeline-cleanup">
               <option value="raw">Natural</option>
               <option value="voice" selected>Voice focus</option>
               <option value="strong">Strong static reduction</option>
             </select>
-          </label>
-          <button id="refresh-archive" type="button">Refresh</button>
-        </div>
+          </div>
+        </section>
+
+        <section class="panel recent-activity" aria-labelledby="archive-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="archive-title">Recent activity</h2>
+              <p id="archive-summary">Transcribed radio is stored privately for up to 30 days.</p>
+            </div>
+            <span class="count"><strong id="voice-event-count">0</strong> saved events</span>
+          </div>
+          <div id="archive-empty" class="empty">No archived transcripts yet.</div>
+          <ol id="archive-list" class="archive-list" aria-live="polite"></ol>
+        </section>
       </div>
-      <p id="archive-summary" class="muted">Transcribed radio and its audio are stored privately in SQLite. Select a row for its timestamped log, playback, and advanced options.</p>
-      <div id="archive-empty" class="empty">No archived transcripts yet.</div>
-      <ol id="archive-list" class="replay-list archive-list" aria-live="polite"></ol>
-    </section>
+
+      <aside class="side-column">
+        <section class="panel summary-panel" aria-labelledby="summary-title">
+          <h2 id="summary-title">Today</h2>
+          <dl>
+            <div><dt>Voice events</dt><dd id="voice-event-summary">0</dd></div>
+            <div><dt>DSC calls</dt><dd id="dsc-call-count">0</dd></div>
+            <div><dt>Archived audio</dt><dd id="archive-bytes">0 MiB</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel dsc-panel" aria-labelledby="dsc-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="dsc-title">DSC calls</h2>
+              <p id="dsc-mode-label">Channel 70 · continuous</p>
+            </div>
+          </div>
+          <div id="dsc-empty" class="empty compact-empty">Waiting for a validated call…</div>
+          <ol id="dsc-list" class="dsc-list" aria-live="polite"></ol>
+        </section>
+
+        <details class="panel settings-panel">
+          <summary>Receiver settings <span aria-hidden="true">⌄</span></summary>
+          <div class="settings-body">
+            <label for="region">Channel plan
+              <select id="region">
+                <option value="US_CA">United States + Canada</option>
+                <option value="US">United States</option>
+                <option value="CA">Canada</option>
+              </select>
+            </label>
+            <label for="slot-a-mode">Slot A mode
+              <select id="slot-a-mode"><option value="fixed">Fixed</option><option value="scan">Scan</option></select>
+            </label>
+            <label for="slot-a-channel">Slot A voice channel
+              <select id="slot-a-channel" aria-describedby="slot-a-purpose"></select>
+            </label>
+            <label for="slot-b-channel">Slot B voice or DSC
+              <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
+            </label>
+            <hr />
+            <label for="replay-squelch">Default detection squelch
+              <select id="replay-squelch">
+                <option value="0">Off / raw</option>
+                <option value="10">Low · 10</option>
+                <option value="20" selected>Medium · 20</option>
+                <option value="30">High · 30</option>
+                <option value="40">Very high · 40</option>
+              </select>
+            </label>
+            <label class="check-setting" for="transcription-enabled">
+              <input id="transcription-enabled" type="checkbox" />
+              <span>Transcribe voice</span>
+            </label>
+            <label for="transcription-model">Whisper model
+              <select id="transcription-model"></select>
+            </label>
+            <label for="transcription-threads">CPU threads
+              <select id="transcription-threads">
+                <option value="1">1</option><option value="2" selected>2</option><option value="4">4</option>
+                <option value="6">6</option><option value="8">8</option><option value="12">12</option><option value="16">16</option>
+              </select>
+            </label>
+            <p id="retention" class="settings-note">Audio remains in this Signal K process only.</p>
+            <p id="transcription-status" class="settings-note">Transcription is off.</p>
+            <div class="destructive-actions">
+              <button id="clear-dsc" class="button danger" type="button">Clear DSC calls</button>
+              <button id="clear" class="button danger" type="button">Delete recent audio</button>
+            </div>
+          </div>
+        </details>
+
+        <aside class="receiver-note">
+          <strong>Receive only.</strong> AIS-Catcher must remain paused while VHF Watch owns the tuner.
+        </aside>
+      </aside>
+    </div>
 
     <dialog id="clear-replay-dialog" aria-labelledby="clear-replay-title" aria-describedby="clear-replay-description">
       <form method="dialog">
-        <h2 id="clear-replay-title">Delete all recent radio?</h2>
-        <p id="clear-replay-description">This permanently removes every audio segment in the private rolling buffer.</p>
+        <h2 id="clear-replay-title">Delete all recent audio?</h2>
+        <p id="clear-replay-description">This permanently removes every segment in the private rolling buffer.</p>
         <div class="dialog-actions">
-          <button type="submit" value="cancel" autofocus>Cancel</button>
-          <button class="danger" type="submit" value="delete">Delete all</button>
+          <button class="button" type="submit" value="cancel" autofocus>Cancel</button>
+          <button class="button danger filled" type="submit" value="delete">Delete all</button>
         </div>
       </form>
     </dialog>
 
-    <aside class="hardware-note">
-      <strong>Using an AIS-Catcher RTL-SDR?</strong>
-      Stop AIS-Catcher before enabling the RTL-SDR receiver here. A single USB tuner cannot be owned
-      by both applications at once. Marine mode continuously watches DSC Channel 70 while
-      demodulating the selected nearby voice channel. Selecting a distant weather channel temporarily pauses Slot B and DSC.
-    </aside>
-
-    <footer>
-      <strong>No transmit controls exist in this application.</strong>
-      Channel 70 is decoded continuously whenever it is assigned to Slot B, except during single-frequency weather reception.
-    </footer>
+    <footer>No transmit controls exist. Channel 70 remains continuous except during single-frequency weather reception.</footer>
   </main>
-  <script src="./main.js?v=25"></script>
+  <script src="./main.js?v=26"></script>
 </body>
 </html>

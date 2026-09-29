@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from '../src/playback-cleanup'
+import { cleanArchivedPlaybackPcm, cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from '../src/playback-cleanup'
 import { rmsLevel } from '../src/wav'
 
 function tone(sampleRate: number, frequency: number, amplitude: number, seconds: number): Buffer {
@@ -33,4 +33,12 @@ test('strong cleanup attenuates steady static more than a voice burst', () => {
   const cleanedVoice = cleaner.process(voice)
   assert.ok(rmsLevel(cleanedStatic) < rmsLevel(staticOnly) * 0.35)
   assert.ok(rmsLevel(cleanedVoice) > rmsLevel(voice) * 0.45)
+})
+
+test('archive squelch gates quiet audio while retaining strong speech', () => {
+  const sampleRate = 16_000
+  const quiet = cleanArchivedPlaybackPcm(tone(sampleRate, 1_000, 200, 1), sampleRate, 'raw', 20)
+  const speech = cleanArchivedPlaybackPcm(tone(sampleRate, 1_000, 3_000, 1), sampleRate, 'raw', 20)
+  assert.ok(rmsLevel(quiet) < 0.005)
+  assert.ok(rmsLevel(speech) > 0.05)
 })
