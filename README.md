@@ -99,8 +99,10 @@ DSC decoder, live audio, and replay remain fully functional without it, and the 
 enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
 `whisper.cpp` `tiny.en-q5_1` model with two CPU threads and its normal audio context. An off-air NOAA
 marine forecast showed that the smaller 768-token audio context could be faster but failed badly on
-continuous radio speech, so the packaged runtime deliberately keeps the model default. Only completed
-replay segments that pass the configured RF squelch are queued, one at a time; audio is not uploaded.
+continuous radio speech, so the packaged runtime deliberately keeps the model default. Adjacent
+five-second replay slices are combined into a 15-second recognition window to avoid cutting radio
+sentences into unusably short fragments. Batches that pass the configured RF squelch are processed
+one at a time; audio is not uploaded.
 
 For an ARM64 package built from the matching `whisper.cpp` release, run the packaging helper on the
 Pi (or an ARM64 Debian builder), then install the resulting file with `apt install ./vhf-whisper-runtime_*.deb`:

@@ -16,7 +16,7 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(command, '#!/bin/sh\nprintf "channel one six test\\n"\n')
   chmodSync(command, 0o755)
-  const manager = new TranscriptionManager(settings, command)
+  const manager = new TranscriptionManager(settings, command, { batchSeconds: 2, idleMs: 10 })
   await manager.setEnabled(true)
   assert.equal(JSON.parse(readFileSync(settings, 'utf8')).enabled, true)
   assert.equal(new TranscriptionManager(settings, command).status().enabled, true)
@@ -34,5 +34,31 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.deepEqual(segment!.transcription, { status: 'complete', text: 'channel one six test' })
+  manager.stop()
+})
+
+test('batches adjacent replay slices into a longer radio-speech window', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-batch-'))
+  const settings = path.join(directory, 'settings.json')
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
+  chmodSync(command, 0o755)
+  const manager = new TranscriptionManager(settings, command, { batchSeconds: 6, idleMs: 10 })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const segments = [0, 1, 2].map((index) => replay.append(
+    Buffer.alloc(32_000, index + 1),
+    Date.UTC(2026, 8, 29, 0, 0, index * 2),
+    0.1
+  )[0]!)
+  for (const segment of segments) manager.enqueue(segment, 20)
+  for (let attempt = 0; attempt < 100 && segments[2]!.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.deepEqual(segments.slice(0, 2).map((segment) => segment.transcription), [
+    { status: 'complete', text: '' },
+    { status: 'complete', text: '' }
+  ])
+  assert.deepEqual(segments[2]!.transcription, { status: 'complete', text: '96044' })
   manager.stop()
 })
