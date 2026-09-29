@@ -36,9 +36,9 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   ppm: 0,
   squelch: 20,
   sampleRate: 16_000,
-  replayMinutes: 30,
+  replayMinutes: 120,
   segmentSeconds: 5,
-  maxBufferMiB: 64,
+  maxBufferMiB: 256,
   dscRetentionHours: 168,
   maxDscMessages: 100,
   maxDscCacheKiB: 256
@@ -123,9 +123,9 @@ export const pluginSchema = {
     gainDb: { type: 'number', title: 'Manual tuner gain (dB; blank for automatic)', minimum: 0, maximum: 49.6 },
     squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
-    replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 30 },
+    replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 120 },
     segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },
-    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory (MiB)', minimum: 16, maximum: 256, default: 64 },
+    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory (MiB)', minimum: 16, maximum: 256, default: 256 },
     dscRetentionHours: { type: 'integer', title: 'DSC call retention (hours)', minimum: 1, maximum: 720, default: 168 },
     maxDscMessages: { type: 'integer', title: 'Maximum stored DSC calls', minimum: 10, maximum: 1000, default: 100 },
     maxDscCacheKiB: { type: 'integer', title: 'Maximum DSC cache (KiB)', minimum: 64, maximum: 4096, default: 256 }

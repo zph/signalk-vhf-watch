@@ -18,6 +18,14 @@
   const empty = $('#empty')
   const retention = $('#retention')
   const replaySquelch = $('#replay-squelch')
+  const timelineRange = $('#timeline-range')
+  const timelineTime = $('#timeline-time')
+  const timelineOffset = $('#timeline-offset')
+  const timelineOldest = $('#timeline-oldest')
+  const timelineAudio = $('#timeline-audio')
+  const timelineOlder = $('#timeline-older')
+  const timelineNewer = $('#timeline-newer')
+  const timelineLatest = $('#timeline-latest')
   const transcriptionEnabled = $('#transcription-enabled')
   const transcriptionStatus = $('#transcription-status')
   const MINIMUM_REPLAY_SIGNAL_SECONDS = 0.35
@@ -28,6 +36,9 @@
   let liveGeneration = 0
   let poll
   let replaySquelchTouched = false
+  let replayTimeline = []
+  let timelineSegmentId
+  let timelineFollowingLive = true
 
   async function request(path, options) {
     const response = await fetch(API + path, { credentials: 'include', ...options })
@@ -100,6 +111,67 @@
     return segment.activity.reduce((sum, value) => sum + value, 0) / segment.activity.length * segment.durationSeconds
   }
 
+  function timelineIndexNear(timestamp) {
+    if (replayTimeline.length === 0) return -1
+    let nearest = 0
+    let nearestDistance = Number.POSITIVE_INFINITY
+    for (const [index, segment] of replayTimeline.entries()) {
+      const distance = Math.abs(Date.parse(segment.startedAt) - timestamp)
+      if (distance < nearestDistance) {
+        nearest = index
+        nearestDistance = distance
+      }
+    }
+    return nearest
+  }
+
+  function selectTimelineIndex(requestedIndex, autoplay = false) {
+    if (replayTimeline.length === 0) return
+    const index = Math.max(0, Math.min(replayTimeline.length - 1, requestedIndex))
+    const segment = replayTimeline[index]
+    const startedAt = new Date(segment.startedAt)
+    const ageMinutes = Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60_000))
+    timelineRange.value = String(index)
+    timelineSegmentId = segment.id
+    timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · CH ${segment.channel}`
+    timelineOlder.disabled = index === 0
+    timelineNewer.disabled = index === replayTimeline.length - 1
+    const source = `${API}replay/${segment.id}.wav?squelch=${encodeURIComponent(replaySquelch.value)}`
+    if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
+    if (autoplay) void timelineAudio.play().catch(() => {})
+  }
+
+  function updateTimeline(segments) {
+    replayTimeline = segments.slice().reverse()
+    timelineRange.disabled = replayTimeline.length === 0
+    timelineRange.max = String(Math.max(0, replayTimeline.length - 1))
+    timelineLatest.disabled = replayTimeline.length === 0
+    if (replayTimeline.length === 0) {
+      timelineAudio.removeAttribute('src')
+      timelineAudio.load()
+      timelineSegmentId = undefined
+      timelineTime.textContent = 'Waiting for audio…'
+      timelineOffset.textContent = 'The rolling buffer is filling.'
+      timelineOlder.disabled = true
+      timelineNewer.disabled = true
+      return
+    }
+    const oldest = new Date(replayTimeline[0].startedAt)
+    timelineOldest.textContent = oldest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const selectedIndex = timelineFollowingLive
+      ? replayTimeline.length - 1
+      : Math.max(0, replayTimeline.findIndex((segment) => segment.id === timelineSegmentId))
+    selectTimelineIndex(selectedIndex)
+  }
+
+  function moveTimeline(milliseconds) {
+    const current = replayTimeline.find((segment) => segment.id === timelineSegmentId)
+    if (!current) return
+    timelineFollowingLive = false
+    selectTimelineIndex(timelineIndexNear(Date.parse(current.startedAt) + milliseconds))
+  }
+
   function replayRow(segment) {
     const item = document.createElement('li')
     item.className = 'replay-item'
@@ -166,6 +238,7 @@
   async function updateReplay() {
     try {
       const { segments } = await request(`replay?squelch=${encodeURIComponent(replaySquelch.value)}`)
+      updateTimeline(segments)
       const visibleSegments = segments.filter((segment) => {
         const activeSeconds = replayActiveSeconds(segment)
         return activeSeconds === undefined || activeSeconds >= MINIMUM_REPLAY_SIGNAL_SECONDS
@@ -384,6 +457,21 @@
     replaySquelchTouched = true
     void updateReplay()
   })
+  timelineRange.addEventListener('input', () => {
+    timelineFollowingLive = false
+    selectTimelineIndex(Number(timelineRange.value))
+  })
+  timelineOlder.addEventListener('click', () => moveTimeline(-60_000))
+  timelineNewer.addEventListener('click', () => moveTimeline(60_000))
+  timelineLatest.addEventListener('click', () => {
+    timelineFollowingLive = true
+    selectTimelineIndex(replayTimeline.length - 1)
+  })
+  timelineAudio.addEventListener('ended', () => {
+    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
+    if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)
+  })
+  timelineAudio.addEventListener('play', () => { timelineFollowingLive = false })
   transcriptionEnabled.addEventListener('change', async () => {
     transcriptionEnabled.disabled = true
     try {
