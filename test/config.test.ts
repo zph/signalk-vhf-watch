@@ -10,6 +10,7 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.replayMinutes, 120)
   assert.equal(config.segmentSeconds, 2)
   assert.equal(config.maxBufferMiB, 64)
+  assert.equal(config.sidecarPath, '/usr/local/bin/vhf-watch-sidecar')
 })
 
 test('validates the startup channel against its regional plan', () => {

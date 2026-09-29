@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/binary"
+	"testing"
+)
 
 func TestChannelizersProduceExpectedAudioRates(t *testing.T) {
 	const inputRate = 2_400_000
@@ -24,5 +28,19 @@ func TestChannelizersProduceExpectedAudioRates(t *testing.T) {
 	}
 	if dsc.outputSamples != 2_400 {
 		t.Fatalf("DSC samples = %d, want 2400", dsc.outputSamples)
+	}
+}
+
+func TestWritesFramedLittleEndianPCM(t *testing.T) {
+	var output bytes.Buffer
+	if err := writePCMFrame(&output, frameVoice, []int16{-1, 0x1234}); err != nil {
+		t.Fatal(err)
+	}
+	written := output.Bytes()
+	if written[0] != frameVoice || binary.LittleEndian.Uint32(written[1:5]) != 4 {
+		t.Fatalf("bad frame header: %v", written[:5])
+	}
+	if !bytes.Equal(written[5:], []byte{0xff, 0xff, 0x34, 0x12}) {
+		t.Fatalf("bad PCM payload: %v", written[5:])
 	}
 }

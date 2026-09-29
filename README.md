@@ -25,11 +25,12 @@ without radio hardware.
 
 ## RTL-SDR receiver
 
-Install the `rtl_sdr` utility on the Signal K host and make the SDR USB device visible to the Signal K
-container. Choose `RTL-SDR wideband` in the plugin configuration and restart the plugin. VHF Watch
-opens the tuner once at 960 kS/s and sends its IQ stream to worker-backed channelizers. Independent
-NFM streams provide the selected voice channel and an uninterrupted 24 kHz Channel 70 DSC decoder.
-Changing voice channels inside the capture window does not restart or retune the hardware.
+Install the `rtl_sdr` utility and the static `vhf-watch-sidecar` binary on the Signal K host, then make
+the SDR USB device visible to Signal K. Choose `RTL-SDR wideband` in the plugin configuration and
+restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs both channelizers;
+only low-rate PCM crosses into JavaScript. Independent NFM streams provide the selected voice
+channel and an uninterrupted 24 kHz Channel 70 DSC decoder. Changing voice channels inside the
+capture window does not restart or retune the hardware.
 
 Select the tuner by its stable serial number when possible; a numeric device index is retained for
 single-SDR and backward-compatible configurations. Set the receiver's measured PPM correction in
@@ -37,8 +38,9 @@ the plugin configuration. If the capture process or USB device fails, VHF Watch 
 exponential backoff. Status reports receiver restart counts and IQ chunks dropped when the
 channelizer cannot keep up, so a trial can distinguish quiet RF from an unhealthy processing path.
 
-The shared capture is centered at 156.6625 MHz. Its 960 kHz window covers Channel 70, Channel 16, and
-nearby simplex marine voice channels simultaneously while remaining sustainable on a Raspberry Pi.
+The shared capture is centered at 156.75 MHz. Its 2.4 MHz window covers Channel 70, Channel 16, and
+the 156–157.425 MHz simplex marine voice range simultaneously. A live Raspberry Pi trial sustained
+this native dual-channel DSP with more than 30× processing headroom and no RTL-SDR sample loss.
 Duplex coast-side and weather channels around 160–162 MHz are
 outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those
 while retaining continuous DSC requires a second SDR; demo mode continues to expose the full plan.

@@ -8,7 +8,7 @@ import {
   DSC_CHANNEL_HZ,
   WIDEBAND_CENTER_HZ,
   WIDEBAND_SAMPLE_RATE,
-  WidebandRtlReceiver,
+  NativeSidecarReceiver,
   type AudioReceiver,
   type ReceiverMetrics
 } from './receiver'
@@ -110,7 +110,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     this.replay.setChannel(channel.id)
     this.#level = 0
     this.#error = undefined
-    if (this.#receiver instanceof WidebandRtlReceiver) this.#receiver.tune(channel)
+    if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
     return this.status()
   }
 
@@ -121,7 +121,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
     if (channel.id !== this.#channel.id || channel.frequencyHz !== this.#channel.frequencyHz) {
       this.#channel = channel
       this.replay.setChannel(channel.id)
-      if (this.#receiver instanceof WidebandRtlReceiver) this.#receiver.tune(channel)
+      if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(channel)
     } else {
       this.#channel = channel
     }
@@ -200,7 +200,7 @@ export class VhfRuntime extends EventEmitter<{ audio: [Buffer]; status: [Runtime
 
   #startReceiver(): void {
     const receiver = this.config.receiverMode === 'rtl_sdr'
-      ? new WidebandRtlReceiver(this.config, this.#channel)
+      ? new NativeSidecarReceiver(this.config, this.#channel)
       : new DemoReceiver(this.config.sampleRate)
     this.#receiver = receiver
     receiver.on('audio', (chunk) => {

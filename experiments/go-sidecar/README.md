@@ -1,15 +1,18 @@
-# Go sidecar throughput probe
+# Go native receiver sidecar
 
-This experimental pure-Go program reads RTL-SDR CU8 IQ on standard input and fully channelizes two
-NFM streams: 16 kHz voice and 24 kHz Channel 70 DSC. It discards the audio after computing it and
-reports throughput, output sample counts, signal levels, and a checksum. Its purpose is to separate
-Pi/USB limits from the JavaScript channelizer's performance.
+This experimental pure-Go program has two modes. `probe` reads RTL-SDR CU8 IQ on standard input and
+reports bounded throughput. Production `stream` mode owns `rtl_sdr`, fully channelizes 16 kHz voice
+and 24 kHz Channel 70 DSC, and emits framed PCM to the Signal K plugin. JavaScript never handles the
+2.4 MS/s raw IQ stream.
 
 Build a static Raspberry Pi binary from macOS or Linux:
 
 ```sh
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o vhf-go-sidecar .
 ```
+
+The plugin starts stream mode itself. Its stdin accepts `tune <frequency-hz>` commands, allowing an
+in-band voice channel change without interrupting Channel 70 or retuning the hardware.
 
 During an intentional AIS interruption, a bounded 20-second trial is:
 
@@ -38,7 +41,7 @@ exact audio counts expected for 20 seconds:
 This establishes that the Raspberry Pi and tuner can sustain the desired 2.4 MS/s dual-channel
 workload. The dropped-IQ problem is specific to the JavaScript implementation.
 
-The production sidecar should retain continuous DSC, use inexpensive in-band channel-presence
-detectors, prioritize Channel 16 audio, and demodulate other active channels on demand. A bounded
+The next sidecar stage will add inexpensive in-band channel-presence detectors, prioritize Channel
+16 audio, and demodulate other active channels on demand. A bounded
 full-band RAM ring plus triggered narrowband IQ/audio recordings can preserve pre-roll and permit
 later decoder experiments without continuously writing roughly 17 GB/hour of full CU8 IQ.

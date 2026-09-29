@@ -5,8 +5,8 @@ import { Worker } from 'node:worker_threads'
 import type { VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
 
-export const WIDEBAND_CENTER_HZ = 156_662_500
-export const WIDEBAND_SAMPLE_RATE = 960_000
+export const WIDEBAND_CENTER_HZ = 156_750_000
+export const WIDEBAND_SAMPLE_RATE = 2_400_000
 export const DSC_CHANNEL_HZ = 156_525_000
 export const CHANNEL_GUARD_HZ = 25_000
 
@@ -42,6 +42,148 @@ export function rtlSdrArgs(config: VhfWatchConfig): string[] {
 
 export function canChannelize(frequencyHz: number): boolean {
   return Math.abs(frequencyHz - WIDEBAND_CENTER_HZ) <= WIDEBAND_SAMPLE_RATE / 2 - CHANNEL_GUARD_HZ
+}
+
+export function nativeSidecarArgs(config: VhfWatchConfig, channel: VhfChannel): string[] {
+  return [
+    '--mode', 'stream',
+    '--device', config.device,
+    '--sample-rate', String(WIDEBAND_SAMPLE_RATE),
+    '--center', String(WIDEBAND_CENTER_HZ),
+    '--voice', String(channel.frequencyHz),
+    '--dsc', String(DSC_CHANNEL_HZ),
+    '--audio-rate', String(config.sampleRate),
+    '--ppm', String(config.ppm),
+    '--squelch', String(config.squelch),
+    ...(config.gainDb === undefined ? [] : ['--gain', String(config.gainDb)])
+  ]
+}
+
+export interface SidecarFrame {
+  kind: number
+  payload: Buffer
+}
+
+export function parseSidecarFrames(buffer: Buffer): { frames: SidecarFrame[]; remaining: Buffer } {
+  const frames: SidecarFrame[] = []
+  let offset = 0
+  while (buffer.length - offset >= 5) {
+    const length = buffer.readUInt32LE(offset + 1)
+    if (length > 16 * 1024 * 1024) throw new Error(`Invalid sidecar frame length ${length}`)
+    if (buffer.length - offset - 5 < length) break
+    frames.push({ kind: buffer[offset]!, payload: buffer.subarray(offset + 5, offset + 5 + length) })
+    offset += 5 + length
+  }
+  return { frames, remaining: buffer.subarray(offset) }
+}
+
+export class NativeSidecarReceiver extends AudioReceiver {
+  readonly #config: VhfWatchConfig
+  #channel: VhfChannel
+  #process?: ReturnType<typeof spawn>
+  #active = false
+  #restartTimer?: ReturnType<typeof setTimeout>
+  #restartDelayMs = 1_000
+  #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+  #metrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
+
+  constructor(config: VhfWatchConfig, channel: VhfChannel) {
+    super()
+    this.#config = config
+    this.#channel = channel
+  }
+
+  start(): void {
+    if (this.#active) return
+    if (!canChannelize(this.#channel.frequencyHz)) {
+      this.emit('error', new Error(`${this.#channel.label} is outside the continuous DSC capture window`))
+      return
+    }
+    this.#active = true
+    this.#startCapture()
+  }
+
+  #startCapture(): void {
+    if (!this.#active || this.#process) return
+    this.emit('state', 'Starting native wideband receiver')
+    const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel), {
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    this.#process = child
+    let finalized = false
+    const failed = (error: Error): void => {
+      if (finalized) return
+      finalized = true
+      this.#captureEnded(child, error)
+    }
+    child.stdout.on('data', (chunk: Buffer) => {
+      try {
+        const parsed = parseSidecarFrames(this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]))
+        this.#buffer = parsed.remaining
+        for (const frame of parsed.frames) {
+          if (frame.kind === 1) this.emit('audio', frame.payload)
+          else if (frame.kind === 2) this.emit('dscAudio', frame.payload)
+          else if (frame.kind === 3) {
+            this.#restartDelayMs = 1_000
+            this.emit('state', `Wideband capture · voice ${this.#channel.label} + continuous DSC 70`)
+          }
+        }
+      } catch (error) {
+        failed(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      const message = chunk.toString('utf8').trim()
+      if (message && /error|failed|lost|usb/i.test(message)) this.emit('state', message.split('\n').at(-1) ?? message)
+    })
+    child.on('error', failed)
+    child.on('exit', (code, signal) => {
+      if (finalized) return
+      finalized = true
+      const expected = !this.#active && signal === 'SIGTERM'
+      this.#captureEnded(child, expected ? undefined : new Error(`VHF sidecar exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}`))
+    })
+  }
+
+  #captureEnded(child: ReturnType<typeof spawn>, error?: Error): void {
+    if (this.#process === child) this.#process = undefined
+    if (error && !child.killed) child.kill('SIGTERM')
+    this.#buffer = Buffer.alloc(0)
+    if (!this.#active) {
+      this.emit('state', 'Stopped')
+      return
+    }
+    this.#metrics.restarts += 1
+    this.emit('metrics', { ...this.#metrics })
+    if (error) this.emit('error', error)
+    const delay = this.#restartDelayMs
+    this.emit('state', `Receiver unavailable; retrying in ${delay / 1_000}s`)
+    this.#restartTimer = setTimeout(() => {
+      this.#restartTimer = undefined
+      this.#startCapture()
+    }, delay)
+    this.#restartDelayMs = Math.min(delay * 2, 30_000)
+  }
+
+  tune(channel: VhfChannel): void {
+    if (!canChannelize(channel.frequencyHz)) {
+      throw new Error(`${channel.label} is outside the ${WIDEBAND_SAMPLE_RATE / 1_000_000} MHz continuous DSC capture window; use a second SDR for this channel`)
+    }
+    this.#channel = channel
+    this.#process?.stdin?.write(`tune ${channel.frequencyHz}\n`)
+    this.emit('state', `Wideband capture · voice ${channel.label} + continuous DSC 70`)
+  }
+
+  stop(): void {
+    this.#active = false
+    if (this.#restartTimer) clearTimeout(this.#restartTimer)
+    this.#restartTimer = undefined
+    const child = this.#process
+    this.#process = undefined
+    child?.kill('SIGTERM')
+    this.#buffer = Buffer.alloc(0)
+    if (!child) this.emit('state', 'Stopped')
+  }
 }
 
 interface ChannelizerMessage {

@@ -1,17 +1,29 @@
-// vhf-go-sidecar is a bounded DSP throughput probe for the experimental VHF Watch receiver.
-// It reads unsigned 8-bit interleaved IQ on stdin and fully channelizes two NFM channels without
-// retaining audio. rtl_sdr can feed it directly during a controlled AIS interruption.
+// vhf-watch-sidecar owns rtl_sdr and performs high-rate DSP outside Signal K.
+// Stdout is a framed binary stream containing only low-rate voice and DSC PCM.
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
+)
+
+const (
+	frameVoice byte = 1
+	frameDSC   byte = 2
+	frameState byte = 3
 )
 
 var normalizedIQ = func() [256]float64 {
@@ -23,22 +35,19 @@ var normalizedIQ = func() [256]float64 {
 }()
 
 type channelizer struct {
-	inputRate, outputRate             int
-	firstDecimation, secondDecimation int
-	oscillatorI, oscillatorQ          []float64
-	oscillatorIndex                   int
-	mixI, mixQ                        float64
-	mixCount                          int
-	filterI1, filterQ1                float64
-	filterI2, filterQ2                float64
-	filterI3, filterQ3                float64
-	previousI, previousQ              float64
-	audioSum, deemphasis, level       float64
-	audioCount, outputSamples         int64
-	checksum                          float64
+	inputRate, outputRate, firstDecimation, secondDecimation   int
+	oscillatorI, oscillatorQ                                   []float64
+	oscillatorIndex                                            int
+	mixI, mixQ                                                 float64
+	mixCount                                                   int
+	filterI1, filterQ1, filterI2, filterQ2, filterI3, filterQ3 float64
+	previousI, previousQ, audioSum, deemphasis, level          float64
+	audioCount, outputSamples                                  int64
+	checksum                                                   float64
+	squelch                                                    int
 }
 
-func newChannelizer(inputRate, outputRate, offsetHz int) (*channelizer, error) {
+func newChannelizer(inputRate, outputRate, offsetHz int, squelch ...int) (*channelizer, error) {
 	first := inputRate / 96_000
 	if first == 0 || inputRate%96_000 != 0 {
 		return nil, fmt.Errorf("input rate %d must be divisible by 96000", inputRate)
@@ -47,32 +56,35 @@ func newChannelizer(inputRate, outputRate, offsetHz int) (*channelizer, error) {
 	if intermediate%outputRate != 0 {
 		return nil, fmt.Errorf("intermediate rate %d does not divide output rate %d", intermediate, outputRate)
 	}
-	period := 1
-	if offsetHz != 0 {
-		period = inputRate / gcd(inputRate, abs(offsetHz))
+	value := &channelizer{inputRate: inputRate, outputRate: outputRate, firstDecimation: first, secondDecimation: intermediate / outputRate}
+	if len(squelch) > 0 {
+		value.squelch = squelch[0]
 	}
-	value := &channelizer{
-		inputRate: inputRate, outputRate: outputRate,
-		firstDecimation: first, secondDecimation: intermediate / outputRate,
-		oscillatorI: make([]float64, period), oscillatorQ: make([]float64, period),
-	}
-	for index := 0; index < period; index++ {
-		phase := -2 * math.Pi * float64(offsetHz*index) / float64(inputRate)
-		value.oscillatorI[index] = math.Cos(phase)
-		value.oscillatorQ[index] = math.Sin(phase)
-	}
+	value.tune(offsetHz)
 	return value, nil
 }
 
-func (c *channelizer) process(iq []byte) {
+func (c *channelizer) tune(offsetHz int) {
+	period := 1
+	if offsetHz != 0 {
+		period = c.inputRate / gcd(c.inputRate, abs(offsetHz))
+	}
+	c.oscillatorI, c.oscillatorQ = make([]float64, period), make([]float64, period)
+	for index := 0; index < period; index++ {
+		phase := -2 * math.Pi * float64(offsetHz*index) / float64(c.inputRate)
+		c.oscillatorI[index], c.oscillatorQ[index] = math.Cos(phase), math.Sin(phase)
+	}
+	c.oscillatorIndex = 0
+}
+
+func (c *channelizer) process(iq []byte) []int16 {
+	output := make([]int16, 0, len(iq)/2/c.firstDecimation/c.secondDecimation+1)
 	intermediateRate := float64(c.inputRate / c.firstDecimation)
 	rfAlpha := 1 - math.Exp(-2*math.Pi*12_500/intermediateRate)
 	deAlpha := 1 - math.Exp(-1/(float64(c.outputRate)*75e-6))
 	for index := 0; index+1 < len(iq); index += 2 {
-		sourceI := normalizedIQ[iq[index]]
-		sourceQ := normalizedIQ[iq[index+1]]
-		oscillatorI := c.oscillatorI[c.oscillatorIndex]
-		oscillatorQ := c.oscillatorQ[c.oscillatorIndex]
+		sourceI, sourceQ := normalizedIQ[iq[index]], normalizedIQ[iq[index+1]]
+		oscillatorI, oscillatorQ := c.oscillatorI[c.oscillatorIndex], c.oscillatorQ[c.oscillatorIndex]
 		c.mixI += sourceI*oscillatorI - sourceQ*oscillatorQ
 		c.mixQ += sourceI*oscillatorQ + sourceQ*oscillatorI
 		c.oscillatorIndex++
@@ -83,8 +95,7 @@ func (c *channelizer) process(iq []byte) {
 		if c.mixCount < c.firstDecimation {
 			continue
 		}
-		mixedI := c.mixI / float64(c.mixCount)
-		mixedQ := c.mixQ / float64(c.mixCount)
+		mixedI, mixedQ := c.mixI/float64(c.mixCount), c.mixQ/float64(c.mixCount)
 		c.mixI, c.mixQ, c.mixCount = 0, 0, 0
 		c.filterI1 += rfAlpha * (mixedI - c.filterI1)
 		c.filterQ1 += rfAlpha * (mixedQ - c.filterQ1)
@@ -107,7 +118,17 @@ func (c *channelizer) process(iq []byte) {
 		c.deemphasis += deAlpha * (sample - c.deemphasis)
 		c.checksum += c.deemphasis
 		c.outputSamples++
+		threshold := 0.0
+		if c.squelch > 0 {
+			threshold = 0.002 + float64(c.squelch)*0.00012
+		}
+		scaled := 0.0
+		if c.level >= threshold {
+			scaled = c.deemphasis * 120_000
+		}
+		output = append(output, int16(math.Max(-32768, math.Min(32767, math.Round(scaled)))))
 	}
+	return output
 }
 
 type report struct {
@@ -124,82 +145,216 @@ type report struct {
 	DSPChecksum       float64 `json:"dsp_checksum"`
 }
 
+type options struct {
+	mode, rtlPath, device                                   string
+	sampleRate, center, voice, dsc, audioRate, ppm, squelch int
+	gain                                                    float64
+	gainSet                                                 bool
+}
+
 func main() {
-	sampleRate := flag.Int("sample-rate", 2_400_000, "unsigned 8-bit complex IQ sample rate")
-	center := flag.Int("center", 156_750_000, "capture center frequency")
-	voiceFrequency := flag.Int("voice", 156_800_000, "voice channel frequency")
-	dscFrequency := flag.Int("dsc", 156_525_000, "DSC channel frequency")
+	var opts options
+	flag.StringVar(&opts.mode, "mode", "probe", "probe reads IQ on stdin; stream owns rtl_sdr")
+	flag.StringVar(&opts.rtlPath, "rtl-sdr", "rtl_sdr", "rtl_sdr executable")
+	flag.StringVar(&opts.device, "device", "0", "RTL-SDR index or serial")
+	flag.IntVar(&opts.sampleRate, "sample-rate", 2_400_000, "IQ sample rate")
+	flag.IntVar(&opts.center, "center", 156_750_000, "capture center frequency")
+	flag.IntVar(&opts.voice, "voice", 156_800_000, "voice frequency")
+	flag.IntVar(&opts.dsc, "dsc", 156_525_000, "DSC frequency")
+	flag.IntVar(&opts.audioRate, "audio-rate", 16_000, "voice PCM sample rate")
+	flag.IntVar(&opts.ppm, "ppm", 0, "frequency correction")
+	flag.IntVar(&opts.squelch, "squelch", 20, "voice squelch level")
+	flag.Func("gain", "manual gain in dB", func(value string) error {
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err == nil {
+			opts.gain, opts.gainSet = parsed, true
+		}
+		return err
+	})
 	flag.Parse()
-	voice, err := newChannelizer(*sampleRate, 16_000, *voiceFrequency-*center)
+	var err error
+	if opts.mode == "stream" {
+		err = runStream(opts)
+	} else if opts.mode == "probe" {
+		err = runProbe(opts, os.Stdin, os.Stdout)
+	} else {
+		err = fmt.Errorf("unknown mode %q", opts.mode)
+	}
 	if err != nil {
 		fatal(err)
 	}
-	dsc, err := newChannelizer(*sampleRate, 24_000, *dscFrequency-*center)
+}
+
+func runProbe(opts options, input io.Reader, output io.Writer) error {
+	voice, err := newChannelizer(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.squelch)
 	if err != nil {
-		fatal(err)
+		return err
+	}
+	dsc, err := newChannelizer(opts.sampleRate, 24_000, opts.dsc-opts.center, 0)
+	if err != nil {
+		return err
 	}
 	buffer := make([]byte, 1024*1024)
 	var bytesRead int64
 	var dspTime time.Duration
 	started := time.Now()
 	for {
-		count, readErr := os.Stdin.Read(buffer)
+		count, readErr := input.Read(buffer)
 		if count > 0 {
 			count -= count % 2
-			chunk := buffer[:count]
-			processingStarted := time.Now()
-			var workers sync.WaitGroup
-			workers.Add(2)
-			go func() {
-				defer workers.Done()
-				voice.process(chunk)
-			}()
-			go func() {
-				defer workers.Done()
-				dsc.process(chunk)
-			}()
-			workers.Wait()
-			dspTime += time.Since(processingStarted)
+			began := time.Now()
+			processBoth(voice, dsc, buffer[:count])
+			dspTime += time.Since(began)
 			bytesRead += int64(count)
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			fatal(readErr)
+			return readErr
 		}
 	}
-	elapsed := time.Since(started).Seconds()
-	samples := bytesRead / 2
-	result := report{
-		IQSamples: samples, ElapsedSeconds: elapsed,
-		SamplesPerSecond:  float64(samples) / elapsed,
-		RealTimeRatio:     (float64(samples) / elapsed) / float64(*sampleRate),
-		DSPSeconds:        dspTime.Seconds(),
-		DSPHeadroomRatio:  (float64(samples) / float64(*sampleRate)) / dspTime.Seconds(),
-		VoiceAudioSamples: voice.outputSamples, DSCAudioSamples: dsc.outputSamples,
-		VoiceLevel: voice.level, DSCLevel: dsc.level,
-		DSPChecksum: voice.checksum + dsc.checksum,
-	}
-	encoder := json.NewEncoder(os.Stdout)
+	elapsed, samples := time.Since(started).Seconds(), bytesRead/2
+	result := report{IQSamples: samples, ElapsedSeconds: elapsed, SamplesPerSecond: float64(samples) / elapsed, RealTimeRatio: (float64(samples) / elapsed) / float64(opts.sampleRate), DSPSeconds: dspTime.Seconds(), DSPHeadroomRatio: (float64(samples) / float64(opts.sampleRate)) / dspTime.Seconds(), VoiceAudioSamples: voice.outputSamples, DSCAudioSamples: dsc.outputSamples, VoiceLevel: voice.level, DSCLevel: dsc.level, DSPChecksum: voice.checksum + dsc.checksum}
+	encoder := json.NewEncoder(output)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(result); err != nil {
-		fatal(err)
+	return encoder.Encode(result)
+}
+
+func runStream(opts options) error {
+	voice, err := newChannelizer(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.squelch)
+	if err != nil {
+		return err
+	}
+	dsc, err := newChannelizer(opts.sampleRate, 24_000, opts.dsc-opts.center, 0)
+	if err != nil {
+		return err
+	}
+	args := []string{"-d", opts.device, "-f", strconv.Itoa(opts.center), "-s", strconv.Itoa(opts.sampleRate), "-p", strconv.Itoa(opts.ppm)}
+	if opts.gainSet {
+		args = append(args, "-g", strconv.FormatFloat(opts.gain, 'f', -1, 64))
+	}
+	args = append(args, "-")
+	command := exec.Command(opts.rtlPath, args...)
+	iq, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	command.Stderr = os.Stderr
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start rtl_sdr: %w", err)
+	}
+	terminated := make(chan os.Signal, 1)
+	signal.Notify(terminated, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-terminated:
+			_ = command.Process.Signal(syscall.SIGTERM)
+		case <-done:
+		}
+	}()
+	tunes := make(chan int, 1)
+	go readControls(os.Stdin, tunes)
+	buffer := make([]byte, 1024*1024)
+	lastState := time.Time{}
+	for {
+		select {
+		case frequency := <-tunes:
+			voice.tune(frequency - opts.center)
+			opts.voice = frequency
+		default:
+		}
+		count, readErr := iq.Read(buffer)
+		if count > 0 {
+			count -= count % 2
+			voicePCM, dscPCM := processBoth(voice, dsc, buffer[:count])
+			if err := writePCMFrame(os.Stdout, frameVoice, voicePCM); err != nil {
+				_ = command.Process.Kill()
+				return err
+			}
+			if err := writePCMFrame(os.Stdout, frameDSC, dscPCM); err != nil {
+				_ = command.Process.Kill()
+				return err
+			}
+			if time.Since(lastState) >= time.Second {
+				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "dsc_level": dsc.level, "iq_samples": voice.outputSamples * int64(opts.sampleRate) / int64(opts.audioRate)})
+				if err := writeFrame(os.Stdout, frameState, state); err != nil {
+					_ = command.Process.Kill()
+					return err
+				}
+				lastState = time.Now()
+			}
+		}
+		if readErr != nil {
+			waitErr := command.Wait()
+			if readErr == io.EOF && waitErr == nil {
+				return nil
+			}
+			if waitErr != nil {
+				return fmt.Errorf("rtl_sdr stopped: %w", waitErr)
+			}
+			return readErr
+		}
 	}
 }
 
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
+func processBoth(voice, dsc *channelizer, chunk []byte) (voicePCM, dscPCM []int16) {
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() { defer workers.Done(); voicePCM = voice.process(chunk) }()
+	go func() { defer workers.Done(); dscPCM = dsc.process(chunk) }()
+	workers.Wait()
+	return
 }
 
+func readControls(input io.Reader, tunes chan int) {
+	scanner := bufio.NewScanner(input)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 || fields[0] != "tune" {
+			continue
+		}
+		frequency, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		select {
+		case tunes <- frequency:
+		default:
+			select {
+			case <-tunes:
+			default:
+			}
+			tunes <- frequency
+		}
+	}
+}
+
+func writePCMFrame(output io.Writer, kind byte, samples []int16) error {
+	payload := make([]byte, len(samples)*2)
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(payload[index*2:], uint16(sample))
+	}
+	return writeFrame(output, kind, payload)
+}
+func writeFrame(output io.Writer, kind byte, payload []byte) error {
+	header := [5]byte{kind}
+	binary.LittleEndian.PutUint32(header[1:], uint32(len(payload)))
+	if _, err := output.Write(header[:]); err != nil {
+		return err
+	}
+	_, err := output.Write(payload)
+	return err
+}
+func fatal(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 func gcd(left, right int) int {
 	for right != 0 {
 		left, right = right, left%right
 	}
 	return left
 }
-
 func abs(value int) int {
 	if value < 0 {
 		return -value

@@ -8,6 +8,7 @@ export interface VhfWatchConfig {
   channelRegion: ChannelRegion
   initialChannel: string
   device: string
+  sidecarPath: string
   ppm: number
   gainDb?: number
   squelch: number
@@ -23,6 +24,7 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   channelRegion: 'US_CA',
   initialChannel: '16',
   device: '0',
+  sidecarPath: '/usr/local/bin/vhf-watch-sidecar',
   ppm: 0,
   squelch: 20,
   sampleRate: 16_000,
@@ -55,6 +57,7 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     channelRegion,
     initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
     device: String(value.device ?? value.deviceIndex ?? DEFAULT_CONFIG.device).trim() || DEFAULT_CONFIG.device,
+    sidecarPath: String(value.sidecarPath ?? DEFAULT_CONFIG.sidecarPath).trim() || DEFAULT_CONFIG.sidecarPath,
     ppm: Math.min(150, Math.max(-150, Math.round(finiteNumber(value.ppm, DEFAULT_CONFIG.ppm)))),
     ...(gain === undefined ? {} : { gainDb: gain }),
     squelch: Math.min(100, Math.max(0, Math.floor(finiteNumber(value.squelch, DEFAULT_CONFIG.squelch)))),
@@ -90,6 +93,11 @@ export const pluginSchema = {
       type: 'string',
       title: 'RTL-SDR device index or serial number',
       default: '0'
+    },
+    sidecarPath: {
+      type: 'string',
+      title: 'Native receiver sidecar path',
+      default: '/usr/local/bin/vhf-watch-sidecar'
     },
     ppm: {
       type: 'integer',
