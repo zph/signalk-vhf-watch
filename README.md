@@ -27,7 +27,7 @@ without radio hardware.
 
 Install the `rtl_sdr` utility on the Signal K host and make the SDR USB device visible to the Signal K
 container. Choose `RTL-SDR wideband` in the plugin configuration and restart the plugin. VHF Watch
-opens the tuner once at 1.2 MS/s and sends its IQ stream to worker-backed channelizers. Independent
+opens the tuner once at 960 kS/s and sends its IQ stream to worker-backed channelizers. Independent
 NFM streams provide the selected voice channel and an uninterrupted 24 kHz Channel 70 DSC decoder.
 Changing voice channels inside the capture window does not restart or retune the hardware.
 
@@ -37,7 +37,7 @@ the plugin configuration. If the capture process or USB device fails, VHF Watch 
 exponential backoff. Status reports receiver restart counts and IQ chunks dropped when the
 channelizer cannot keep up, so a trial can distinguish quiet RF from an unhealthy processing path.
 
-The shared capture is centered at 156.750 MHz. Its 1.2 MHz window covers Channel 70, Channel 16, and
+The shared capture is centered at 156.6625 MHz. Its 960 kHz window covers Channel 70, Channel 16, and
 nearby simplex marine voice channels simultaneously while remaining sustainable on a Raspberry Pi.
 Duplex coast-side and weather channels around 160–162 MHz are
 outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those

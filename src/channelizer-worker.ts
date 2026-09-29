@@ -20,6 +20,10 @@ interface IqMessage {
   iq: ArrayBuffer
 }
 
+const NORMALIZED_IQ = Float32Array.from(
+  { length: 256 }, (_, value) => (value - 127.5) / 127.5
+)
+
 class NfmChannelizer {
   readonly #inputRate: number
   readonly #outputRate: number
@@ -48,10 +52,10 @@ class NfmChannelizer {
   constructor(inputRate: number, outputRate: number, offsetHz: number, squelch: number) {
     this.#inputRate = inputRate
     this.#outputRate = outputRate
-    // All supported audio rates divide 96 kHz. Decimating to that rate cuts the expensive
-    // filtering and FM discrimination work by 60% while retaining enough bandwidth to isolate a
-    // 25 kHz marine channel.
-    this.#firstDecimation = 25
+    // All supported audio rates divide 48 kHz. Keeping only that intermediate rate sharply cuts
+    // filtering and FM-discrimination work while retaining a full 25 kHz marine channel.
+    this.#firstDecimation = inputRate / 48_000
+    if (!Number.isInteger(this.#firstDecimation)) throw new Error(`Unsupported IQ rate ${inputRate}`)
     const intermediateRate = inputRate / this.#firstDecimation
     this.#secondDecimation = intermediateRate / outputRate
     if (!Number.isInteger(this.#secondDecimation)) throw new Error(`Unsupported audio rate ${outputRate}`)
@@ -82,8 +86,8 @@ class NfmChannelizer {
     const deAlpha = 1 - Math.exp(-1 / (this.#outputRate * 75e-6))
 
     for (let index = 0; index + 1 < iq.length; index += 2) {
-      const sourceI = (iq[index]! - 127.5) / 127.5
-      const sourceQ = (iq[index + 1]! - 127.5) / 127.5
+      const sourceI = NORMALIZED_IQ[iq[index]!]!
+      const sourceQ = NORMALIZED_IQ[iq[index + 1]!]!
       const oscillatorI = this.#oscillatorI[this.#oscillatorIndex]!
       const oscillatorQ = this.#oscillatorQ[this.#oscillatorIndex]!
       this.#mixI += sourceI * oscillatorI - sourceQ * oscillatorQ
