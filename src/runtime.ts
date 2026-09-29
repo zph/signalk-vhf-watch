@@ -118,11 +118,11 @@ export class VhfRuntime extends EventEmitter<{
       config.replayMinutes,
       this.#channel.id,
       config.maxBufferMiB * 1024 * 1024,
-      'A', -1, 2
+      'A', -1, 2, config.squelch
     )
     this.replayB = new RollingReplay(
       config.sampleRate, config.segmentSeconds, config.replayMinutes, this.#slotB.id,
-      config.maxBufferMiB * 1024 * 1024, 'B', 0, 2
+      config.maxBufferMiB * 1024 * 1024, 'B', 0, 2, config.squelch
     )
   }
 

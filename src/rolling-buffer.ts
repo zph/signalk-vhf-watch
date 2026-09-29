@@ -47,6 +47,10 @@ export class RollingReplay {
   #sequence = 0
   readonly #slot: 'A' | 'B'
   readonly #sequenceStep: number
+  readonly #breakSquelch?: number
+  readonly #breakQuietBytes: number
+  #pendingHasSignal = false
+  #pendingQuietBytes = 0
   #segments: ReplaySegment[] = []
 
   constructor(
@@ -57,7 +61,8 @@ export class RollingReplay {
     maxBytes = Number.POSITIVE_INFINITY,
     slot: 'A' | 'B' = 'A',
     sequenceStart = 0,
-    sequenceStep = 1
+    sequenceStep = 1,
+    breakSquelch?: number
   ) {
     this.#sampleRate = sampleRate
     this.#segmentBytes = sampleRate * 2 * segmentSeconds
@@ -68,6 +73,8 @@ export class RollingReplay {
     this.#slot = slot
     this.#sequence = sequenceStart
     this.#sequenceStep = sequenceStep
+    this.#breakSquelch = breakSquelch
+    this.#breakQuietBytes = sampleRate * 2 * 6
   }
 
   setChannel(channel: string): void {
@@ -81,12 +88,23 @@ export class RollingReplay {
     if (this.#pending.length === 0) this.#pendingStartedAt = receivedAt
     this.#pending = Buffer.concat([this.#pending, chunk])
     this.#pendingQuality.push({ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
+    if (this.#breakSquelch !== undefined && discriminatorNoise !== undefined) {
+      if (discriminatorNoise < discriminatorThreshold(this.#breakSquelch)) {
+        this.#pendingHasSignal = true
+        this.#pendingQuietBytes = 0
+      } else if (this.#pendingHasSignal) this.#pendingQuietBytes += chunk.length
+    }
     const created: ReplaySegment[] = []
     while (this.#pending.length >= this.#segmentBytes) {
       const pcm = this.#pending.subarray(0, this.#segmentBytes)
       this.#pending = Buffer.from(this.#pending.subarray(this.#segmentBytes))
       created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(pcm.length)))
       this.#pendingStartedAt += (pcm.length / 2 / this.#sampleRate) * 1000
+      this.#recomputeBreakState()
+    }
+    if (this.#pendingHasSignal && this.#pendingQuietBytes >= this.#breakQuietBytes) {
+      const segment = this.flush()
+      if (segment) created.push(segment)
     }
     return created
   }
@@ -96,6 +114,8 @@ export class RollingReplay {
     const segment = this.#store(this.#pending, this.#pendingStartedAt, this.#takeQuality(this.#pending.length))
     this.#pending = Buffer.alloc(0)
     this.#pendingStartedAt = Date.now()
+    this.#pendingHasSignal = false
+    this.#pendingQuietBytes = 0
     return segment
   }
 
@@ -153,6 +173,8 @@ export class RollingReplay {
       this.#pending = Buffer.alloc(0)
       this.#pendingQuality = []
       this.#pendingStartedAt = Date.now()
+      this.#pendingHasSignal = false
+      this.#pendingQuietBytes = 0
       this.#sequence += this.#sequenceStep
       return true
     }
@@ -164,6 +186,8 @@ export class RollingReplay {
     this.#segments = []
     this.#pending = Buffer.alloc(0)
     this.#pendingQuality = []
+    this.#pendingHasSignal = false
+    this.#pendingQuietBytes = 0
   }
 
   #takeQuality(byteLength: number): ReplayQualitySpan[] {
@@ -178,6 +202,19 @@ export class RollingReplay {
       if (span.bytes === 0) this.#pendingQuality.shift()
     }
     return taken
+  }
+
+  #recomputeBreakState(): void {
+    this.#pendingHasSignal = false
+    this.#pendingQuietBytes = 0
+    if (this.#breakSquelch === undefined) return
+    for (const span of this.#pendingQuality) {
+      const open = span.discriminatorNoise === undefined || span.discriminatorNoise < discriminatorThreshold(this.#breakSquelch)
+      if (open) {
+        this.#pendingHasSignal = true
+        this.#pendingQuietBytes = 0
+      } else if (this.#pendingHasSignal) this.#pendingQuietBytes += span.bytes
+    }
   }
 
   #activity(spans: ReplayQualitySpan[], byteLength: number, squelch: number, bins = 48): number[] {

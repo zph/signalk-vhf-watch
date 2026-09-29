@@ -55,6 +55,19 @@ test('exposes a growing storage slice immediately with a stable playable id', ()
   assert.equal(growing.durationSeconds, 2)
 })
 
+test('ends a growing session after six seconds of squelched silence', () => {
+  const replay = new RollingReplay(8_000, 60, 120, 'WX4', Number.POSITIVE_INFINITY, 'A', 0, 1, 20)
+  const signal = Buffer.alloc(8_000 * 2 * 10, 1)
+  const quietSecond = Buffer.alloc(8_000 * 2, 0)
+  assert.equal(replay.append(signal, Date.UTC(2026, 8, 29), 0.10).length, 0)
+  let completed: ReturnType<RollingReplay['append']> = []
+  for (let second = 0; second < 6; second += 1) {
+    completed = replay.append(quietSecond, Date.UTC(2026, 8, 29, 0, 0, 10 + second), 0.60)
+  }
+  assert.equal(completed.length, 1)
+  assert.equal(completed[0]?.durationSeconds, 16)
+})
+
 test('caps retention by memory as well as time', () => {
   const segmentBytes = 8_000 * 2 * 2
   const replay = new RollingReplay(8_000, 2, 60, '16', segmentBytes + 44)
