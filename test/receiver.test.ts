@@ -8,7 +8,7 @@ test('builds one receive-only wideband capture for voice and DSC', () => {
   const config = normalizeConfig({ receiverMode: 'rtl_sdr', device: 'vhf-radio', ppm: -3, squelch: 25, gainDb: 20 })
   const args = rtlSdrArgs(config)
   assert.deepEqual(args, [
-    '-d', 'vhf-radio', '-f', '156750000', '-s', '2400000', '-p', '-3', '-g', '20', '-'
+    '-d', 'vhf-radio', '-f', '156750000', '-s', '1200000', '-p', '-3', '-g', '20', '-'
   ])
   assert.equal(args.some((arg) => /tx|transmit|ptt/i.test(arg)), false)
   assert.equal(canChannelize(channelById('16')!.frequencyHz), true)

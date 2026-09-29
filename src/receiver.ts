@@ -6,7 +6,7 @@ import type { VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
 
 export const WIDEBAND_CENTER_HZ = 156_750_000
-export const WIDEBAND_SAMPLE_RATE = 2_400_000
+export const WIDEBAND_SAMPLE_RATE = 1_200_000
 export const DSC_CHANNEL_HZ = 156_525_000
 export const CHANNEL_GUARD_HZ = 25_000
 
