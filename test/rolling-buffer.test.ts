@@ -75,6 +75,21 @@ test('caps retention by memory as well as time', () => {
   assert.equal(replay.list().length, 1)
 })
 
+test('retains two wall-clock hours when quiet gaps create short storage slices', () => {
+  const replay = new RollingReplay(1, 3_600, 120, 'WX4')
+  const tenMinutes = Buffer.alloc(1 * 2 * 10 * 60)
+  const startedAt = Date.now()
+  for (let index = 0; index < 13; index += 1) {
+    replay.append(tenMinutes, startedAt + index * 10 * 60_000, 0.10)
+    replay.flush()
+  }
+
+  const retained = replay.list().slice().reverse()
+  assert.equal(retained.length, 12)
+  assert.equal(Date.parse(retained[0]!.startedAt), startedAt + 10 * 60_000)
+  assert.equal(Date.parse(retained.at(-1)!.endedAt), startedAt + 130 * 60_000)
+})
+
 test('deletes one retained replay segment without clearing the others', () => {
   const replay = new RollingReplay(8_000, 2, 1, '16')
   replay.append(Buffer.alloc(8_000 * 2 * 2 * 3))

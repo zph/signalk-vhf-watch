@@ -127,7 +127,7 @@
       : ''
     const source = status.mode === 'demo' ? 'Demo source' : singleFrequencyActive ? 'Single-frequency RTL-SDR' : 'Wideband RTL-SDR'
     receiverState.textContent = status.error || `${status.receiverState} · ${source}${dsc}${health}`
-    retention.textContent = `Up to ${status.replayMinutes} minutes / ${status.maxBufferMiB} MiB per voice slot · ${status.replaySegments} private segments across both slots`
+    retention.textContent = `Latest ${status.replayMinutes} minutes · ${status.maxBufferMiB} MiB safety cap per voice slot · ${status.replaySegments} private playable segments`
     timelineWindowMinutes = status.replayMinutes
     const receiverRows = [{
       slot: 'A',

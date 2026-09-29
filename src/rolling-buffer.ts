@@ -39,7 +39,8 @@ export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav' | 'qualitySpans'> &
 export class RollingReplay {
   readonly #sampleRate: number
   readonly #segmentBytes: number
-  readonly #maxSegments: number
+  readonly #retentionMs: number
+  readonly #maxBytes: number
   #channel: string
   #pending = Buffer.alloc(0)
   #pendingQuality: ReplayQualitySpan[] = []
@@ -66,9 +67,8 @@ export class RollingReplay {
   ) {
     this.#sampleRate = sampleRate
     this.#segmentBytes = sampleRate * 2 * segmentSeconds
-    const timeSegments = Math.ceil((replayMinutes * 60) / segmentSeconds)
-    const memorySegments = Math.floor(maxBytes / (this.#segmentBytes + 44))
-    this.#maxSegments = Math.max(1, Math.min(timeSegments, memorySegments))
+    this.#retentionMs = replayMinutes * 60 * 1_000
+    this.#maxBytes = maxBytes
     this.#channel = channel
     this.#slot = slot
     this.#sequence = sequenceStart
@@ -85,6 +85,7 @@ export class RollingReplay {
 
   append(chunk: Buffer, receivedAt = Date.now(), discriminatorNoise?: number): ReplaySegment[] {
     if (chunk.length === 0) return []
+    this.#prune(receivedAt)
     if (this.#pending.length === 0) this.#pendingStartedAt = receivedAt
     this.#pending = Buffer.concat([this.#pending, chunk])
     this.#pendingQuality.push({ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
@@ -265,8 +266,20 @@ export class RollingReplay {
     this.#sequence += this.#sequenceStep
     const segment = this.#createSegment(this.#sequence, pcm, startedAtMs, qualitySpans)
     this.#segments.push(segment)
-    if (this.#segments.length > this.#maxSegments) this.#segments.splice(0, this.#segments.length - this.#maxSegments)
+    this.#prune(Date.parse(segment.endedAt))
     return segment
+  }
+
+  #prune(referenceMs: number): void {
+    const oldestAllowed = referenceMs - this.#retentionMs
+    while (this.#segments.length > 0 && Date.parse(this.#segments[0]!.endedAt) <= oldestAllowed) {
+      this.#segments.shift()
+    }
+    if (!Number.isFinite(this.#maxBytes)) return
+    let retainedBytes = this.#segments.reduce((total, segment) => total + segment.wav.length, 0)
+    while (this.#segments.length > 1 && retainedBytes > this.#maxBytes) {
+      retainedBytes -= this.#segments.shift()!.wav.length
+    }
   }
 
   #pendingSegment(): ReplaySegment | undefined {
