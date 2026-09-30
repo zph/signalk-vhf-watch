@@ -162,6 +162,19 @@ export function transcriptionTimeoutMs(durationSeconds: number): number {
   )
 }
 
+export function transcriptionActiveSeconds(segment: ReplaySegment, squelch: number): number {
+  const pcmBytes = Math.max(0, segment.wav.length - 44)
+  if (pcmBytes === 0) return 0
+  if (segment.qualitySpans.length === 0) return segment.durationSeconds
+  const threshold = discriminatorThreshold(squelch)
+  const activeBytes = segment.qualitySpans.reduce((total, span) => (
+    span.discriminatorNoise !== undefined && span.discriminatorNoise < threshold
+      ? total + span.bytes
+      : total
+  ), 0)
+  return activeBytes / pcmBytes * segment.durationSeconds
+}
+
 export function cleanWhisperOutput(output: string): string {
   return output
     .replace(/\x1b\[[0-9;]*m/g, '')
@@ -292,13 +305,7 @@ export class TranscriptionManager {
 
   enqueue(segment: ReplaySegment, squelch: number): void {
     if (!this.#enabled || !this.available()) return
-    const threshold = discriminatorThreshold(squelch)
-    const activeBytes = segment.qualitySpans.length === 0
-      ? segment.wav.length - 44
-      : segment.qualitySpans.reduce((total, span) => (
-          span.discriminatorNoise === undefined || span.discriminatorNoise < threshold ? total + span.bytes : total
-        ), 0)
-    const activeSeconds = activeBytes / Math.max(1, segment.wav.length - 44) * segment.durationSeconds
+    const activeSeconds = transcriptionActiveSeconds(segment, squelch)
     if (activeSeconds < MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS) {
       segment.transcription = { status: 'skipped', text: '' }
       this.#flushPending()

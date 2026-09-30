@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
-import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
+import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionActiveSeconds, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
 import { RnnoiseDenoiser } from '../src/rnnoise'
 
@@ -65,6 +65,16 @@ test('allows decoding to run longer than its one-minute audio window', () => {
   assert.equal(transcriptionTimeoutMs(15), 90_000)
   assert.equal(transcriptionTimeoutMs(60), 120_000)
   assert.equal(transcriptionTimeoutMs(75), 150_000)
+})
+
+test('requires measured carrier activity while preserving a short strong transmission', () => {
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const [segment] = replay.append(Buffer.alloc(32_000), Date.UTC(2026, 8, 29), 0.3)
+  assert.ok(segment)
+  segment.qualitySpans = [{ bytes: 25_600 }, { bytes: 6_400, discriminatorNoise: 0.06 }]
+  assert.equal(transcriptionActiveSeconds(segment, 20), 0.4)
+  segment.qualitySpans = [{ bytes: 32_000 }]
+  assert.equal(transcriptionActiveSeconds(segment, 20), 0)
 })
 
 test('removes Whisper timestamps without discarding decoded speech', () => {
