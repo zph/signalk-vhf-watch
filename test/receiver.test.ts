@@ -51,6 +51,6 @@ test('parses complete sidecar frames and retains a partial frame', () => {
 
 test('maps higher squelch settings to stricter discriminator-noise thresholds', () => {
   assert.equal(discriminatorThreshold(0), Number.POSITIVE_INFINITY)
-  assert.equal(discriminatorThreshold(20), 0.35)
+  assert.equal(discriminatorThreshold(20), 0.22)
   assert.ok(discriminatorThreshold(30) < discriminatorThreshold(20))
 })

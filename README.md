@@ -53,7 +53,9 @@ the original native dual-channel DSP with more than 30× processing headroom and
 loss. The stronger two-stage FIR path processes a 60-second, 2.4 MS/s dual-channel capture in about
 19 seconds on the same Pi 5, retaining roughly 3.2× real-time headroom with under 8 MiB resident
 memory. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
-about 14% while preserving speech peaks and the complete one-minute output.
+about 14% while preserving speech peaks and the complete one-minute output. The discriminator
+squelch scale is calibrated to this filtered noise floor; `Medium` separates the measured idle
+0.31–0.34 range from the strong NOAA value near 0.05.
 Duplex coast-side and weather channels around 160–162 MHz are outside that instantaneous window.
 Selecting one in fixed Slot A mode switches the same SDR into single-frequency reception centered on
 that channel; Slot B, scanning, and Channel 70 DSC are visibly paused until Slot A returns to a marine
