@@ -38,7 +38,10 @@ Either voice slot can remain fixed or use wideband scan. The sparse FFT observes
 channel in the 2.4 MHz capture window at once, highlights current RF activity, and sends the two
 audio demodulators directly to the strongest active channels instead of hopping blindly. Channel 16
 receives a small priority boost, an open voice channel is held until it goes quiet, and five seconds
-of per-slot pre-roll preserves the beginning of a call while discriminator squelch confirms speech.
+of raw wideband IQ are retained in a circular ring. When the spectrum detector assigns a slot, a
+bounded background worker retrospectively demodulates that channel from the IQ ring and places it
+before the live audio, preserving speech that began before the assignment. Short gaps in spectrum
+detections are coalesced so one transmission is not shown as a burst of separate activity marks.
 The two voice slots can preserve two simultaneous calls; additional collisions remain highlighted as
 RF activity but cannot produce audio without another SDR or demodulation slot. Channel 70 DSC stays
 continuous throughout in-band voice scanning.
@@ -68,7 +71,10 @@ the 156–157.425 MHz simplex marine voice range simultaneously. A live Raspberr
 the original native dual-channel DSP with more than 30× processing headroom and no RTL-SDR sample
 loss. The stronger two-stage FIR path processes a 60-second, 2.4 MS/s dual-channel capture in about
 19 seconds on the same Pi 5, retaining roughly 3.2× real-time headroom with under 8 MiB resident
-memory. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
+memory before retrospective scan capture. The five-second IQ ring adds about 23 MiB of steady
+memory. Retrospective jobs run one at a time and the queue is capped at two; under rapid retuning,
+the active job plus queued snapshots can add up to about 69 MiB transiently, with the oldest queued
+job discarded in favor of the newest. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
 about 14% while preserving speech peaks and the complete one-minute output. The discriminator
 squelch scale is calibrated to this filtered noise floor; `Medium` separates the measured idle
 0.31–0.34 range from the strong NOAA value near 0.05.

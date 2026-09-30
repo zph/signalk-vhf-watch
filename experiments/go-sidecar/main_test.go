@@ -74,6 +74,33 @@ func TestWritesIndependentSlotBVoiceFrame(t *testing.T) {
 	}
 }
 
+func TestWritesTimestampedBackfillFrame(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeBackfillFrame(&output, frameVoiceBBackfill, 1234, 156_425_000, []int16{-3, 9}, 0.12); err != nil {
+		t.Fatal(err)
+	}
+	written := output.Bytes()
+	if written[0] != frameVoiceBBackfill || binary.LittleEndian.Uint32(written[1:5]) != 28 {
+		t.Fatalf("bad backfill header: %v", written[:5])
+	}
+	if timestamp := int64(binary.LittleEndian.Uint64(written[5:13])); timestamp != 1234 {
+		t.Fatalf("timestamp = %d", timestamp)
+	}
+	if frequency := int(binary.LittleEndian.Uint64(written[13:21])); frequency != 156_425_000 {
+		t.Fatalf("frequency = %d", frequency)
+	}
+}
+
+func TestIQRingRetainsOnlyTheLatestBoundedCapture(t *testing.T) {
+	ring := newIQRing(4, 1)
+	ring.append([]byte{1, 2, 3, 4, 5, 6})
+	ring.append([]byte{7, 8, 9, 10, 11, 12})
+	snapshot, _ := ring.snapshot()
+	if !bytes.Equal(snapshot, []byte{5, 6, 7, 8, 9, 10, 11, 12}) {
+		t.Fatalf("snapshot = %v", snapshot)
+	}
+}
+
 func TestReadsIndependentSlotTuneCommands(t *testing.T) {
 	tunes := make(chan tuneRequest, 2)
 	readControls(strings.NewReader("tune 156800000\ntune-b 156425000\n"), tunes)

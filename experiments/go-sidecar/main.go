@@ -21,14 +21,65 @@ import (
 )
 
 const (
-	frameVoice      byte = 1
-	frameDSC        byte = 2
-	frameState      byte = 3
-	frameVoiceB     byte = 4
-	channelRate          = 96_000
-	spectrumFFTSize      = 4096
-	spectrumStride       = 32768
+	frameVoice          byte = 1
+	frameDSC            byte = 2
+	frameState          byte = 3
+	frameVoiceB         byte = 4
+	frameVoiceBackfill  byte = 5
+	frameVoiceBBackfill byte = 6
+	channelRate              = 96_000
+	spectrumFFTSize          = 4096
+	spectrumStride           = 32768
 )
+
+var frameWriteMutex sync.Mutex
+
+type iqRing struct {
+	buffer     []byte
+	write      int
+	filled     int
+	sampleRate int
+}
+
+func newIQRing(sampleRate, seconds int) *iqRing {
+	return &iqRing{buffer: make([]byte, sampleRate*2*seconds), sampleRate: sampleRate}
+}
+
+func (r *iqRing) append(chunk []byte) {
+	if len(r.buffer) == 0 || len(chunk) == 0 {
+		return
+	}
+	if len(chunk) >= len(r.buffer) {
+		copy(r.buffer, chunk[len(chunk)-len(r.buffer):])
+		r.write, r.filled = 0, len(r.buffer)
+		return
+	}
+	first := min(len(chunk), len(r.buffer)-r.write)
+	copy(r.buffer[r.write:], chunk[:first])
+	copy(r.buffer, chunk[first:])
+	r.write = (r.write + len(chunk)) % len(r.buffer)
+	r.filled = min(len(r.buffer), r.filled+len(chunk))
+}
+
+func (r *iqRing) snapshot() ([]byte, int64) {
+	if r.filled == 0 {
+		return nil, 0
+	}
+	result := make([]byte, r.filled)
+	start := (r.write - r.filled + len(r.buffer)) % len(r.buffer)
+	first := min(r.filled, len(r.buffer)-start)
+	copy(result, r.buffer[start:start+first])
+	copy(result[first:], r.buffer[:r.filled-first])
+	duration := time.Duration(float64(len(result)/2) / float64(r.sampleRate) * float64(time.Second))
+	return result, time.Now().Add(-duration).UnixMilli()
+}
+
+type backfillJob struct {
+	slot                                                          byte
+	frequency, center, sampleRate, audioRate, rfCutoffHz, squelch int
+	iq                                                            []byte
+	startedAt                                                     int64
+}
 
 var normalizedIQ = func() [256]float64 {
 	var values [256]float64
@@ -488,6 +539,27 @@ func runStream(opts options) error {
 		}
 	}
 	spectrum := newSpectrumScanner(opts.sampleRate, opts.center, opts.scanFrequencies)
+	widebandRing := newIQRing(opts.sampleRate, 5)
+	backfillJobs := make(chan backfillJob, 2)
+	go runBackfillWorker(backfillJobs, os.Stdout)
+	enqueueBackfill := func(slot byte, frequency int) {
+		iqSnapshot, startedAt := widebandRing.snapshot()
+		if len(iqSnapshot) == 0 {
+			return
+		}
+		job := backfillJob{slot: slot, frequency: frequency, center: opts.center,
+			sampleRate: opts.sampleRate, audioRate: opts.audioRate, rfCutoffHz: opts.rfCutoffHz,
+			squelch: opts.squelch, iq: iqSnapshot, startedAt: startedAt}
+		select {
+		case backfillJobs <- job:
+		default:
+			select {
+			case <-backfillJobs:
+			default:
+			}
+			backfillJobs <- job
+		}
+	}
 	args := []string{"-d", opts.device, "-f", strconv.Itoa(opts.center), "-s", strconv.Itoa(opts.sampleRate), "-p", strconv.Itoa(opts.ppm)}
 	if opts.gainSet {
 		args = append(args, "-g", strconv.FormatFloat(opts.gain, 'f', -1, 64))
@@ -533,15 +605,20 @@ func runStream(opts options) error {
 				} else {
 					slotB.tune(request.frequency - opts.center)
 				}
+				if request.frequency != opts.dsc {
+					enqueueBackfill(frameVoiceBBackfill, request.frequency)
+				}
 			} else {
 				voice.tune(request.frequency - opts.center)
 				opts.voice = request.frequency
+				enqueueBackfill(frameVoiceBackfill, request.frequency)
 			}
 		default:
 		}
 		count, readErr := iq.Read(buffer)
 		if count > 0 {
 			count -= count % 2
+			widebandRing.append(buffer[:count])
 			iqBytes += int64(count)
 			edgeBytes += countIQEdgeBytes(buffer[:count])
 			voicePCM, slotBPCM, dscPCM := processReceivers(voice, slotB, dsc, spectrum, buffer[:count])
@@ -584,6 +661,17 @@ func runStream(opts options) error {
 			}
 			return readErr
 		}
+	}
+}
+
+func runBackfillWorker(jobs <-chan backfillJob, output io.Writer) {
+	for job := range jobs {
+		channel, err := newChannelizerWithRFCutoff(job.sampleRate, job.audioRate, job.frequency-job.center, job.rfCutoffHz, job.squelch)
+		if err != nil {
+			continue
+		}
+		pcm := channel.process(job.iq)
+		_ = writeBackfillFrame(output, job.slot, job.startedAt, job.frequency, pcm, channel.level)
 	}
 }
 
@@ -674,7 +762,19 @@ func writeMeasuredVoiceFrame(output io.Writer, kind byte, samples []int16, discr
 	}
 	return writeFrame(output, kind, payload)
 }
+func writeBackfillFrame(output io.Writer, kind byte, startedAt int64, frequency int, samples []int16, discriminatorNoise float64) error {
+	payload := make([]byte, 24+len(samples)*2)
+	binary.LittleEndian.PutUint64(payload[0:8], uint64(startedAt))
+	binary.LittleEndian.PutUint64(payload[8:16], uint64(frequency))
+	binary.LittleEndian.PutUint64(payload[16:24], math.Float64bits(discriminatorNoise))
+	for index, sample := range samples {
+		binary.LittleEndian.PutUint16(payload[24+index*2:], uint16(sample))
+	}
+	return writeFrame(output, kind, payload)
+}
 func writeFrame(output io.Writer, kind byte, payload []byte) error {
+	frameWriteMutex.Lock()
+	defer frameWriteMutex.Unlock()
 	header := [5]byte{kind}
 	binary.LittleEndian.PutUint32(header[1:], uint32(len(payload)))
 	if _, err := output.Write(header[:]); err != nil {

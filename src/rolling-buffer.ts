@@ -115,6 +115,21 @@ export class RollingReplay {
     return created
   }
 
+  insert(chunk: Buffer, startedAt: number, discriminatorNoise?: number): ReplaySegment | undefined {
+    if (chunk.length < 2) return undefined
+    // Materialize any newer live audio first so its public id remains stable when
+    // the retrospectively demodulated segment is inserted ahead of it.
+    this.flush()
+    this.#sequence += this.#sequenceStep
+    const quality = [{ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) }]
+    const segment = this.#createSegment(this.#sequence, chunk, startedAt, quality)
+    this.#segments.push(segment)
+    this.#segments.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+    this.#encodeOpus(segment)
+    this.#prune(Math.max(Date.now(), Date.parse(segment.endedAt)))
+    return segment
+  }
+
   flush(): ReplaySegment | undefined {
     if (this.#pending.length < 2) return undefined
     const segment = this.#store(this.#pending, this.#pendingStartedAt, this.#takeQuality(this.#pending.length))

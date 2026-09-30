@@ -29,6 +29,19 @@ test('flushes partial audio under its original channel before retuning', () => {
   assert.equal(replay.list()[0]?.channel, '68')
 })
 
+test('inserts retrospectively demodulated audio before newer live audio', () => {
+  const replay = new RollingReplay(8_000, 60, 60, '68')
+  const now = Date.now()
+  replay.append(Buffer.alloc(8_000 * 2), now, 0.1)
+  const liveId = replay.list()[0]!.id
+  const backfill = replay.insert(Buffer.alloc(8_000 * 2), now - 5_000, 0.1)
+  assert.ok(backfill)
+  const ordered = replay.list().slice().reverse()
+  assert.equal(Date.parse(ordered[0]!.startedAt), now - 5_000)
+  assert.equal(Date.parse(ordered[1]!.startedAt), now)
+  assert.equal(ordered[1]!.id, liveId)
+})
+
 test('joins consecutive replay PCM without WAV boundaries and stops at a retune', async () => {
   const replay = new RollingReplay(8_000, 1, 1, 'WX4')
   const first = Buffer.alloc(16_000, 1)

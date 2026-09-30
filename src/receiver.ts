@@ -13,8 +13,8 @@ export const CHANNEL_GUARD_HZ = 25_000
 
 export interface ReceiverEvents {
   audio: [Buffer]
-  replayAudio: [Buffer, number]
-  slotBReplayAudio: [Buffer, number]
+  replayAudio: [Buffer, number, number?, number?]
+  slotBReplayAudio: [Buffer, number, number?, number?]
   dscAudio: [Buffer]
   error: [Error]
   metrics: [ReceiverMetrics]
@@ -163,6 +163,17 @@ export class NativeSidecarReceiver extends AudioReceiver {
             const discriminatorNoise = frame.payload.readDoubleLE(0)
             this.#metrics.slotBDiscriminatorNoise = discriminatorNoise
             this.emit('slotBReplayAudio', frame.payload.subarray(8), discriminatorNoise)
+          }
+          else if (frame.kind === 5 || frame.kind === 6) {
+            if (frame.payload.length < 24) throw new Error('Truncated retrospective voice frame from VHF sidecar')
+            const capturedAt = Number(frame.payload.readBigInt64LE(0))
+            const frequencyHz = Number(frame.payload.readBigInt64LE(8))
+            const discriminatorNoise = frame.payload.readDoubleLE(16)
+            if (frame.kind === 5 && frequencyHz === this.#channel.frequencyHz) {
+              this.emit('replayAudio', frame.payload.subarray(24), discriminatorNoise, capturedAt, frequencyHz)
+            } else if (frame.kind === 6 && this.#slotB !== '70' && frequencyHz === this.#slotB.frequencyHz) {
+              this.emit('slotBReplayAudio', frame.payload.subarray(24), discriminatorNoise, capturedAt, frequencyHz)
+            }
           }
           else if (frame.kind === 3) {
             this.#restartDelayMs = 1_000

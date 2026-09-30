@@ -23,7 +23,7 @@ function call(receivedAt: string): DscMessage {
 test('persists DSC calls with TTL, count, and byte bounds', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vhf-dsc-cache-'))
   const file = path.join(directory, 'calls.json')
-  const now = Date.UTC(2026, 8, 29, 12)
+  const now = Date.now()
   try {
     const cache = new DscMessageCache(file, { ttlHours: 24, maxMessages: 2, maxBytes: 2_048 })
     cache.add([call(new Date(now).toISOString())], now)

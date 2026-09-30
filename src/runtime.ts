@@ -22,6 +22,8 @@ import type { TuningSettings } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
 import { SpectrumActivityLog, type SpectrumActivityEvent, type SpectrumActivitySample } from './activity-log'
 
+const SPECTRUM_ACTIVITY_THRESHOLD = 2
+
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
 export function selectAdaptiveScanChannel(
@@ -391,7 +393,7 @@ export class VhfRuntime extends EventEmitter<{
             .filter((channel) => !channel.weather && canChannelize(channel.frequencyHz))
             .map((channel) => {
               const score = this.#spectrumActivityScores.get(channel.id) ?? 0
-              return { channel: channel.id, frequencyHz: channel.frequencyHz, score, active: score >= 0.8 }
+              return { channel: channel.id, frequencyHz: channel.frequencyHz, score, active: score >= SPECTRUM_ACTIVITY_THRESHOLD }
             })
         }
       } : {}),
@@ -480,24 +482,26 @@ export class VhfRuntime extends EventEmitter<{
       }
       this.emit('audio', chunk)
     })
-    receiver.on('replayAudio', (chunk, discriminatorNoise) => {
+    receiver.on('replayAudio', (chunk, discriminatorNoise, capturedAt) => {
       if (this.#slotAMode === 'scan') {
-        this.#handleScanAudio(chunk, discriminatorNoise)
-        this.emit('rawAudio', chunk, discriminatorNoise)
+        this.#handleScanAudio(chunk, discriminatorNoise, capturedAt)
+        if (capturedAt === undefined) this.emit('rawAudio', chunk, discriminatorNoise)
         return
       }
+      if (capturedAt !== undefined) return
       for (const segment of this.replay.append(chunk, Date.now(), discriminatorNoise)) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
       this.emit('rawAudio', chunk, discriminatorNoise)
     })
-    receiver.on('slotBReplayAudio', (chunk, discriminatorNoise) => {
+    receiver.on('slotBReplayAudio', (chunk, discriminatorNoise, capturedAt) => {
       if (this.#singleFrequency) return
       if (this.#slotBMode === 'scan') {
-        this.#handleSlotBScanAudio(chunk, discriminatorNoise)
-        this.emit('rawSlotBAudio', chunk, discriminatorNoise)
+        this.#handleSlotBScanAudio(chunk, discriminatorNoise, capturedAt)
+        if (capturedAt === undefined) this.emit('rawSlotBAudio', chunk, discriminatorNoise)
         return
       }
+      if (capturedAt !== undefined) return
       for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
@@ -517,7 +521,7 @@ export class VhfRuntime extends EventEmitter<{
           const score = metrics.spectrumActivity[String(channel.frequencyHz)]
           if (score !== undefined) {
             this.#spectrumActivityScores.set(channel.id, score)
-            if (score >= 0.8 && !active.some((entry) => entry.frequencyHz === channel.frequencyHz)) {
+            if (score >= SPECTRUM_ACTIVITY_THRESHOLD && !active.some((entry) => entry.frequencyHz === channel.frequencyHz)) {
               active.push({ channel: channel.id, frequencyHz: channel.frequencyHz, score })
             }
           }
@@ -597,11 +601,17 @@ export class VhfRuntime extends EventEmitter<{
     }, delayMs)
   }
 
-  #handleScanAudio(chunk: Buffer, discriminatorNoise: number): void {
+  #handleScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
+    if (this.#scanLocked && capturedAt !== undefined) {
+      const segment = this.replay.insert(chunk, capturedAt, discriminatorNoise)
+      if (segment) this.transcription.enqueue(segment, this.config.squelch)
+      return
+    }
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#scanLocked) {
-      this.#appendScanPreRoll(this.#scanPreRoll, chunk, discriminatorNoise)
+      this.#appendScanPreRoll(this.#scanPreRoll, chunk, discriminatorNoise, capturedAt)
+      if (capturedAt !== undefined) return
       this.#scanOpenMs = open ? this.#scanOpenMs + milliseconds : 0
       if (this.#scanOpenMs < 200) return
       this.#scanLocked = true
@@ -641,11 +651,17 @@ export class VhfRuntime extends EventEmitter<{
     }, delayMs)
   }
 
-  #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number): void {
+  #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
+    if (this.#slotBScanLocked && capturedAt !== undefined) {
+      const segment = this.replayB.insert(chunk, capturedAt, discriminatorNoise)
+      if (segment) this.transcription.enqueue(segment, this.config.squelch)
+      return
+    }
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#slotBScanLocked) {
-      this.#appendScanPreRoll(this.#slotBScanPreRoll, chunk, discriminatorNoise)
+      this.#appendScanPreRoll(this.#slotBScanPreRoll, chunk, discriminatorNoise, capturedAt)
+      if (capturedAt !== undefined) return
       this.#slotBScanOpenMs = open ? this.#slotBScanOpenMs + milliseconds : 0
       if (this.#slotBScanOpenMs < 200) return
       this.#slotBScanLocked = true
@@ -681,7 +697,7 @@ export class VhfRuntime extends EventEmitter<{
     return candidates
       .filter((channel) => channel.frequencyHz !== excludedFrequency && (rejectedUntil.get(channel.id) ?? 0) <= now)
       .map((channel) => ({ channel, score: (this.#spectrumActivityScores.get(channel.id) ?? 0) * (channel.id === '16' ? 1.2 : 1) }))
-      .filter(({ score }) => score >= 0.8)
+      .filter(({ score }) => score >= SPECTRUM_ACTIVITY_THRESHOLD)
       .sort((left, right) => right.score - left.score)[0]?.channel
   }
 
@@ -721,9 +737,10 @@ export class VhfRuntime extends EventEmitter<{
     }
   }
 
-  #appendScanPreRoll(target: { chunk: Buffer; discriminatorNoise: number; at: number }[], chunk: Buffer, discriminatorNoise: number): void {
-    target.push({ chunk: Buffer.from(chunk), discriminatorNoise, at: Date.now() })
-    const maximumBytes = this.config.sampleRate * 2 * 5
+  #appendScanPreRoll(target: { chunk: Buffer; discriminatorNoise: number; at: number }[], chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
+    target.push({ chunk: Buffer.from(chunk), discriminatorNoise, at: capturedAt ?? Date.now() })
+    target.sort((left, right) => left.at - right.at)
+    const maximumBytes = this.config.sampleRate * 2 * 7
     let total = target.reduce((sum, entry) => sum + entry.chunk.length, 0)
     while (total > maximumBytes && target.length > 1) total -= target.shift()!.chunk.length
   }

@@ -13,26 +13,33 @@ export interface SpectrumActivityEvent extends SpectrumActivitySample {
 export class SpectrumActivityLog {
   readonly #ttlMs: number
   readonly #maximumEvents: number
+  readonly #closeDelayMs: number
   #nextId = 1
   #events: SpectrumActivityEvent[] = []
   readonly #open = new Map<number, SpectrumActivityEvent>()
+  readonly #lastSeenAt = new Map<number, number>()
 
-  constructor(ttlMinutes = 1_440, maximumEvents = 5_000) {
+  constructor(ttlMinutes = 1_440, maximumEvents = 5_000, closeDelayMs = 3_000) {
     this.#ttlMs = ttlMinutes * 60_000
     this.#maximumEvents = maximumEvents
+    this.#closeDelayMs = closeDelayMs
   }
 
   update(samples: SpectrumActivitySample[], now = Date.now()): void {
     const activeFrequencies = new Set(samples.map((sample) => sample.frequencyHz))
     for (const [frequencyHz, event] of this.#open) {
       if (activeFrequencies.has(frequencyHz)) continue
-      event.endedAt = new Date(now).toISOString()
+      const lastSeenAt = this.#lastSeenAt.get(frequencyHz) ?? now
+      if (now - lastSeenAt < this.#closeDelayMs) continue
+      event.endedAt = new Date(lastSeenAt + 1_000).toISOString()
       this.#open.delete(frequencyHz)
+      this.#lastSeenAt.delete(frequencyHz)
     }
     for (const sample of samples) {
       const existing = this.#open.get(sample.frequencyHz)
       if (existing) {
         existing.score = Math.max(existing.score, sample.score)
+        this.#lastSeenAt.set(sample.frequencyHz, now)
         continue
       }
       const event: SpectrumActivityEvent = {
@@ -40,6 +47,7 @@ export class SpectrumActivityLog {
       }
       this.#events.push(event)
       this.#open.set(sample.frequencyHz, event)
+      this.#lastSeenAt.set(sample.frequencyHz, now)
     }
     this.#prune(now)
   }
