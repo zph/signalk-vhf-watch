@@ -117,7 +117,7 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
   const replay = new RollingReplay(8_000, 2, 1, '16')
   const [segment] = replay.append(Buffer.alloc(32_000, 1), Date.UTC(2026, 8, 29), 0.1)
   manager.enqueue(segment!, 20)
-  for (let attempt = 0; attempt < 50 && segment!.transcription?.status !== 'complete'; attempt += 1) {
+  for (let attempt = 0; attempt < 100 && segment!.transcription?.status !== 'complete'; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.deepEqual(segment!.transcription, { status: 'complete', text: 'channel one six test' })
@@ -184,6 +184,40 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   assert.equal(archive.list()[0]?.transcript, '96044')
   assert.equal(archive.list()[0]?.channel, '16')
   assert.equal(archive.wav(archive.list()[0]!.id)?.length, 96_044)
+  manager.close()
+})
+
+test('archives only measured activity with five seconds of padding on each side', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-trim-'))
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(command, '#!/bin/sh\nprintf "brief channel one six call\\n"\n')
+  chmodSync(command, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    batchSeconds: 60,
+    idleMs: 10,
+    archive,
+    modelsDir: directory
+  })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(16_000, 60, 120, '16')
+  const startedAt = Date.UTC(2026, 8, 29, 20, 0, 0)
+  const [segment] = replay.append(Buffer.alloc(1_920_000, 1), startedAt, 0.3)
+  assert.ok(segment)
+  segment.qualitySpans = [
+    { bytes: 640_000, discriminatorNoise: 0.3 },
+    { bytes: 160_000, discriminatorNoise: 0.06 },
+    { bytes: 1_120_000, discriminatorNoise: 0.3 }
+  ]
+  manager.enqueue(segment, 20)
+  for (let attempt = 0; attempt < 100 && segment.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  const [record] = archive.list()
+  assert.equal(record?.startedAt, new Date(startedAt + 15_000).toISOString())
+  assert.equal(record?.durationSeconds, 15)
+  assert.equal(record?.audioBytes, 480_044)
   manager.close()
 })
 

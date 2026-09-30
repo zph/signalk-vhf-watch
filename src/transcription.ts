@@ -18,6 +18,7 @@ export const MAXIMUM_TRANSCRIPTION_THREADS = 16
 export const MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS = 0.35
 export const TRANSCRIPTION_BATCH_SECONDS = 60
 export const TRANSCRIPTION_OVERLAP_SECONDS = 10
+export const TRANSCRIPTION_ARCHIVE_PADDING_SECONDS = 5
 export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
 export const MINIMUM_TRANSCRIPTION_TIMEOUT_MS = 90_000
 export const TRANSCRIPTION_TIMEOUT_AUDIO_MULTIPLIER = 2
@@ -53,6 +54,7 @@ interface TranscriptionBatch {
   durationSeconds: number
   overlapSegmentCount: number
   channel: string
+  squelch: number
 }
 
 interface TranscriptionOptions {
@@ -202,6 +204,7 @@ export class TranscriptionManager {
   #pending: ReplaySegment[] = []
   #pendingSeconds = 0
   #pendingOverlapCount = 0
+  #pendingSquelch?: number
   #pendingTimer?: ReturnType<typeof setTimeout>
   #running = false
   #child?: ChildProcess
@@ -313,9 +316,14 @@ export class TranscriptionManager {
     }
     this.#narrator?.yield()
     const previous = this.#pending.at(-1)
-    if (previous && (previous.channel !== segment.channel || Math.abs(Date.parse(segment.startedAt) - Date.parse(previous.endedAt)) > 500)) {
+    if (previous && (
+      previous.channel !== segment.channel ||
+      Math.abs(Date.parse(segment.startedAt) - Date.parse(previous.endedAt)) > 500 ||
+      this.#pendingSquelch !== squelch
+    )) {
       this.#flushPending()
     }
+    if (this.#pending.length === 0) this.#pendingSquelch = squelch
     segment.transcription = { status: 'queued', text: '' }
     this.#pending.push(segment)
     this.#pendingSeconds += segment.durationSeconds
@@ -379,7 +387,8 @@ export class TranscriptionManager {
       segments,
       durationSeconds: this.#pendingSeconds,
       overlapSegmentCount: this.#pendingOverlapCount,
-      channel: segments.at(-1)!.channel
+      channel: segments.at(-1)!.channel,
+      squelch: this.#pendingSquelch ?? 0
     })
     const retained: ReplaySegment[] = []
     let retainedSeconds = 0
@@ -392,6 +401,7 @@ export class TranscriptionManager {
     this.#pending = retained
     this.#pendingSeconds = Math.min(retainedSeconds, this.#overlapSeconds)
     this.#pendingOverlapCount = retained.length
+    if (retained.length === 0) this.#pendingSquelch = undefined
     while (this.#queue.length > 8) {
       const dropped = this.#queue.shift()
       for (const segment of dropped?.segments.slice(dropped.overlapSegmentCount) ?? []) {
@@ -407,6 +417,7 @@ export class TranscriptionManager {
     this.#pending = []
     this.#pendingSeconds = 0
     this.#pendingOverlapCount = 0
+    this.#pendingSquelch = undefined
   }
 
   async #drain(): Promise<void> {
@@ -485,21 +496,45 @@ export class TranscriptionManager {
     if (!this.#archive) return
     const archivedSegments = batch.segments.slice(batch.overlapSegmentCount)
     const first = archivedSegments[0]!
-    const last = archivedSegments.at(-1)!
     const measuredNoise = archivedSegments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
       span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise]
     )))
     const sampleRate = first.wav.readUInt32LE(24)
     const pcm = Buffer.concat(archivedSegments.map((segment) => segment.wav.subarray(44)))
+    const bytesPerSecond = sampleRate * 2
+    const paddingBytes = TRANSCRIPTION_ARCHIVE_PADDING_SECONDS * bytesPerSecond
+    const threshold = discriminatorThreshold(batch.squelch)
+    let segmentOffset = 0
+    let activeStart = Number.POSITIVE_INFINITY
+    let activeEnd = 0
+    for (const segment of archivedSegments) {
+      const segmentBytes = segment.wav.length - 44
+      let spanOffset = segmentOffset
+      for (const span of segment.qualitySpans) {
+        const spanEnd = Math.min(segmentOffset + segmentBytes, spanOffset + span.bytes)
+        if (span.discriminatorNoise !== undefined && span.discriminatorNoise < threshold) {
+          activeStart = Math.min(activeStart, spanOffset)
+          activeEnd = Math.max(activeEnd, spanEnd)
+        }
+        spanOffset = spanEnd
+      }
+      segmentOffset += segmentBytes
+    }
+    const hasMeasuredActivity = Number.isFinite(activeStart) && activeEnd > activeStart
+    const trimStart = hasMeasuredActivity ? Math.floor(Math.max(0, activeStart - paddingBytes) / 2) * 2 : 0
+    const trimEnd = hasMeasuredActivity ? Math.floor(Math.min(pcm.length, activeEnd + paddingBytes) / 2) * 2 : pcm.length
+    const archivedPcm = pcm.subarray(trimStart, trimEnd)
+    const startedMs = Date.parse(first.startedAt) + trimStart / bytesPerSecond * 1_000
+    const durationSeconds = archivedPcm.length / bytesPerSecond
     const record = this.#archive.add({
-      startedAt: first.startedAt,
-      endedAt: last.endedAt,
+      startedAt: new Date(startedMs).toISOString(),
+      endedAt: new Date(startedMs + durationSeconds * 1_000).toISOString(),
       channel: first.channel,
-      durationSeconds: archivedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0),
+      durationSeconds,
       sampleRate,
       ...(measuredNoise.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measuredNoise) }),
       transcript,
-      wav: pcmToWav(pcm, sampleRate)
+      wav: pcmToWav(archivedPcm, sampleRate)
     })
     if (record) this.#narrator?.enqueue(record.id)
   }
