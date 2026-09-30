@@ -46,7 +46,10 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)
       })
       transcription.attachNarrator(narration)
-      runtime = new VhfRuntime(config, dscCache, transcription, narration, (settings) => tuningSettings.save(settings), denoiser)
+      runtime = new VhfRuntime(
+        config, dscCache, transcription, narration,
+        (settings) => tuningSettings.save(settings), denoiser, '/usr/bin/ffmpeg'
+      )
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`

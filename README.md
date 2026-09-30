@@ -98,9 +98,9 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 
 Replay is held only in process memory. Restarting Signal K clears it, and nothing is uploaded. The
 buffer expires complete audio slices from its oldest edge by wall-clock time, so short slices created
-by squelch or channel changes do not shorten the configured two-hour window. A separate memory limit
-(256 MiB per voice slot by default) prevents higher sample rates from silently exhausting an onboard
-computer.
+by squelch or channel changes do not shorten the configured 24-hour window. Completed minutes are
+compacted to 24 kbps mono Opus in memory; raw PCM remains available until Whisper finishes. The total
+compressed-audio limit defaults to 750 MiB and cannot be configured above 750 MiB.
 
 The native receiver preserves low-rate unsquelched voice PCM in that bounded replay buffer together
 with discriminator-noise metadata. The Recent radio control can therefore apply a different squelch

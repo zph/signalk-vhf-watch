@@ -8,7 +8,7 @@ import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 36
+const UI_VERSION = 37
 
 interface ByteRange {
   start: number
@@ -284,7 +284,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const segment = runtime.replaySegment(id)
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
     const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
-    const wav = runtime.replayWavFor(id, squelch)
+    const wav = await runtime.replayWavFor(id, squelch)
     if (!segment || !wav) {
       response.status(404).json({ error: 'Replay segment not found' })
       return
@@ -329,7 +329,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       segment.slot === first.slot && segment.channel === first.channel &&
       (index === 0 || Date.parse(segment.startedAt) >= Date.parse(resolved[index - 1]!.startedAt))
     )
-    const wavs = valid ? ids.map((id) => runtime.replayWavFor(id, squelch)) : []
+    const wavs = valid ? await Promise.all(ids.map((id) => runtime.replayWavFor(id, squelch))) : []
     if (!valid || wavs.some((wav) => !wav)) {
       response.status(400).json({ error: 'Replay session is not a continuous channel recording' })
       return
@@ -351,7 +351,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
-  read.get('/api/replay/:id/continuous.wav', (request: Request, response: Response) => {
+  read.get('/api/replay/:id/continuous.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const id = Number(request.params.id)
@@ -387,7 +387,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       denoiseStream.stdout.on('data', (chunk: Buffer) => { if (!response.destroyed) response.write(chunk) })
       denoiseStream.on('close', () => { if (!response.destroyed) response.end() })
       denoiseStream.on('error', () => { if (!response.destroyed) response.end() })
-      for (const chunk of chunks) denoiseStream.stdin.write(chunk)
+      for await (const chunk of chunks) denoiseStream.stdin.write(chunk)
       if (!runtime.canTailReplay(id)) {
         denoiseStream.stdin.end()
         return
@@ -406,7 +406,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const cleaner = new PlaybackCleaner(runtime.config.sampleRate, cleanup)
-    for (const chunk of chunks) response.write(cleaner.process(chunk))
+    for await (const chunk of chunks) response.write(cleaner.process(chunk))
     if (!runtime.canTailReplay(id)) {
       response.end()
       return

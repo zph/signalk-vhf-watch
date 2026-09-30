@@ -1,7 +1,8 @@
+import { spawn } from 'node:child_process'
 import { pcmToWav, rmsLevel } from './wav'
 import { discriminatorThreshold } from './squelch'
 
-interface ReplayQualitySpan {
+export interface ReplayQualitySpan {
   bytes: number
   discriminatorNoise?: number
 }
@@ -27,6 +28,7 @@ export interface ReplaySegment {
   level: number
   wav: Buffer
   qualitySpans: ReplayQualitySpan[]
+  opus?: Buffer
   transcription?: ReplayTranscription
 }
 
@@ -50,6 +52,7 @@ export class RollingReplay {
   readonly #sequenceStep: number
   readonly #breakSquelch?: number
   readonly #breakQuietBytes: number
+  readonly #opusCommand?: string
   #pendingHasSignal = false
   #pendingQuietBytes = 0
   #segments: ReplaySegment[] = []
@@ -63,7 +66,8 @@ export class RollingReplay {
     slot: 'A' | 'B' = 'A',
     sequenceStart = 0,
     sequenceStep = 1,
-    breakSquelch?: number
+    breakSquelch?: number,
+    opusCommand?: string
   ) {
     this.#sampleRate = sampleRate
     this.#segmentBytes = sampleRate * 2 * segmentSeconds
@@ -74,6 +78,7 @@ export class RollingReplay {
     this.#sequence = sequenceStart
     this.#sequenceStep = sequenceStep
     this.#breakSquelch = breakSquelch
+    this.#opusCommand = opusCommand
     this.#breakQuietBytes = sampleRate * 2 * 6
   }
 
@@ -121,15 +126,18 @@ export class RollingReplay {
   }
 
   list(squelch?: number): ReplaySegmentSummary[] {
+    this.#compact()
     const pending = this.#pendingSegment()
     const segments = pending ? [...this.#segments, pending] : this.#segments
-    return segments.slice().reverse().map(({ wav, qualitySpans, ...segment }) => {
+    return segments.slice().reverse().map(({ wav, qualitySpans, opus, ...segment }) => {
       const measured = qualitySpans.flatMap((span) => span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise])
       return {
         ...segment,
-        bytes: wav.length,
+        bytes: opus?.length ?? wav.length,
         ...(measured.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measured) }),
-        ...(squelch === undefined ? {} : { activity: this.#activity(qualitySpans, wav.length - 44, squelch) })
+        ...(squelch === undefined ? {} : {
+          activity: this.#activity(qualitySpans, Math.round(segment.durationSeconds * this.#sampleRate * 2), squelch)
+        })
       }
     })
   }
@@ -139,32 +147,33 @@ export class RollingReplay {
       (this.#pending.length >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
   }
 
-  wavFor(id: number, squelch: number): Buffer | undefined {
+  async wavFor(id: number, squelch: number): Promise<Buffer | undefined> {
     const segment = this.get(id)
     if (!segment) return undefined
-    if (squelch <= 0 || segment.qualitySpans.length === 0) return segment.wav
-    const wav = Buffer.from(segment.wav)
-    let offset = 44
+    const pcm = segment.wav.length >= 44
+      ? Buffer.from(segment.wav.subarray(44))
+      : await this.#decodeOpus(segment)
+    if (!pcm) return undefined
+    if (squelch <= 0 || segment.qualitySpans.length === 0) return pcmToWav(pcm, this.#sampleRate)
+    let offset = 0
     for (const span of this.#gateSpans(segment.qualitySpans, squelch)) {
-      if (!span.open) wav.fill(0, offset, offset + span.bytes)
+      if (!span.open) pcm.fill(0, offset, offset + span.bytes)
       offset += span.bytes
     }
-    return wav
+    return pcmToWav(pcm, this.#sampleRate)
   }
 
-  pcmFrom(id: number, squelch: number): Buffer[] | undefined {
+  async *pcmFrom(id: number, squelch: number): AsyncGenerator<Buffer> {
     const pending = this.#pendingSegment()
     const segments = pending ? [...this.#segments, pending] : this.#segments
     const start = segments.findIndex((segment) => segment.id === id)
-    if (start < 0) return undefined
+    if (start < 0) return
     const channel = segments[start]!.channel
-    const chunks: Buffer[] = []
     for (const segment of segments.slice(start)) {
       if (segment.channel !== channel) break
-      const wav = this.wavFor(segment.id, squelch)
-      if (wav) chunks.push(wav.subarray(44))
+      const wav = await this.wavFor(segment.id, squelch)
+      if (wav) yield wav.subarray(44)
     }
-    return chunks
   }
 
   delete(id: number): boolean {
@@ -266,6 +275,7 @@ export class RollingReplay {
     this.#sequence += this.#sequenceStep
     const segment = this.#createSegment(this.#sequence, pcm, startedAtMs, qualitySpans)
     this.#segments.push(segment)
+    this.#encodeOpus(segment)
     this.#prune(Date.parse(segment.endedAt))
     return segment
   }
@@ -276,9 +286,10 @@ export class RollingReplay {
       this.#segments.shift()
     }
     if (!Number.isFinite(this.#maxBytes)) return
-    let retainedBytes = this.#segments.reduce((total, segment) => total + segment.wav.length, 0)
+    let retainedBytes = this.#segments.reduce((total, segment) => total + (segment.opus?.length ?? segment.wav.length), 0)
     while (this.#segments.length > 1 && retainedBytes > this.#maxBytes) {
-      retainedBytes -= this.#segments.shift()!.wav.length
+      const removed = this.#segments.shift()!
+      retainedBytes -= removed.opus?.length ?? removed.wav.length
     }
   }
 
@@ -304,6 +315,55 @@ export class RollingReplay {
       level: rmsLevel(pcm),
       wav: pcmToWav(pcm, this.#sampleRate),
       qualitySpans
+    }
+  }
+
+  #encodeOpus(segment: ReplaySegment): void {
+    if (!this.#opusCommand || segment.wav.length < 44) return
+    const child = spawn(this.#opusCommand, [
+      '-nostdin', '-hide_banner', '-loglevel', 'error',
+      '-f', 's16le', '-ac', '1', '-ar', String(this.#sampleRate), '-i', 'pipe:0',
+      '-c:a', 'libopus', '-application', 'voip', '-b:a', '24k', '-vbr', 'on',
+      '-compression_level', '5', '-f', 'ogg', 'pipe:1'
+    ], { stdio: ['pipe', 'pipe', 'ignore'] })
+    const output: Buffer[] = []
+    child.stdout.on('data', (chunk: Buffer) => output.push(chunk))
+    child.stdin.on('error', () => {})
+    child.on('error', () => {})
+    child.on('close', (code) => {
+      if (code !== 0) return
+      const opus = Buffer.concat(output)
+      if (opus.length === 0) return
+      segment.opus = opus
+      this.#compact()
+      this.#prune(Date.now())
+    })
+    child.stdin.end(segment.wav.subarray(44))
+  }
+
+  #decodeOpus(segment: ReplaySegment): Promise<Buffer | undefined> {
+    if (!this.#opusCommand || !segment.opus) return Promise.resolve(undefined)
+    const child = spawn(this.#opusCommand, [
+      '-nostdin', '-hide_banner', '-loglevel', 'error',
+      '-f', 'ogg', '-i', 'pipe:0',
+      '-f', 's16le', '-acodec', 'pcm_s16le', '-ac', '1', '-ar', String(this.#sampleRate), 'pipe:1'
+    ], { stdio: ['pipe', 'pipe', 'ignore'] })
+    const output: Buffer[] = []
+    child.stdout.on('data', (chunk: Buffer) => output.push(chunk))
+    child.stdin.on('error', () => {})
+    child.stdin.end(segment.opus)
+    return new Promise((resolve) => {
+      child.on('error', () => resolve(undefined))
+      child.on('close', (code) => resolve(code === 0 ? Buffer.concat(output) : undefined))
+    })
+  }
+
+  #compact(): void {
+    for (const segment of this.#segments) {
+      const state = segment.transcription?.status
+      if (segment.opus && (!state || state === 'complete' || state === 'skipped' || state === 'error')) {
+        segment.wav = Buffer.alloc(0)
+      }
     }
   }
 }

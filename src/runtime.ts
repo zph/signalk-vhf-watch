@@ -109,7 +109,8 @@ export class VhfRuntime extends EventEmitter<{
     transcription?: TranscriptionManager,
     narration?: NarrationManager,
     saveTuning?: (settings: TuningSettings) => void,
-    denoiser?: RnnoiseDenoiser
+    denoiser?: RnnoiseDenoiser,
+    replayOpusCommand?: string
   ) {
     super()
     this.config = config
@@ -134,12 +135,12 @@ export class VhfRuntime extends EventEmitter<{
       config.segmentSeconds,
       config.replayMinutes,
       this.#channel.id,
-      config.maxBufferMiB * 1024 * 1024,
-      'A', -1, 2, config.squelch
+      Math.floor(config.maxBufferMiB / 2) * 1024 * 1024,
+      'A', -1, 2, config.squelch, replayOpusCommand
     )
     this.replayB = new RollingReplay(
       config.sampleRate, config.segmentSeconds, config.replayMinutes, this.#slotB.id,
-      config.maxBufferMiB * 1024 * 1024, 'B', 0, 2, config.squelch
+      Math.ceil(config.maxBufferMiB / 2) * 1024 * 1024, 'B', 0, 2, config.squelch, replayOpusCommand
     )
   }
 
@@ -333,8 +334,16 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   replaySegment(id: number) { return this.replay.get(id) ?? this.replayB.get(id) }
-  replayWavFor(id: number, squelch: number) { return this.replay.wavFor(id, squelch) ?? this.replayB.wavFor(id, squelch) }
-  replayPcmFrom(id: number, squelch: number) { return this.replay.pcmFrom(id, squelch) ?? this.replayB.pcmFrom(id, squelch) }
+  async replayWavFor(id: number, squelch: number) {
+    if (this.replay.get(id)) return this.replay.wavFor(id, squelch)
+    if (this.replayB.get(id)) return this.replayB.wavFor(id, squelch)
+    return undefined
+  }
+  replayPcmFrom(id: number, squelch: number) {
+    if (this.replay.get(id)) return this.replay.pcmFrom(id, squelch)
+    if (this.replayB.get(id)) return this.replayB.pcmFrom(id, squelch)
+    return undefined
+  }
   canTailReplay(id: number): boolean {
     const segment = this.replaySegment(id)
     if (!segment || !this.config.enabled) return false

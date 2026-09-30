@@ -3,15 +3,15 @@ import test from 'node:test'
 import { defaultSidecarPath, normalizeConfig } from '../src/config'
 
 test('normalizes safe defaults and rejects channel 70', () => {
-  const config = normalizeConfig({ initialChannel: '70', replayMinutes: 999, segmentSeconds: 1 })
+  const config = normalizeConfig({ initialChannel: '70', replayMinutes: 9_999, segmentSeconds: 1, maxBufferMiB: 9_999 })
   assert.equal(config.receiverMode, 'demo')
   assert.equal(config.channelRegion, 'US_CA')
   assert.equal(config.initialChannel, '16')
   assert.equal(config.slotAMode, 'fixed')
   assert.equal(config.slotBChannel, '70')
-  assert.equal(config.replayMinutes, 120)
+  assert.equal(config.replayMinutes, 1_440)
   assert.equal(config.segmentSeconds, 2)
-  assert.equal(config.maxBufferMiB, 256)
+  assert.equal(config.maxBufferMiB, 750)
   assert.equal(config.dscRetentionHours, 168)
   assert.equal(config.maxDscMessages, 100)
   assert.equal(config.maxDscCacheKiB, 256)

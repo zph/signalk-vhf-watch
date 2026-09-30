@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 36
+  const CLIENT_BUILD = 37
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -63,7 +63,7 @@
   let timelineSegmentId
   let timelineFollowingLive = true
   let timelineWaitingAtEdge = false
-  let timelineWindowMinutes = 120
+  let timelineWindowMinutes = 1_440
   let timelineReceiverRows = []
   let timelineActiveSlotAChannel
   let timelineAwaitingChannel
@@ -205,9 +205,15 @@
       : ''
     const source = status.mode === 'demo' ? 'Demo source' : singleFrequencyActive ? 'Single-frequency RTL-SDR' : 'Wideband RTL-SDR'
     receiverState.textContent = status.error || `${status.receiverState} · ${source}${dsc}${health}`
-    retention.textContent = `Latest ${status.replayMinutes} minutes · ${status.maxBufferMiB} MiB safety cap per voice slot · ${status.replaySegments} private playable segments`
+    const replayWindow = status.replayMinutes === 1_440 ? '24 hours' : `${status.replayMinutes} minutes`
+    retention.textContent = `Latest ${replayWindow} · ${status.maxBufferMiB} MiB total compressed-audio cap · ${status.replaySegments} private playable segments`
     timelineWindowMinutes = status.replayMinutes
-    timelineDescription.textContent = `Past ${status.replayMinutes} minutes · select a burst to listen`
+    timelineDescription.textContent = `Past ${replayWindow} · select a burst to listen`
+    const frequencyScale = document.querySelectorAll('.frequency-scale span')
+    if (frequencyScale.length === 3) {
+      frequencyScale[0].textContent = status.replayMinutes === 1_440 ? '24 hr ago' : `${status.replayMinutes} min ago`
+      frequencyScale[1].textContent = status.replayMinutes === 1_440 ? '12 hr ago' : `${Math.round(status.replayMinutes / 2)} min ago`
+    }
     const receiverRows = [{
       slot: 'A',
       channel: status.slots.A.currentChannel.id,

@@ -41,9 +41,9 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   ppm: 0,
   squelch: 20,
   sampleRate: 16_000,
-  replayMinutes: 120,
+  replayMinutes: 1_440,
   segmentSeconds: 60,
-  maxBufferMiB: 256,
+  maxBufferMiB: 750,
   dscRetentionHours: 168,
   maxDscMessages: 100,
   maxDscCacheKiB: 256
@@ -84,13 +84,19 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     sampleRate: [8_000, 16_000, 24_000, 32_000, 48_000].includes(Number(value.sampleRate))
       ? Number(value.sampleRate)
       : DEFAULT_CONFIG.sampleRate,
-    replayMinutes: Math.min(120, Math.max(1, Math.floor(finiteNumber(value.replayMinutes, DEFAULT_CONFIG.replayMinutes)))),
+    replayMinutes: (() => {
+      const requested = Math.floor(finiteNumber(value.replayMinutes, DEFAULT_CONFIG.replayMinutes))
+      return requested === 120 ? 1_440 : Math.min(1_440, Math.max(1, requested))
+    })(),
     segmentSeconds: (() => {
       const requested = Math.floor(finiteNumber(value.segmentSeconds, DEFAULT_CONFIG.segmentSeconds))
       // Migrate the original five-second storage slices to the seamless one-minute format.
       return requested === 5 ? 60 : Math.min(120, Math.max(2, requested))
     })(),
-    maxBufferMiB: Math.min(256, Math.max(16, Math.floor(finiteNumber(value.maxBufferMiB, DEFAULT_CONFIG.maxBufferMiB)))),
+    maxBufferMiB: (() => {
+      const requested = Math.floor(finiteNumber(value.maxBufferMiB, DEFAULT_CONFIG.maxBufferMiB))
+      return requested === 256 ? 750 : Math.min(750, Math.max(16, requested))
+    })(),
     dscRetentionHours: Math.min(720, Math.max(1, Math.floor(finiteNumber(value.dscRetentionHours, DEFAULT_CONFIG.dscRetentionHours)))),
     maxDscMessages: Math.min(1_000, Math.max(10, Math.floor(finiteNumber(value.maxDscMessages, DEFAULT_CONFIG.maxDscMessages)))),
     maxDscCacheKiB: Math.min(4_096, Math.max(64, Math.floor(finiteNumber(value.maxDscCacheKiB, DEFAULT_CONFIG.maxDscCacheKiB))))
@@ -141,9 +147,9 @@ export const pluginSchema = {
     gainDb: { type: 'number', title: 'Manual tuner gain (dB; blank for automatic)', minimum: 0, maximum: 49.6 },
     squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
-    replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 120 },
+    replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 1440, default: 1440 },
     segmentSeconds: { type: 'integer', title: 'Replay storage slice (seconds; playback is seamless)', minimum: 2, maximum: 120, default: 60 },
-    maxBufferMiB: { type: 'integer', title: 'Maximum replay memory per voice slot (MiB)', minimum: 16, maximum: 256, default: 256 },
+    maxBufferMiB: { type: 'integer', title: 'Maximum compressed replay memory across both voice slots (MiB)', minimum: 16, maximum: 750, default: 750 },
     dscRetentionHours: { type: 'integer', title: 'DSC call retention (hours)', minimum: 1, maximum: 720, default: 168 },
     maxDscMessages: { type: 'integer', title: 'Maximum stored DSC calls', minimum: 10, maximum: 1000, default: 100 },
     maxDscCacheKiB: { type: 'integer', title: 'Maximum DSC cache (KiB)', minimum: 64, maximum: 4096, default: 256 }
