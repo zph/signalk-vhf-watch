@@ -381,16 +381,21 @@ func runStream(opts options) error {
 		case <-done:
 		}
 	}()
-	tunes := make(chan int, 1)
+	tunes := make(chan tuneRequest, 2)
 	go readControls(os.Stdin, tunes)
 	buffer := make([]byte, 1024*1024)
 	var iqBytes, edgeBytes int64
 	lastState := time.Time{}
 	for {
 		select {
-		case frequency := <-tunes:
-			voice.tune(frequency - opts.center)
-			opts.voice = frequency
+		case request := <-tunes:
+			if request.slot == "B" {
+				dsc.tune(request.frequency - opts.center)
+				opts.slotB = request.frequency
+			} else {
+				voice.tune(request.frequency - opts.center)
+				opts.voice = request.frequency
+			}
 		default:
 		}
 		count, readErr := iq.Read(buffer)
@@ -457,25 +462,34 @@ func processBoth(voice, dsc *channelizer, chunk []byte) (voicePCM, dscPCM []int1
 	return
 }
 
-func readControls(input io.Reader, tunes chan int) {
+type tuneRequest struct {
+	slot      string
+	frequency int
+}
+
+func readControls(input io.Reader, tunes chan tuneRequest) {
 	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 2 || fields[0] != "tune" {
+		if len(fields) != 2 || (fields[0] != "tune" && fields[0] != "tune-b") {
 			continue
 		}
 		frequency, err := strconv.Atoi(fields[1])
 		if err != nil {
 			continue
 		}
+		request := tuneRequest{slot: "A", frequency: frequency}
+		if fields[0] == "tune-b" {
+			request.slot = "B"
+		}
 		select {
-		case tunes <- frequency:
+		case tunes <- request:
 		default:
 			select {
 			case <-tunes:
 			default:
 			}
-			tunes <- frequency
+			tunes <- request
 		}
 	}
 }

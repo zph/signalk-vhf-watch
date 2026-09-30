@@ -227,6 +227,17 @@ export class NativeSidecarReceiver extends AudioReceiver {
     this.emit('state', `Wideband capture · Slot A ${channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
   }
 
+  tuneSlotB(channel: VhfChannel | '70'): void {
+    if (this.#singleFrequency) throw new Error('Single-frequency capture must restart before retuning Slot B')
+    const frequencyHz = channel === '70' ? DSC_CHANNEL_HZ : channel.frequencyHz
+    if (!canChannelize(frequencyHz)) {
+      throw new Error(`Slot B ${channel === '70' ? '70' : channel.label} is outside the wideband capture window`)
+    }
+    this.#slotB = channel
+    this.#process?.stdin?.write(`tune-b ${frequencyHz}\n`)
+    this.emit('state', `Wideband capture · Slot A ${this.#channel.label} + Slot B ${channel === '70' ? 'DSC 70' : channel.label}`)
+  }
+
   stop(): void {
     this.#active = false
     if (this.#restartTimer) clearTimeout(this.#restartTimer)

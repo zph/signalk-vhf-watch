@@ -3,6 +3,7 @@ import { channelById, type ChannelRegion } from './channels'
 
 export type ReceiverMode = 'demo' | 'rtl_sdr'
 export type SlotAMode = 'fixed' | 'scan'
+export type SlotBMode = 'fixed' | 'scan'
 
 export interface VhfWatchConfig {
   enabled: boolean
@@ -10,6 +11,7 @@ export interface VhfWatchConfig {
   channelRegion: ChannelRegion
   initialChannel: string
   slotAMode: SlotAMode
+  slotBMode: SlotBMode
   slotBChannel: string
   device: string
   sidecarPath: string
@@ -35,6 +37,7 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   channelRegion: 'US_CA',
   initialChannel: '16',
   slotAMode: 'fixed',
+  slotBMode: 'fixed',
   slotBChannel: '70',
   device: '0',
   sidecarPath: defaultSidecarPath(),
@@ -73,6 +76,7 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     channelRegion,
     initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
     slotAMode: value.slotAMode === 'scan' ? 'scan' : 'fixed',
+    slotBMode: value.slotBMode === 'scan' ? 'scan' : 'fixed',
     slotBChannel: String(value.slotBChannel ?? DEFAULT_CONFIG.slotBChannel).toUpperCase() === '70'
       ? '70'
       : channelById(String(value.slotBChannel ?? ''), channelRegion)?.id ?? DEFAULT_CONFIG.slotBChannel,
@@ -125,6 +129,10 @@ export const pluginSchema = {
     slotAMode: {
       type: 'string', title: 'Receiver Slot A mode', enum: ['fixed', 'scan'],
       enumNames: ['Fixed channel', 'Scan nearby voice channels'], default: 'fixed'
+    },
+    slotBMode: {
+      type: 'string', title: 'Receiver Slot B mode', enum: ['fixed', 'scan'],
+      enumNames: ['Fixed channel / continuous DSC', 'Adaptive voice scan'], default: 'fixed'
     },
     slotBChannel: { type: 'string', title: 'Receiver Slot B channel (70 for continuous DSC)', default: '70' },
     device: {

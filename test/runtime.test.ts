@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { normalizeConfig } from '../src/config'
-import { VhfRuntime } from '../src/runtime'
+import { selectAdaptiveScanChannel, VhfRuntime } from '../src/runtime'
 
 test('demo runtime produces bounded replay audio and can retune', async () => {
   const runtime = new VhfRuntime(normalizeConfig({
@@ -33,12 +33,26 @@ test('demo runtime produces bounded replay audio and can retune', async () => {
 
 test('configures scan mode and independent receiver Slot B', () => {
   const runtime = new VhfRuntime(normalizeConfig({ enabled: false, receiverMode: 'rtl_sdr' }))
-  const status = runtime.configureSlots('scan', '16', '68')
+  const status = runtime.configureSlots('scan', '16', 'fixed', '68')
   assert.equal(status.slots.A.mode, 'scan')
   assert.equal(status.slots.B.channel.id, '68')
   assert.equal(status.slots.B.kind, 'voice')
   assert.equal(status.dscWatch.enabled, false)
-  assert.throws(() => runtime.configureSlots('fixed', '68', '68'), /different channels/)
+  assert.throws(() => runtime.configureSlots('fixed', '68', 'fixed', '68'), /different channels/)
+})
+
+test('Slot B adaptive scan favors recent voice without starving quiet channels', () => {
+  const runtime = new VhfRuntime(normalizeConfig({ enabled: false, receiverMode: 'rtl_sdr' }))
+  const status = runtime.configureSlots('fixed', '16', 'scan', '70')
+  assert.equal(status.slots.B.mode, 'scan')
+  assert.equal(status.slots.B.configuredChannel.id, '68')
+  assert.equal(status.slots.B.state, 'scanning')
+  assert.equal(status.dscWatch.enabled, false)
+
+  const channels = runtime.channels().filter((channel) => ['68', '69'].includes(channel.id))
+  const now = 100_000
+  assert.equal(selectAdaptiveScanChannel(channels, new Map([['68', 4]]), new Map([['68', 98_000], ['69', 98_000]]), now)?.id, '68')
+  assert.equal(selectAdaptiveScanChannel(channels, new Map([['68', 4]]), new Map([['68', 99_900], ['69', 1_000]]), now)?.id, '69')
 })
 
 test('switches between marine wideband and distant single-frequency reception', () => {
@@ -55,9 +69,10 @@ test('switches between marine wideband and distant single-frequency reception', 
   assert.equal(weather.slots.B.kind, 'paused')
   assert.equal(weather.dscWatch.enabled, false)
   assert.equal(weather.wideband?.centerHz, 162_425_000)
-  assert.throws(() => runtime.configureSlots('scan', 'WX4', '70'), /requires Fixed mode/)
+  assert.throws(() => runtime.configureSlots('scan', 'WX4', 'fixed', '70'), /requires Fixed mode/)
+  assert.throws(() => runtime.configureSlots('fixed', 'WX4', 'scan', '68'), /requires Fixed mode/)
 
-  const marine = runtime.configureSlots('fixed', '16', '70')
+  const marine = runtime.configureSlots('fixed', '16', 'fixed', '70')
   assert.equal(marine.captureMode, 'wideband')
   assert.equal(marine.slots.B.kind, 'dsc')
   assert.equal(marine.dscWatch.enabled, true)

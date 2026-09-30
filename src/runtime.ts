@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { channelById, channelPlan, type ChannelRegion, type VhfChannel } from './channels'
-import type { VhfWatchConfig } from './config'
+import type { SlotBMode, VhfWatchConfig } from './config'
 import { DscAudioDecoder, type DscMessage } from './dsc'
 import type { DscMessageCache } from './dsc-cache'
 import {
@@ -23,6 +23,24 @@ import { RnnoiseDenoiser } from './rnnoise'
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
+export function selectAdaptiveScanChannel(
+  candidates: VhfChannel[],
+  activityScores: ReadonlyMap<string, number>,
+  lastVisited: ReadonlyMap<string, number>,
+  now: number,
+  currentId?: string
+): VhfChannel | undefined {
+  return candidates
+    .filter((channel) => channel.id !== currentId || candidates.length === 1)
+    .map((channel, index) => {
+      const last = lastVisited.get(channel.id)
+      const ageMs = last === undefined ? 86_400_000 - index : Math.max(1, now - last)
+      const activity = Math.max(0, activityScores.get(channel.id) ?? 0)
+      return { channel, priority: ageMs * (1 + activity * 0.75) }
+    })
+    .sort((left, right) => right.priority - left.priority)[0]?.channel
+}
+
 export interface RuntimeStatus {
   enabled: boolean
   mode: VhfWatchConfig['receiverMode']
@@ -30,7 +48,14 @@ export interface RuntimeStatus {
   channel: VhfChannel
   slots: {
     A: { mode: 'fixed' | 'scan'; configuredChannel: VhfChannel; currentChannel: VhfChannel; state: 'fixed' | 'scanning' | 'holding' }
-    B: { channel: ReceiverSlotChannel; kind: 'voice' | 'dsc' | 'paused' }
+    B: {
+      mode: SlotBMode
+      configuredChannel: ReceiverSlotChannel
+      channel: ReceiverSlotChannel
+      kind: 'voice' | 'dsc' | 'paused'
+      state: 'fixed' | 'scanning' | 'holding' | 'paused'
+      activityScore: number
+    }
   }
   captureMode: 'wideband' | 'single_frequency'
   receiverState: string
@@ -79,6 +104,8 @@ export class VhfRuntime extends EventEmitter<{
   #channel: VhfChannel
   #slotAMode: 'fixed' | 'scan'
   #slotAConfigured: VhfChannel
+  #slotBMode: SlotBMode
+  #slotBConfigured: ReceiverSlotChannel
   #slotB: ReceiverSlotChannel
   #singleFrequency = false
   #scanLocked = false
@@ -87,6 +114,12 @@ export class VhfRuntime extends EventEmitter<{
   #scanIndex = 0
   #scanPriorityTurn = false
   #scanTimer?: ReturnType<typeof setTimeout>
+  #slotBScanLocked = false
+  #slotBScanOpenMs = 0
+  #slotBScanQuietMs = 0
+  #slotBScanTimer?: ReturnType<typeof setTimeout>
+  readonly #slotBActivityScores = new Map<string, number>()
+  readonly #slotBLastVisited = new Map<string, number>()
   #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
   #receiverState = 'Stopped'
@@ -124,6 +157,12 @@ export class VhfRuntime extends EventEmitter<{
     this.#slotB = configuredSlotB && (config.receiverMode !== 'rtl_sdr' || canChannelize(configuredSlotB.frequencyHz))
       ? configuredSlotB
       : this.#dscChannel()
+    this.#slotBMode = this.#singleFrequency ? 'fixed' : config.slotBMode
+    if (this.#slotBMode === 'scan' && this.#slotB.id === '70') {
+      this.#slotB = this.#preferredSlotBScanChannel() ?? this.#dscChannel()
+      if (this.#slotB.id === '70') this.#slotBMode = 'fixed'
+    }
+    this.#slotBConfigured = this.#slotB
     this.#dscCache = dscCache
     this.#saveTuning = saveTuning
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
@@ -152,11 +191,13 @@ export class VhfRuntime extends EventEmitter<{
     }
     this.#startReceiver()
     if (this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
+    if (this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
   }
 
   stop(): void {
     this.#stopReceiver()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
+    if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
     this.transcription.stop()
     this.narration?.close()
     this.replay.flush()
@@ -191,31 +232,43 @@ export class VhfRuntime extends EventEmitter<{
     return this.status()
   }
 
-  configureSlots(mode: 'fixed' | 'scan', slotAChannelId: string, slotBChannelId: string): RuntimeStatus {
+  configureSlots(mode: 'fixed' | 'scan', slotAChannelId: string, slotBMode: SlotBMode, slotBChannelId: string): RuntimeStatus {
     const slotA = channelById(slotAChannelId, this.#channelRegion)
     if (!slotA) throw new Error(`Unknown Slot A VHF channel: ${slotAChannelId}`)
-    const slotB = slotBChannelId.toUpperCase() === '70' ? this.#dscChannel() : channelById(slotBChannelId, this.#channelRegion)
+    let slotB = slotBChannelId.toUpperCase() === '70' ? this.#dscChannel() : channelById(slotBChannelId, this.#channelRegion)
     if (!slotB) throw new Error(`Unknown Slot B VHF channel: ${slotBChannelId}`)
     const singleFrequency = this.config.receiverMode === 'rtl_sdr' && !canChannelize(slotA.frequencyHz)
-    if (singleFrequency && mode === 'scan') throw new Error(`${slotA.label} requires Fixed mode because DSC and nearby-channel scanning are paused`)
+    if (singleFrequency && (mode === 'scan' || slotBMode === 'scan')) throw new Error(`${slotA.label} requires Fixed mode because DSC and nearby-channel scanning are paused`)
+    if (slotBMode === 'scan' && slotB.id === '70') {
+      slotB = this.#preferredSlotBScanChannel(slotA) ?? slotB
+      if (slotB.id === '70') throw new Error('No nearby voice channels are available for Slot B adaptive scan')
+    }
     if (slotB.id !== '70' && this.config.receiverMode === 'rtl_sdr' && !canChannelize(slotB.frequencyHz)) {
       throw new Error(`Slot B channel ${slotB.label} is outside this RTL-SDR's marine wideband capture window`)
     }
     if (!singleFrequency && slotB.id !== '70' && slotB.frequencyHz === slotA.frequencyHz) throw new Error('Slots A and B must use different channels')
-    const slotBChanged = slotB.id !== this.#slotB.id || slotB.frequencyHz !== this.#slotB.frequencyHz
+    const slotBChanged = slotB.id !== this.#slotB.id || slotB.frequencyHz !== this.#slotB.frequencyHz || slotBMode !== this.#slotBMode
     const captureModeChanged = singleFrequency !== this.#singleFrequency
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.#scanTimer = undefined
     this.#scanLocked = false
     this.#scanOpenMs = 0
     this.#scanQuietMs = 0
+    if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
+    this.#slotBScanTimer = undefined
+    this.#slotBScanLocked = false
+    this.#slotBScanOpenMs = 0
+    this.#slotBScanQuietMs = 0
     this.#slotAMode = mode
     this.#slotAConfigured = slotA
     this.#channel = slotA
+    this.#slotBMode = slotBMode
+    this.#slotBConfigured = slotB
     this.#slotB = slotB
     this.#singleFrequency = singleFrequency
     this.config.initialChannel = slotA.id
     this.config.slotAMode = mode
+    this.config.slotBMode = slotBMode
     this.config.slotBChannel = slotB.id
     this.replay.setChannel(slotA.id)
     this.replayB.setChannel(slotB.id)
@@ -224,6 +277,7 @@ export class VhfRuntime extends EventEmitter<{
       this.#startReceiver()
     } else if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(slotA)
     if (mode === 'scan' && !singleFrequency && this.config.enabled) this.#scheduleScan(0)
+    if (slotBMode === 'scan' && !singleFrequency && this.config.enabled) this.#scheduleSlotBScan(0)
     this.#persistTuning()
     this.#emitStatus()
     return this.status()
@@ -271,7 +325,8 @@ export class VhfRuntime extends EventEmitter<{
       channelRegion: this.#channelRegion,
       slotAMode: this.#slotAMode,
       slotAChannel: this.#slotAConfigured.id,
-      slotBChannel: this.#slotB.id
+      slotBMode: this.#slotBMode,
+      slotBChannel: this.#slotBConfigured.id
     })
   }
 
@@ -290,7 +345,14 @@ export class VhfRuntime extends EventEmitter<{
           currentChannel: this.#channel,
           state: this.#singleFrequency || this.#slotAMode === 'fixed' ? 'fixed' : this.#scanLocked ? 'holding' : 'scanning'
         },
-        B: { channel: this.#slotB, kind: this.#singleFrequency ? 'paused' : this.#slotB.id === '70' ? 'dsc' : 'voice' }
+        B: {
+          mode: this.#slotBMode,
+          configuredChannel: this.#slotBConfigured,
+          channel: this.#slotB,
+          kind: this.#singleFrequency ? 'paused' : this.#slotB.id === '70' ? 'dsc' : 'voice',
+          state: this.#singleFrequency ? 'paused' : this.#slotBMode === 'fixed' ? 'fixed' : this.#slotBScanLocked ? 'holding' : 'scanning',
+          activityScore: this.#slotBActivityScores.get(this.#slotB.id) ?? 0
+        }
       },
       receiverState: this.#receiverState,
       receiving: this.#level > 0.003,
@@ -413,6 +475,11 @@ export class VhfRuntime extends EventEmitter<{
     })
     receiver.on('slotBReplayAudio', (chunk, discriminatorNoise) => {
       if (this.#singleFrequency) return
+      if (this.#slotBMode === 'scan') {
+        this.#handleSlotBScanAudio(chunk, discriminatorNoise)
+        this.emit('rawSlotBAudio', chunk, discriminatorNoise)
+        return
+      }
       for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
@@ -476,6 +543,17 @@ export class VhfRuntime extends EventEmitter<{
     )
   }
 
+  #slotBScanChannels(slotA = this.#channel): VhfChannel[] {
+    return channelPlan(this.#channelRegion).filter((channel) =>
+      !channel.weather && canChannelize(channel.frequencyHz) && channel.frequencyHz !== slotA.frequencyHz
+    )
+  }
+
+  #preferredSlotBScanChannel(slotA = this.#channel): VhfChannel | undefined {
+    const candidates = this.#slotBScanChannels(slotA)
+    return candidates.find((channel) => channel.id === '68') ?? candidates[0]
+  }
+
   #scheduleScan(delayMs: number): void {
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.#scanTimer = setTimeout(() => {
@@ -517,6 +595,58 @@ export class VhfRuntime extends EventEmitter<{
       this.#scanOpenMs = 0
       this.#scanQuietMs = 0
       this.#scheduleScan(0)
+    }
+  }
+
+  #scheduleSlotBScan(delayMs: number): void {
+    if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
+    this.#slotBScanTimer = setTimeout(() => {
+      this.#slotBScanTimer = undefined
+      if (this.#slotBMode !== 'scan' || this.#slotBScanLocked || this.#singleFrequency) return
+      for (const [channel, score] of this.#slotBActivityScores) {
+        const decayed = score * 0.97
+        if (decayed < 0.05) this.#slotBActivityScores.delete(channel)
+        else this.#slotBActivityScores.set(channel, decayed)
+      }
+      const now = Date.now()
+      const next = selectAdaptiveScanChannel(
+        this.#slotBScanChannels(), this.#slotBActivityScores, this.#slotBLastVisited, now, this.#slotB.id
+      )
+      if (!next) return
+      this.#slotB = next
+      this.#slotBLastVisited.set(next.id, now)
+      this.#slotBScanOpenMs = 0
+      if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tuneSlotB(next)
+      this.#emitStatus()
+      this.#scheduleSlotBScan(650)
+    }, delayMs)
+  }
+
+  #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number): void {
+    const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
+    const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
+    if (!this.#slotBScanLocked) {
+      this.#slotBScanOpenMs = open ? this.#slotBScanOpenMs + milliseconds : 0
+      if (this.#slotBScanOpenMs < 200) return
+      this.#slotBScanLocked = true
+      this.#slotBScanQuietMs = 0
+      const previous = this.#slotBActivityScores.get(this.#slotB.id) ?? 0
+      this.#slotBActivityScores.set(this.#slotB.id, Math.min(8, previous + 2))
+      if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
+      this.#slotBScanTimer = undefined
+      this.replayB.setChannel(this.#slotB.id)
+      this.#emitStatus()
+    }
+    for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
+      this.transcription.enqueue(segment, this.config.squelch)
+    }
+    this.#slotBScanQuietMs = open ? 0 : this.#slotBScanQuietMs + milliseconds
+    if (this.#slotBScanQuietMs >= 1_200) {
+      this.replayB.flush()
+      this.#slotBScanLocked = false
+      this.#slotBScanOpenMs = 0
+      this.#slotBScanQuietMs = 0
+      this.#scheduleSlotBScan(0)
     }
   }
 

@@ -1,12 +1,13 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 37
+  const CLIENT_BUILD = 38
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
   const regionSelect = $('#region')
   const slotAMode = $('#slot-a-mode')
   const slotAChannel = $('#slot-a-channel')
+  const slotBMode = $('#slot-b-mode')
   const slotBChannel = $('#slot-b-channel')
   const slotAPurpose = $('#slot-a-purpose')
   const slotBPurpose = $('#slot-b-purpose')
@@ -166,34 +167,42 @@
       if (document.activeElement !== regionSelect) regionSelect.value = status.channelRegion
       if (document.activeElement !== slotAMode) slotAMode.value = status.slots.A.mode
       if (document.activeElement !== slotAChannel) slotAChannel.value = status.slots.A.configuredChannel.id
-      if (document.activeElement !== slotBChannel) slotBChannel.value = status.slots.B.channel.id
+      if (document.activeElement !== slotBMode) slotBMode.value = status.slots.B.mode
+      if (document.activeElement !== slotBChannel) slotBChannel.value = status.slots.B.configuredChannel.id
     }
     slotADisplay.textContent = status.slots.A.currentChannel.label
     slotAFrequency.textContent = `${(status.slots.A.currentChannel.frequencyHz / 1_000_000).toFixed(3)} MHz`
     slotAModeLabel.textContent = status.slots.A.mode === 'scan' ? 'Scanning' : 'Fixed'
     slotBDisplay.textContent = status.slots.B.channel.label
     slotBFrequency.textContent = `${(status.slots.B.channel.frequencyHz / 1_000_000).toFixed(3)} MHz`
-    slotBModeLabel.textContent = status.slots.B.kind === 'paused' ? 'Paused' : status.slots.B.kind === 'dsc' ? 'Continuous' : 'Fixed'
+    slotBModeLabel.textContent = status.slots.B.kind === 'paused'
+      ? 'Paused'
+      : status.slots.B.mode === 'scan'
+        ? status.slots.B.state === 'holding' ? 'Holding voice' : 'Adaptive scan'
+        : status.slots.B.kind === 'dsc' ? 'Continuous DSC' : 'Fixed'
     slotAPurpose.textContent = status.slots.A.mode === 'scan'
       ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
       : status.slots.A.configuredChannel.purpose
     slotBPurpose.textContent = status.slots.B.kind === 'paused'
       ? `Paused while Slot A receives ${status.slots.A.currentChannel.label} outside the marine band`
-      : status.slots.B.kind === 'dsc'
+      : status.slots.B.mode === 'scan'
+        ? `Scanning now: CH ${status.slots.B.channel.label} · active channels receive more airtime · DSC 70 paused`
+        : status.slots.B.kind === 'dsc'
         ? 'Continuous digital selective calling watch'
         : status.slots.B.channel.purpose
     slotAMode.disabled = singleFrequencyActive
+    slotBMode.disabled = singleFrequencyActive
     slotBChannel.disabled = singleFrequencyActive
     dscModeLabel.textContent = singleFrequencyActive
       ? 'Retained history · Channel 70 paused for weather'
       : status.slots.B.kind === 'dsc'
         ? 'Channel 70 · continuous'
-        : `Retained history · Channel 70 paused while Slot B monitors ${channelDisplay(status.slots.B.channel.id)}`
+        : `Retained history · Channel 70 paused while Slot B ${status.slots.B.mode === 'scan' ? 'scans voice channels' : `monitors ${channelDisplay(status.slots.B.channel.id)}`}`
     receiverFootnote.textContent = singleFrequencyActive
       ? 'Receive only. Channel 70 is paused during single-frequency reception.'
       : status.slots.B.kind === 'dsc'
         ? 'Receive only. Channel 70 is watched continuously.'
-        : `Receive only. Channel 70 is paused while Slot B monitors ${channelDisplay(status.slots.B.channel.id)}.`
+        : `Receive only. Channel 70 is paused while Slot B ${status.slots.B.mode === 'scan' ? 'adaptively scans voice channels' : `monitors ${channelDisplay(status.slots.B.channel.id)}`}.`
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -1049,11 +1058,20 @@
 
   async function configureSlots() {
     const selected = channels.find((channel) => channel.id === slotAChannel.value)
-    if (selected?.requiresSingleFrequency) slotAMode.value = 'fixed'
-    const selection = { mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBChannel: slotBChannel.value }
+    if (selected?.requiresSingleFrequency) {
+      slotAMode.value = 'fixed'
+      slotBMode.value = 'fixed'
+    }
+    if (slotBMode.value === 'scan' && slotBChannel.value === '70') {
+      const preferred = channels.find((channel) => channel.id === '68' && channel.availableSlotB !== false && channel.id !== slotAChannel.value) ||
+        channels.find((channel) => !channel.weather && channel.availableSlotB !== false && channel.id !== slotAChannel.value)
+      if (preferred) slotBChannel.value = preferred.id
+    }
+    const selection = { mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBMode: slotBMode.value, slotBChannel: slotBChannel.value }
     slotConfigurationPending = true
     slotAMode.disabled = true
     slotAChannel.disabled = true
+    slotBMode.disabled = true
     slotBChannel.disabled = true
     presetStandard.disabled = true
     presetSlotA16.disabled = true
@@ -1071,6 +1089,7 @@
       slotConfigurationPending = false
       slotAMode.disabled = singleFrequencyActive
       slotAChannel.disabled = false
+      slotBMode.disabled = singleFrequencyActive
       slotBChannel.disabled = singleFrequencyActive
       presetStandard.disabled = false
       presetSlotA16.disabled = false
@@ -1085,6 +1104,7 @@
       if (slotBChannel.value === '16') slotBChannel.value = '70'
     }
     if (slot === 'standard' || slot === 'B') {
+      slotBMode.value = 'fixed'
       slotBChannel.value = '70'
       const selectedA = channels.find((channel) => channel.id === slotAChannel.value)
       if (selectedA?.requiresSingleFrequency) {
@@ -1100,6 +1120,7 @@
     slotConfigurationPending = true
     regionSelect.disabled = true
     slotAChannel.disabled = true
+    slotBMode.disabled = true
     slotBChannel.disabled = true
     try {
       const status = await request('region', {
@@ -1116,6 +1137,7 @@
       regionSelect.disabled = false
       slotAChannel.disabled = false
       slotAMode.disabled = singleFrequencyActive
+      slotBMode.disabled = singleFrequencyActive
       slotBChannel.disabled = singleFrequencyActive
     }
   }
@@ -1154,6 +1176,7 @@
 
   slotAMode.addEventListener('change', configureSlots)
   slotAChannel.addEventListener('change', configureSlots)
+  slotBMode.addEventListener('change', configureSlots)
   slotBChannel.addEventListener('change', configureSlots)
   presetStandard.addEventListener('click', () => applyChannelPreset('standard'))
   presetSlotA16.addEventListener('click', () => applyChannelPreset('A'))

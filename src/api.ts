@@ -8,7 +8,7 @@ import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 37
+const UI_VERSION = 38
 
 interface ByteRange {
   start: number
@@ -495,10 +495,12 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
-      const body = request.body as { mode?: unknown; slotAChannel?: unknown; slotBChannel?: unknown } | undefined
+      const body = request.body as { mode?: unknown; slotAChannel?: unknown; slotBMode?: unknown; slotBChannel?: unknown } | undefined
       const mode = String(body?.mode ?? '')
       if (mode !== 'fixed' && mode !== 'scan') throw new Error('Slot A mode must be fixed or scan')
-      response.json(runtime.configureSlots(mode, String(body?.slotAChannel ?? ''), String(body?.slotBChannel ?? '')))
+      const slotBMode = String(body?.slotBMode ?? 'fixed')
+      if (slotBMode !== 'fixed' && slotBMode !== 'scan') throw new Error('Slot B mode must be fixed or scan')
+      response.json(runtime.configureSlots(mode, String(body?.slotAChannel ?? ''), slotBMode, String(body?.slotBChannel ?? '')))
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
@@ -583,7 +585,7 @@ export function openApi(): object {
         delete: { summary: 'Clear decoded DSC calls', responses: { '204': { description: 'Cleared' } } }
       },
       '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
-      '/api/slots': { post: { summary: 'Configure the two receiver slots and Slot A scan mode', responses: { '200': { description: 'Updated status' } } } },
+      '/api/slots': { post: { summary: 'Configure both receiver slots and their fixed or scan modes', responses: { '200': { description: 'Updated status' } } } },
       '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } },
       '/api/transcription': { post: { summary: 'Durably enable or disable local voice transcription', responses: { '200': { description: 'Updated status' } } } }
     }

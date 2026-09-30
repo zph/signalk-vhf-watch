@@ -8,6 +8,7 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.channelRegion, 'US_CA')
   assert.equal(config.initialChannel, '16')
   assert.equal(config.slotAMode, 'fixed')
+  assert.equal(config.slotBMode, 'fixed')
   assert.equal(config.slotBChannel, '70')
   assert.equal(config.replayMinutes, 1_440)
   assert.equal(config.segmentSeconds, 2)
@@ -24,9 +25,10 @@ test('uses one-minute storage slices and migrates the original five-second setti
   assert.equal(normalizeConfig({ segmentSeconds: 90 }).segmentSeconds, 90)
 })
 
-test('accepts scan mode and a second nearby voice channel', () => {
-  const config = normalizeConfig({ slotAMode: 'scan', slotBChannel: '68' })
+test('accepts independent scan modes and a second nearby voice channel', () => {
+  const config = normalizeConfig({ slotAMode: 'scan', slotBMode: 'scan', slotBChannel: '68' })
   assert.equal(config.slotAMode, 'scan')
+  assert.equal(config.slotBMode, 'scan')
   assert.equal(config.slotBChannel, '68')
 })
 

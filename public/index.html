@@ -39,10 +39,13 @@
         </div>
       </article>
       <article class="channel-status">
-        <div class="channel-heading"><span>Digital watch · Slot B</span><strong id="slot-b-mode-label">Continuous</strong></div>
+        <div class="channel-heading"><span>Second watch · Slot B</span><strong id="slot-b-mode-label">Continuous DSC</strong></div>
         <div class="channel-number"><span id="slot-b-display">70</span><small id="slot-b-frequency">156.525 MHz</small></div>
         <p id="slot-b-purpose">Digital selective calling</p>
-        <div class="channel-controls single-control">
+        <div class="channel-controls">
+          <label for="slot-b-mode"><span>Mode</span>
+            <select id="slot-b-mode"><option value="fixed">Fixed / DSC</option><option value="scan">Adaptive scan</option></select>
+          </label>
           <label for="slot-b-channel"><span>Channel</span>
             <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
           </label>
@@ -202,6 +205,6 @@
 
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
-  <script src="./main.js?v=37"></script>
+  <script src="./main.js?v=38"></script>
 </body>
 </html>

@@ -19,11 +19,12 @@ test('persists receiver channel choices atomically for the next page or plugin s
     (settings) => store.save(settings)
   )
 
-  runtime.configureSlots('scan', '16', '68')
+  runtime.configureSlots('scan', '16', 'scan', '68')
   assert.deepEqual(store.load(), {
     channelRegion: 'US_CA',
     slotAMode: 'scan',
     slotAChannel: '16',
+    slotBMode: 'scan',
     slotBChannel: '68'
   })
   assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).slotBChannel, '68')
@@ -35,6 +36,7 @@ test('persists receiver channel choices atomically for the next page or plugin s
     channelRegion: 'CA',
     slotAMode: 'fixed',
     slotAChannel: '04A',
+    slotBMode: 'scan',
     slotBChannel: '68'
   })
 })

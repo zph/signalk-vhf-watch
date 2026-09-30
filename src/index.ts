@@ -28,6 +28,7 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         ...(savedTuning.channelRegion ? { channelRegion: savedTuning.channelRegion } : {}),
         ...(savedTuning.slotAMode ? { slotAMode: savedTuning.slotAMode } : {}),
         ...(savedTuning.slotAChannel ? { initialChannel: savedTuning.slotAChannel } : {}),
+        ...(savedTuning.slotBMode ? { slotBMode: savedTuning.slotBMode } : {}),
         ...(savedTuning.slotBChannel ? { slotBChannel: savedTuning.slotBChannel } : {})
       })
       const dscCache = new DscMessageCache(path.join(app.getDataDirPath(), 'dsc-calls.json'), {

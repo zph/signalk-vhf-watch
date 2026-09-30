@@ -1,12 +1,13 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ChannelRegion } from './channels'
-import type { SlotAMode } from './config'
+import type { SlotAMode, SlotBMode } from './config'
 
 export interface TuningSettings {
   channelRegion: ChannelRegion
   slotAMode: SlotAMode
   slotAChannel: string
+  slotBMode: SlotBMode
   slotBChannel: string
 }
 

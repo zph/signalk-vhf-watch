@@ -29,9 +29,16 @@ Install the `rtl_sdr` utility on the Signal K host, then make the SDR USB device
 The npm package includes a statically linked `linux-arm64` sidecar, so Go is not required on the Pi;
 the configurable sidecar path supports development builds and future platforms. Choose `RTL-SDR
 wideband` in the plugin configuration and restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs both channelizers;
-only low-rate PCM crosses into JavaScript. Independent NFM streams provide the selected voice
-channel and an uninterrupted 24 kHz Channel 70 DSC decoder. Changing voice channels inside the
+only low-rate PCM crosses into JavaScript. Independent channelizers provide Slot A voice and either
+an uninterrupted 24 kHz Channel 70 DSC decoder or Slot B voice. Changing either slot inside the
 capture window does not restart or retune the hardware.
+
+Slot B can remain fixed on DSC 70 or a voice channel, or use Adaptive scan. Adaptive scan samples
+the nearby marine voice channels, holds an open channel until it goes quiet, and gives channels with
+recent voice activity more frequent revisits. Time-since-last-visit remains part of the priority so
+quiet channels cannot starve. Adaptive scan uses Slot B's channelizer, so Channel 70 DSC is visibly
+paused until Slot B returns to fixed DSC 70; the **16 + DSC 70** quick-watch button restores that
+watch immediately.
 
 Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
 filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM

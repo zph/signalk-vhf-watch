@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,19 @@ func TestWritesIndependentSlotBVoiceFrame(t *testing.T) {
 	}
 	if output.Bytes()[0] != frameVoiceB {
 		t.Fatalf("frame kind = %d, want %d", output.Bytes()[0], frameVoiceB)
+	}
+}
+
+func TestReadsIndependentSlotTuneCommands(t *testing.T) {
+	tunes := make(chan tuneRequest, 2)
+	readControls(strings.NewReader("tune 156800000\ntune-b 156425000\n"), tunes)
+	first := <-tunes
+	second := <-tunes
+	if first.slot != "A" || first.frequency != 156800000 {
+		t.Fatalf("first tune = %+v", first)
+	}
+	if second.slot != "B" || second.frequency != 156425000 {
+		t.Fatalf("second tune = %+v", second)
 	}
 }
 
