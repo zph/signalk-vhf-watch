@@ -9,6 +9,7 @@ import { TranscriptionManager } from './transcription'
 import { TranscriptArchive } from './transcript-archive'
 import { NarrationManager } from './narration'
 import { TuningSettingsStore } from './tuning-settings'
+import { RnnoiseDenoiser } from './rnnoise'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -35,16 +36,17 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         maxBytes: config.maxDscCacheKiB * 1024
       })
       const archive = new TranscriptArchive(path.join(app.getDataDirPath(), 'transcript-archive', 'transcripts.sqlite3'))
+      const denoiser = new RnnoiseDenoiser()
       const transcription = new TranscriptionManager(
         path.join(app.getDataDirPath(), 'transcription-settings.json'),
         undefined,
-        { archive }
+        { archive, denoiser }
       )
       const narration = new NarrationManager(archive, undefined, {
         canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)
       })
       transcription.attachNarrator(narration)
-      runtime = new VhfRuntime(config, dscCache, transcription, narration, (settings) => tuningSettings.save(settings))
+      runtime = new VhfRuntime(config, dscCache, transcription, narration, (settings) => tuningSettings.save(settings), denoiser)
       runtime.on('status', (status) => {
         const message = status.error
           ? `${status.mode} · ${status.channel.label} · ${status.error}`

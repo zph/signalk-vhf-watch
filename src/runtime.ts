@@ -19,6 +19,7 @@ import { TranscriptionManager, type TranscriptionStatus } from './transcription'
 import { discriminatorThreshold } from './squelch'
 import { NarrationManager, type NarrationStatus } from './narration'
 import type { TuningSettings } from './tuning-settings'
+import { RnnoiseDenoiser } from './rnnoise'
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
@@ -74,6 +75,7 @@ export class VhfRuntime extends EventEmitter<{
   readonly replayB: RollingReplay
   readonly transcription: TranscriptionManager
   readonly narration?: NarrationManager
+  readonly denoiser?: RnnoiseDenoiser
   #channel: VhfChannel
   #slotAMode: 'fixed' | 'scan'
   #slotAConfigured: VhfChannel
@@ -106,7 +108,8 @@ export class VhfRuntime extends EventEmitter<{
     dscCache?: DscMessageCache,
     transcription?: TranscriptionManager,
     narration?: NarrationManager,
-    saveTuning?: (settings: TuningSettings) => void
+    saveTuning?: (settings: TuningSettings) => void,
+    denoiser?: RnnoiseDenoiser
   ) {
     super()
     this.config = config
@@ -124,6 +127,7 @@ export class VhfRuntime extends EventEmitter<{
     this.#saveTuning = saveTuning
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.narration = narration
+    this.denoiser = denoiser
     this.#dscMessages = dscCache?.list() ?? []
     this.replay = new RollingReplay(
       config.sampleRate,

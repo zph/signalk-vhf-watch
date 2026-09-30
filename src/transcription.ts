@@ -7,6 +7,7 @@ import type { ReplaySegment } from './rolling-buffer'
 import { discriminatorThreshold } from './squelch'
 import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchiveStatus } from './transcript-archive'
 import type { NarrationManager } from './narration'
+import type { RnnoiseDenoiser } from './rnnoise'
 import { pcmToWav } from './wav'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
@@ -60,6 +61,7 @@ interface TranscriptionOptions {
   idleMs?: number
   archive?: TranscriptArchive
   modelsDir?: string
+  denoiser?: RnnoiseDenoiser
 }
 
 interface TranscriptWord {
@@ -179,6 +181,7 @@ export class TranscriptionManager {
   readonly #idleMs: number
   readonly #archive?: TranscriptArchive
   readonly #modelsDir: string
+  readonly #denoiser?: RnnoiseDenoiser
   #enabled: boolean
   #model: string
   #threads: number
@@ -202,6 +205,7 @@ export class TranscriptionManager {
     this.#idleMs = options.idleMs ?? TRANSCRIPTION_BATCH_IDLE_MS
     this.#archive = options.archive
     this.#modelsDir = options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
+    this.#denoiser = options.denoiser
     const settings = this.#load()
     this.#enabled = settings.enabled
     this.#model = settings.model
@@ -216,7 +220,7 @@ export class TranscriptionManager {
       available,
       state: !this.#enabled ? 'disabled' : !available ? 'unavailable' : this.#running ? 'transcribing' : 'idle',
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
-      engine: `whisper.cpp ${this.#model}`,
+      engine: `whisper.cpp ${this.#model}${this.#denoiser?.available() ? ' · RNNoise 50%' : ''}`,
       model: this.#model,
       threads: this.#threads,
       availableModels: this.availableModels(),
@@ -434,17 +438,20 @@ export class TranscriptionManager {
     }
   }
 
-  #transcribe(batch: TranscriptionBatch): Promise<string> {
+  async #transcribe(batch: TranscriptionBatch): Promise<string> {
     const lastSegment = batch.segments.at(-1)!
     const wavPath = path.join(os.tmpdir(), `vhf-watch-${process.pid}-${lastSegment.id}.wav`)
     const sampleRate = batch.segments[0]!.wav.readUInt32LE(24)
     const overlapPcm = Buffer.concat(batch.segments.slice(0, batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44)))
     const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
     const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
-    const pcm = Buffer.concat([
+    const rawPcm = Buffer.concat([
       retainedOverlap,
       ...batch.segments.slice(batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44))
     ])
+    const pcm = this.#denoiser?.available()
+      ? await this.#denoiser.processPcm(rawPcm, sampleRate)
+      : rawPcm
     writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
     return new Promise((resolve, reject) => {
       const child = spawn(this.#command, [wavPath, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })

@@ -1,7 +1,7 @@
-export type PlaybackCleanup = 'raw' | 'voice' | 'strong'
+export type PlaybackCleanup = 'raw' | 'voice' | 'strong' | 'rnnoise'
 
 export function parsePlaybackCleanup(value: unknown): PlaybackCleanup {
-  return value === 'voice' || value === 'strong' ? value : 'raw'
+  return value === 'voice' || value === 'strong' || value === 'rnnoise' ? value : 'raw'
 }
 
 export class PlaybackCleaner {
@@ -44,7 +44,7 @@ export class PlaybackCleaner {
       for (let index = blockStart; index < blockEnd; index += 1) {
         const input = pcm.readInt16LE(index * 2) / 32768
         let cleaned = input
-        if (this.#mode !== 'raw') {
+        if (this.#mode === 'voice' || this.#mode === 'strong') {
           this.#highPass = this.#highPassAlpha * (this.#highPass + input - this.#previousInput)
           this.#previousInput = input
           this.#highPass2 = this.#highPassAlpha * (this.#highPass2 + this.#highPass - this.#previousHighPass)

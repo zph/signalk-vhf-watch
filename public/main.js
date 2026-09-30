@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 33
+  const CLIENT_BUILD = 34
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -864,7 +864,7 @@
     const cleanupLabel = document.createElement('label')
     cleanupLabel.textContent = 'Background noise'
     const cleanup = document.createElement('select')
-    cleanup.innerHTML = '<option value="raw">Raw</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option>'
+    cleanup.innerHTML = '<option value="raw">Raw</option><option value="voice" selected>Voice focus</option><option value="strong">Strong reduction</option><option value="rnnoise">Speech denoise · RNNoise</option>'
     const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)

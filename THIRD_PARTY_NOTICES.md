@@ -18,3 +18,9 @@ the English Kokoro model and `af_sarah` voice distributed by its official model 
 installs the upstream model license and exact source URLs. FFmpeg, supplied by the host operating
 system, encodes generated PCM as Ogg Opus. No TTS binary or model is included in the VHF Watch npm
 package itself.
+
+VHF Watch includes the `somnolent-hogwash` speech/recording-noise model from
+[`GregorR/rnnoise-models`](https://github.com/GregorR/rnnoise-models). The repository states that,
+apart from its README and tools, the model work is not creative and is not subject to copyright.
+FFmpeg's `arnndn` filter executes the model; no RNNoise executable is bundled. The plugin mixes the
+denoised result equally with the original signal to preserve narrow-band radio speech detail.

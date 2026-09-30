@@ -93,9 +93,11 @@ with discriminator-noise metadata. The Recent radio control can therefore apply 
 when a segment is played without changing live listening or future recordings; `Off / raw` is useful
 for investigating weak signals. Timeline and transcript playback also offer non-destructive cleanup:
 **Voice focus** limits audio to the useful speech band, while **Strong static reduction** narrows that
-band further and adaptively lowers steady noise between speech. The original buffered and archived
-audio is never rewritten, so operators can switch back to raw playback when cleanup masks a weak
-voice.
+band further and adaptively lowers steady noise between speech. **Speech denoise** runs the bundled
+RNNoise speech/recording-noise model through FFmpeg and mixes it 50/50 with the raw signal. The dry
+signal preserves radio consonants that full-strength RNNoise can erase. Whisper uses the same mixed
+input when RNNoise is available, but the original buffered and archived audio is never rewritten, so
+operators can always return to raw playback.
 
 ### Optional local transcription
 

@@ -7,7 +7,7 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 33
+const UI_VERSION = 34
 
 interface ByteRange {
   start: number
@@ -102,6 +102,11 @@ function archiveSquelch(request: Request): number {
   return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 0
 }
 
+function denoiserOrThrow(runtime: VhfRuntime) {
+  if (!runtime.denoiser?.available()) throw new Error('RNNoise playback requires FFmpeg and the bundled speech model')
+  return runtime.denoiser
+}
+
 export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntime | undefined): void {
   const read = router.access('readonly')
   read.get('/api/status', (_request: Request, response: Response) => {
@@ -143,7 +148,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       archive: runtime.transcription.status().archive
     })
   })
-  read.get('/api/transcripts/:id.wav', (request: Request, response: Response) => {
+  read.get('/api/transcripts/:id.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const id = Number(request.params.id)
@@ -155,9 +160,20 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     }
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const squelch = archiveSquelch(request)
-    const playbackWav = cleanup === 'raw' && squelch === 0
-      ? wav
-      : pcmToWav(cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup, squelch), record.sampleRate)
+    let playbackWav: Buffer
+    try {
+      if (cleanup === 'rnnoise') {
+        const gated = cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, 'raw', squelch)
+        playbackWav = pcmToWav(await denoiserOrThrow(runtime).processPcm(gated, record.sampleRate), record.sampleRate)
+      } else {
+        playbackWav = cleanup === 'raw' && squelch === 0
+          ? wav
+          : pcmToWav(cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup, squelch), record.sampleRate)
+      }
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+      return
+    }
     sendSeekableWav(
       request,
       response,
@@ -166,7 +182,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       'private, max-age=3600'
     )
   })
-  read.get('/api/transcript-session.wav', (request: Request, response: Response) => {
+  read.get('/api/transcript-session.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const ids = requestedIds(request.query.ids, 500)
@@ -189,13 +205,21 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const squelch = archiveSquelch(request)
-    sendSeekableWav(
-      request,
-      response,
-      pcmToWav(cleanArchivedPlaybackPcm(pcm, first.sampleRate, cleanup, squelch), first.sampleRate),
-      `vhf-transcript-${first.channel}-session.wav`,
-      'no-store, private'
-    )
+    try {
+      const gated = cleanArchivedPlaybackPcm(pcm, first.sampleRate, cleanup === 'rnnoise' ? 'raw' : cleanup, squelch)
+      const playbackPcm = cleanup === 'rnnoise'
+        ? await denoiserOrThrow(runtime).processPcm(gated, first.sampleRate)
+        : gated
+      sendSeekableWav(
+        request,
+        response,
+        pcmToWav(playbackPcm, first.sampleRate),
+        `vhf-transcript-${first.channel}-session.wav`,
+        'no-store, private'
+      )
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+    }
   })
   read.get('/api/transcript-session.opus', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -231,7 +255,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(500).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
-  read.get('/api/replay/:id.wav', (request: Request, response: Response) => {
+  read.get('/api/replay/:id.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const id = Number(request.params.id)
@@ -244,7 +268,20 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
-    const playbackWav = cleanup === 'raw' ? wav : pcmToWav(cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup), runtime.config.sampleRate)
+    let playbackWav: Buffer
+    try {
+      playbackWav = cleanup === 'raw'
+        ? wav
+        : pcmToWav(
+            cleanup === 'rnnoise'
+              ? await denoiserOrThrow(runtime).processPcm(wav.subarray(44), runtime.config.sampleRate)
+              : cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup),
+            runtime.config.sampleRate
+          )
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+      return
+    }
     sendSeekableWav(
       request,
       response,
@@ -253,7 +290,7 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       'private, max-age=3600'
     )
   })
-  read.get('/api/replay-session.wav', (request: Request, response: Response) => {
+  read.get('/api/replay-session.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const ids = requestedIds(request.query.ids, 240)
@@ -277,13 +314,20 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
-    sendSeekableWav(
-      request,
-      response,
-      pcmToWav(cleanPlaybackPcm(pcm, runtime.config.sampleRate, cleanup), runtime.config.sampleRate),
-      `vhf-${first.channel}-session.wav`,
-      'no-store, private'
-    )
+    try {
+      const playbackPcm = cleanup === 'rnnoise'
+        ? await denoiserOrThrow(runtime).processPcm(pcm, runtime.config.sampleRate)
+        : cleanPlaybackPcm(pcm, runtime.config.sampleRate, cleanup)
+      sendSeekableWav(
+        request,
+        response,
+        pcmToWav(playbackPcm, runtime.config.sampleRate),
+        `vhf-${first.channel}-session.wav`,
+        'no-store, private'
+      )
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+    }
   })
   read.get('/api/replay/:id/continuous.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -297,6 +341,14 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
+    try {
+      if (cleanup === 'rnnoise') denoiseStream = denoiserOrThrow(runtime).createPcmStream(runtime.config.sampleRate)
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+      return
+    }
     response.status(200)
     response.set({
       'Content-Type': 'audio/wav',
@@ -306,7 +358,30 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     })
     response.flushHeaders()
     response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
-    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, parsePlaybackCleanup(request.query.cleanup))
+    if (denoiseStream) {
+      const event = segment.slot === 'A' ? 'rawAudio' : 'rawSlotBAudio'
+      denoiseStream.stdout.on('data', (chunk: Buffer) => { if (!response.destroyed) response.write(chunk) })
+      denoiseStream.on('close', () => { if (!response.destroyed) response.end() })
+      denoiseStream.on('error', () => { if (!response.destroyed) response.end() })
+      for (const chunk of chunks) denoiseStream.stdin.write(chunk)
+      if (!runtime.canTailReplay(id)) {
+        denoiseStream.stdin.end()
+        return
+      }
+      const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
+        if (response.destroyed || denoiseStream.stdin.destroyed) return
+        const open = discriminatorNoise < discriminatorThreshold(squelch)
+        denoiseStream.stdin.write(open ? chunk : Buffer.alloc(chunk.length))
+      }
+      runtime.on(event, onRawAudio)
+      request.on('close', () => {
+        runtime.off(event, onRawAudio)
+        denoiseStream.stdin.destroy()
+        denoiseStream.kill('SIGTERM')
+      })
+      return
+    }
+    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, cleanup)
     for (const chunk of chunks) response.write(cleaner.process(chunk))
     if (!runtime.canTailReplay(id)) {
       response.end()
@@ -327,6 +402,14 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
   read.get('/api/live.wav', (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
+    try {
+      if (cleanup === 'rnnoise') denoiseStream = denoiserOrThrow(runtime).createPcmStream(runtime.config.sampleRate)
+    } catch (error) {
+      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+      return
+    }
     response.status(200)
     response.set({
       'Content-Type': 'audio/wav',
@@ -337,12 +420,23 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
     const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
-    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, parsePlaybackCleanup(request.query.cleanup))
-    const onAudio = (chunk: Buffer): void => { if (!response.destroyed) response.write(cleaner.process(chunk)) }
+    const cleaner = new PlaybackCleaner(runtime.config.sampleRate, cleanup)
+    if (denoiseStream) {
+      denoiseStream.stdout.on('data', (chunk: Buffer) => { if (!response.destroyed) response.write(chunk) })
+      denoiseStream.on('close', () => { if (!response.destroyed) response.end() })
+      denoiseStream.on('error', () => { if (!response.destroyed) response.end() })
+    }
+    const onAudio = (chunk: Buffer): void => {
+      if (response.destroyed) return
+      if (denoiseStream && !denoiseStream.stdin.destroyed) denoiseStream.stdin.write(chunk)
+      else response.write(cleaner.process(chunk))
+    }
     const onRawAudio = (chunk: Buffer, discriminatorNoise: number): void => {
       if (response.destroyed) return
       const open = discriminatorNoise < discriminatorThreshold(squelch)
-      response.write(cleaner.process(open ? chunk : Buffer.alloc(chunk.length)))
+      const gated = open ? chunk : Buffer.alloc(chunk.length)
+      if (denoiseStream && !denoiseStream.stdin.destroyed) denoiseStream.stdin.write(gated)
+      else response.write(cleaner.process(gated))
     }
     if (runtime.config.receiverMode === 'rtl_sdr') runtime.on('rawAudio', onRawAudio)
     else runtime.on('audio', onAudio)
@@ -351,6 +445,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       runtime.off('audio', onAudio)
       runtime.off('rawAudio', onRawAudio)
       runtime.listenerLeft()
+      denoiseStream?.stdin.destroy()
+      denoiseStream?.kill('SIGTERM')
       if (!response.destroyed) response.end()
     })
   })

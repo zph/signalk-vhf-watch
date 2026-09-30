@@ -6,6 +6,7 @@ import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
 import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
+import { RnnoiseDenoiser } from '../src/rnnoise'
 
 test('reconciles fuzzy text repeated by overlapping transcription windows', () => {
   const previous = 'Conditions improve Wednesday night with locally hazardous conditions across the northern outer waters likely to continue.'
@@ -110,6 +111,37 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.deepEqual(segment!.transcription, { status: 'complete', text: 'channel one six test' })
+  manager.close()
+})
+
+test('feeds the half-wet RNNoise output to Whisper without modifying archived source audio', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-rnnoise-'))
+  const model = path.join(directory, 'speech.rnnn')
+  const denoiseCommand = path.join(directory, 'fake-ffmpeg')
+  const whisperCommand = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(model, 'fake model')
+  writeFileSync(denoiseCommand, '#!/bin/sh\ntr "\\001" "\\002"\n')
+  writeFileSync(whisperCommand, '#!/bin/sh\nod -An -tu1 -j 44 -N 1 "$1" | tr -d " \\n"\n')
+  chmodSync(denoiseCommand, 0o755)
+  chmodSync(whisperCommand, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), whisperCommand, {
+    archive,
+    batchSeconds: 2,
+    idleMs: 10,
+    modelsDir: directory,
+    denoiser: new RnnoiseDenoiser(denoiseCommand, model)
+  })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const [segment] = replay.append(Buffer.alloc(32_000, 1), Date.UTC(2026, 8, 29), 0.1)
+  manager.enqueue(segment!, 20)
+  for (let attempt = 0; attempt < 100 && segment!.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(segment!.transcription?.text, '2')
+  assert.equal(manager.archiveWav(archive.list()[0]!.id)?.subarray(44, 45)[0], 1)
   manager.close()
 })
 
