@@ -13,6 +13,8 @@ function tone(sampleRate: number, frequency: number, amplitude: number, seconds:
 
 test('parses only supported playback cleanup modes', () => {
   assert.equal(parsePlaybackCleanup('voice'), 'voice')
+  assert.equal(parsePlaybackCleanup('comfort'), 'comfort')
+  assert.equal(parsePlaybackCleanup('maximum'), 'maximum')
   assert.equal(parsePlaybackCleanup('strong'), 'strong')
   assert.equal(parsePlaybackCleanup('rnnoise'), 'rnnoise')
   assert.equal(parsePlaybackCleanup('anything-else'), 'raw')

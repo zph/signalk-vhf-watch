@@ -40,7 +40,7 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       const transcription = new TranscriptionManager(
         path.join(app.getDataDirPath(), 'transcription-settings.json'),
         undefined,
-        { archive, denoiser }
+        { archive }
       )
       const narration = new NarrationManager(archive, undefined, {
         canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)

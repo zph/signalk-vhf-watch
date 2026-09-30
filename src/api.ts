@@ -5,9 +5,10 @@ import { cleanArchivedPlaybackPcm, cleanPlaybackPcm, parsePlaybackCleanup, Playb
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
+import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 34
+const UI_VERSION = 35
 
 interface ByteRange {
   start: number
@@ -102,8 +103,12 @@ function archiveSquelch(request: Request): number {
   return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 0
 }
 
-function denoiserOrThrow(runtime: VhfRuntime) {
-  if (!runtime.denoiser?.available()) throw new Error('RNNoise playback requires FFmpeg and the bundled speech model')
+function ffmpegCleanerOrThrow(runtime: VhfRuntime, cleanup: FfmpegPlaybackCleanup) {
+  if (!runtime.denoiser?.available(cleanup)) {
+    throw new Error(cleanup === 'rnnoise'
+      ? 'RNNoise playback requires FFmpeg and the bundled speech model'
+      : 'Adaptive playback cleanup requires FFmpeg')
+  }
   return runtime.denoiser
 }
 
@@ -162,9 +167,9 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const squelch = archiveSquelch(request)
     let playbackWav: Buffer
     try {
-      if (cleanup === 'rnnoise') {
+      if (isFfmpegPlaybackCleanup(cleanup)) {
         const gated = cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, 'raw', squelch)
-        playbackWav = pcmToWav(await denoiserOrThrow(runtime).processPcm(gated, record.sampleRate), record.sampleRate)
+        playbackWav = pcmToWav(await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(gated, record.sampleRate, cleanup), record.sampleRate)
       } else {
         playbackWav = cleanup === 'raw' && squelch === 0
           ? wav
@@ -206,9 +211,10 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const squelch = archiveSquelch(request)
     try {
-      const gated = cleanArchivedPlaybackPcm(pcm, first.sampleRate, cleanup === 'rnnoise' ? 'raw' : cleanup, squelch)
-      const playbackPcm = cleanup === 'rnnoise'
-        ? await denoiserOrThrow(runtime).processPcm(gated, first.sampleRate)
+      const externalCleanup = isFfmpegPlaybackCleanup(cleanup)
+      const gated = cleanArchivedPlaybackPcm(pcm, first.sampleRate, externalCleanup ? 'raw' : cleanup, squelch)
+      const playbackPcm = externalCleanup
+        ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(gated, first.sampleRate, cleanup)
         : gated
       sendSeekableWav(
         request,
@@ -273,8 +279,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       playbackWav = cleanup === 'raw'
         ? wav
         : pcmToWav(
-            cleanup === 'rnnoise'
-              ? await denoiserOrThrow(runtime).processPcm(wav.subarray(44), runtime.config.sampleRate)
+            isFfmpegPlaybackCleanup(cleanup)
+              ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(wav.subarray(44), runtime.config.sampleRate, cleanup)
               : cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup),
             runtime.config.sampleRate
           )
@@ -315,8 +321,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     try {
-      const playbackPcm = cleanup === 'rnnoise'
-        ? await denoiserOrThrow(runtime).processPcm(pcm, runtime.config.sampleRate)
+      const playbackPcm = isFfmpegPlaybackCleanup(cleanup)
+        ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(pcm, runtime.config.sampleRate, cleanup)
         : cleanPlaybackPcm(pcm, runtime.config.sampleRate, cleanup)
       sendSeekableWav(
         request,
@@ -344,7 +350,9 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
     try {
-      if (cleanup === 'rnnoise') denoiseStream = denoiserOrThrow(runtime).createPcmStream(runtime.config.sampleRate)
+      if (isFfmpegPlaybackCleanup(cleanup)) {
+        denoiseStream = ffmpegCleanerOrThrow(runtime, cleanup).createPcmStream(runtime.config.sampleRate, cleanup)
+      }
     } catch (error) {
       response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
       return
@@ -405,7 +413,9 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
     try {
-      if (cleanup === 'rnnoise') denoiseStream = denoiserOrThrow(runtime).createPcmStream(runtime.config.sampleRate)
+      if (isFfmpegPlaybackCleanup(cleanup)) {
+        denoiseStream = ffmpegCleanerOrThrow(runtime, cleanup).createPcmStream(runtime.config.sampleRate, cleanup)
+      }
     } catch (error) {
       response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
       return

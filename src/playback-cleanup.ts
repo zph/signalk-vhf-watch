@@ -1,7 +1,9 @@
-export type PlaybackCleanup = 'raw' | 'voice' | 'strong' | 'rnnoise'
+export type PlaybackCleanup = 'raw' | 'voice' | 'comfort' | 'maximum' | 'strong' | 'rnnoise'
 
 export function parsePlaybackCleanup(value: unknown): PlaybackCleanup {
-  return value === 'voice' || value === 'strong' || value === 'rnnoise' ? value : 'raw'
+  return value === 'voice' || value === 'comfort' || value === 'maximum' || value === 'strong' || value === 'rnnoise'
+    ? value
+    : 'raw'
 }
 
 export class PlaybackCleaner {

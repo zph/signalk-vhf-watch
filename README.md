@@ -106,12 +106,14 @@ The native receiver preserves low-rate unsquelched voice PCM in that bounded rep
 with discriminator-noise metadata. The Recent radio control can therefore apply a different squelch
 when a segment is played without changing live listening or future recordings; `Off / raw` is useful
 for investigating weak signals. Timeline and transcript playback also offer non-destructive cleanup:
-**Voice focus** limits audio to the useful speech band, while **Strong static reduction** narrows that
-band further and adaptively lowers steady noise between speech. **Speech denoise** runs the bundled
-RNNoise speech/recording-noise model through FFmpeg and mixes it 50/50 with the raw signal. The dry
-signal preserves radio consonants that full-strength RNNoise can erase. Whisper uses the same mixed
-input when RNNoise is available, but the original buffered and archived audio is never rewritten, so
-operators can always return to raw playback.
+**Voice focus** limits audio to the useful speech band. **Comfort · adaptive hiss reduction** uses a
+mostly-wet adaptive spectral filter to lower steady VHF hiss while preserving speech. **Maximum hiss
+reduction** adds a 180–3200 Hz speech band before a gentler spectral pass; it is easier on the ears but
+can remove parts of weak words. **Strong static reduction** is the lightweight built-in gate, while
+**Speech denoise** runs the bundled RNNoise speech/recording-noise model through FFmpeg and mixes it
+50/50 with the raw signal. These controls affect only playback; the buffered and archived originals
+are never rewritten. Whisper uses the unfiltered FIR-demodulated recording because validation retained
+more spoken facts than either adaptive listening filter.
 
 ### Optional local transcription
 
