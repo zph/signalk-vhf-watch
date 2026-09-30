@@ -113,10 +113,10 @@ can remove parts of weak words. **Strong static reduction** is the lightweight b
 **Speech denoise** runs the bundled RNNoise speech/recording-noise model through FFmpeg and mixes it
 50/50 with the raw signal. These controls affect only playback and never rewrite audio. Whisper uses
 the unfiltered FIR-demodulated recording because validation retained more spoken facts than either
-adaptive listening filter. Whisper still receives a full one-minute context window with ten seconds
-of overlap. The durable 30-day archive stores only the measured carrier-active interval plus five
-seconds before and after; the untrimmed source remains available in the rolling two-hour buffer until
-it expires.
+adaptive listening filter. Whisper receives a full one-minute context window with ten seconds of
+overlap, and the durable archive keeps that complete source minute. The web player presents only the
+measured carrier-active interval plus five seconds before and after, while the full recording remains
+available through the archive API.
 
 ### Optional local transcription
 

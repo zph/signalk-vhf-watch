@@ -13,6 +13,8 @@ export interface TranscriptArchiveRecordInput {
   durationSeconds: number
   sampleRate: number
   minimumDiscriminatorNoise?: number
+  activityStartSeconds?: number
+  activityEndSeconds?: number
   transcript: string
   wav: Buffer
 }
@@ -25,6 +27,8 @@ export interface TranscriptArchiveRecord {
   durationSeconds: number
   sampleRate: number
   minimumDiscriminatorNoise?: number
+  activityStartSeconds?: number
+  activityEndSeconds?: number
   transcript: string
   audioBytes: number
   compressedBytes: number
@@ -56,6 +60,8 @@ interface ArchiveRow {
   duration_seconds: number
   sample_rate: number
   minimum_discriminator_noise: number | null
+  activity_start_seconds: number | null
+  activity_end_seconds: number | null
   transcript: string
   audio_bytes: number
   compressed_bytes: number
@@ -103,6 +109,8 @@ export class TranscriptArchive {
     if (!columns.has('narration_bytes')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_bytes INTEGER NOT NULL DEFAULT 0')
     if (!columns.has('narration_voice')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_voice TEXT')
     if (!columns.has('narration_error')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN narration_error TEXT')
+    if (!columns.has('activity_start_seconds')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN activity_start_seconds REAL')
+    if (!columns.has('activity_end_seconds')) this.#database.exec('ALTER TABLE transcript_archive ADD COLUMN activity_end_seconds REAL')
     this.prune()
   }
 
@@ -115,9 +123,9 @@ export class TranscriptArchive {
     const result = this.#database.prepare(`
       INSERT INTO transcript_archive (
         started_ms, ended_ms, channel, duration_seconds, sample_rate,
-        minimum_discriminator_noise, transcript, audio_zstd, audio_bytes,
-        compressed_bytes, created_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        minimum_discriminator_noise, activity_start_seconds, activity_end_seconds,
+        transcript, audio_zstd, audio_bytes, compressed_bytes, created_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       startedMs,
       endedMs,
@@ -125,6 +133,8 @@ export class TranscriptArchive {
       record.durationSeconds,
       record.sampleRate,
       record.minimumDiscriminatorNoise ?? null,
+      record.activityStartSeconds ?? null,
+      record.activityEndSeconds ?? null,
       record.transcript,
       compressed,
       record.wav.length,
@@ -138,7 +148,8 @@ export class TranscriptArchive {
   list(limit = 500): TranscriptArchiveRecord[] {
     const rows = this.#database.prepare(`
       SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
-             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             minimum_discriminator_noise, activity_start_seconds, activity_end_seconds,
+             transcript, audio_bytes, compressed_bytes,
              narration_bytes, narration_voice, narration_error
       FROM transcript_archive
       ORDER BY started_ms DESC, id DESC
@@ -150,7 +161,8 @@ export class TranscriptArchive {
   record(id: number): TranscriptArchiveRecord | undefined {
     const row = this.#database.prepare(`
       SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
-             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             minimum_discriminator_noise, activity_start_seconds, activity_end_seconds,
+             transcript, audio_bytes, compressed_bytes,
              narration_bytes, narration_voice, narration_error
       FROM transcript_archive WHERE id = ?
     `).get(id) as unknown as ArchiveRow | undefined
@@ -200,7 +212,8 @@ export class TranscriptArchive {
   recordsNeedingNarration(limit = 500): TranscriptArchiveRecord[] {
     const rows = this.#database.prepare(`
       SELECT id, started_ms, ended_ms, channel, duration_seconds, sample_rate,
-             minimum_discriminator_noise, transcript, audio_bytes, compressed_bytes,
+             minimum_discriminator_noise, activity_start_seconds, activity_end_seconds,
+             transcript, audio_bytes, compressed_bytes,
              narration_bytes, narration_voice, narration_error
       FROM transcript_archive
       WHERE transcript <> '' AND narration_opus IS NULL AND narration_error IS NULL
@@ -257,6 +270,8 @@ export class TranscriptArchive {
       durationSeconds: row.duration_seconds,
       sampleRate: row.sample_rate,
       ...(row.minimum_discriminator_noise === null ? {} : { minimumDiscriminatorNoise: row.minimum_discriminator_noise }),
+      ...(row.activity_start_seconds === null ? {} : { activityStartSeconds: row.activity_start_seconds }),
+      ...(row.activity_end_seconds === null ? {} : { activityEndSeconds: row.activity_end_seconds }),
       transcript: row.transcript,
       audioBytes: row.audio_bytes,
       compressedBytes: row.compressed_bytes,

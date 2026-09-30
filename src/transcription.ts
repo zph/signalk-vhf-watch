@@ -523,18 +523,18 @@ export class TranscriptionManager {
     const hasMeasuredActivity = Number.isFinite(activeStart) && activeEnd > activeStart
     const trimStart = hasMeasuredActivity ? Math.floor(Math.max(0, activeStart - paddingBytes) / 2) * 2 : 0
     const trimEnd = hasMeasuredActivity ? Math.floor(Math.min(pcm.length, activeEnd + paddingBytes) / 2) * 2 : pcm.length
-    const archivedPcm = pcm.subarray(trimStart, trimEnd)
-    const startedMs = Date.parse(first.startedAt) + trimStart / bytesPerSecond * 1_000
-    const durationSeconds = archivedPcm.length / bytesPerSecond
+    const activityStartSeconds = trimStart / bytesPerSecond
+    const activityEndSeconds = trimEnd / bytesPerSecond
     const record = this.#archive.add({
-      startedAt: new Date(startedMs).toISOString(),
-      endedAt: new Date(startedMs + durationSeconds * 1_000).toISOString(),
+      startedAt: first.startedAt,
+      endedAt: archivedSegments.at(-1)!.endedAt,
       channel: first.channel,
-      durationSeconds,
+      durationSeconds: pcm.length / bytesPerSecond,
       sampleRate,
       ...(measuredNoise.length === 0 ? {} : { minimumDiscriminatorNoise: Math.min(...measuredNoise) }),
+      ...(hasMeasuredActivity ? { activityStartSeconds, activityEndSeconds } : {}),
       transcript,
-      wav: pcmToWav(archivedPcm, sampleRate)
+      wav: pcmToWav(pcm, sampleRate)
     })
     if (record) this.#narrator?.enqueue(record.id)
   }

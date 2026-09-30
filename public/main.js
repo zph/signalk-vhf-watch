@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 35
+  const CLIENT_BUILD = 36
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -368,6 +368,18 @@
     return groups.map(replaySession).reverse()
   }
 
+  function archiveActivityStart(record) {
+    return Math.max(0, Math.min(record.durationSeconds, record.activityStartSeconds ?? 0))
+  }
+
+  function archiveActivityEnd(record) {
+    return Math.max(archiveActivityStart(record), Math.min(record.durationSeconds, record.activityEndSeconds ?? record.durationSeconds))
+  }
+
+  function archivePlaybackDuration(record) {
+    return archiveActivityEnd(record) - archiveActivityStart(record)
+  }
+
   function groupArchiveSessions(records) {
     const groups = []
     for (const record of records.slice().reverse()) {
@@ -382,12 +394,15 @@
       const first = group[0]
       const last = group.at(-1)
       const measured = group.flatMap((record) => record.minimumDiscriminatorNoise === undefined ? [] : [record.minimumDiscriminatorNoise])
+      const sourceDurationSeconds = group.reduce((sum, record) => sum + record.durationSeconds, 0)
       return {
         ...first,
         ids: group.map((record) => record.id),
         records: group,
-        endedAt: last.endedAt,
-        durationSeconds: group.reduce((sum, record) => sum + record.durationSeconds, 0),
+        startedAt: new Date(Date.parse(first.startedAt) + archiveActivityStart(first) * 1_000).toISOString(),
+        endedAt: new Date(Date.parse(last.startedAt) + archiveActivityEnd(last) * 1_000).toISOString(),
+        durationSeconds: group.reduce((sum, record) => sum + archivePlaybackDuration(record), 0),
+        sourceDurationSeconds,
         transcript: group.map((record) => record.transcript).filter(Boolean).join(' '),
         ...(measured.length > 0 ? { minimumDiscriminatorNoise: Math.min(...measured) } : {})
       }
@@ -725,7 +740,7 @@
     let offset = 0
     for (const candidate of record.records) {
       if (candidate.id === entry.id) break
-      offset += candidate.durationSeconds
+      offset += archivePlaybackDuration(candidate)
     }
     return offset
   }
@@ -838,7 +853,7 @@
 
     const body = document.createElement('div')
     body.className = 'archive-body'
-    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
+    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}&activity=1`
     const waveform = document.createElement('div')
     waveform.className = 'archive-waveform'
     const loading = document.createElement('span')
@@ -903,7 +918,8 @@
       stamp.className = 'transcript-time-link'
       stamp.href = `#${line.id}`
       stamp.dataset.audioOffset = String(offsetSeconds)
-      stamp.textContent = new Date(entry.startedAt).toLocaleString([], {
+      const activityStartedAt = new Date(Date.parse(entry.startedAt) + archiveActivityStart(entry) * 1_000)
+      stamp.textContent = activityStartedAt.toLocaleString([], {
         month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
       })
       stamp.setAttribute('aria-label', `Play transcript from ${stamp.textContent}`)
@@ -919,7 +935,7 @@
       marker.style.setProperty('--marker-left', `${Math.min(99.5, offsetSeconds / Math.max(1, record.durationSeconds) * 100)}%`)
       marker.setAttribute('aria-label', `Transcript marker at ${stamp.textContent}`)
       const markerLabel = document.createElement('span')
-      markerLabel.textContent = new Date(entry.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      markerLabel.textContent = activityStartedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       marker.append(markerLabel)
       bindTranscriptMoment(marker, details, entry, offsetSeconds)
       waveform.append(marker)
@@ -933,7 +949,7 @@
     const metadataRows = [
       ['Recording', `${new Date(record.startedAt).toLocaleString()} – ${new Date(record.endedAt).toLocaleString()}`],
       ['Channel', `${channelDisplay(record.channel)} · ${channelFrequencyDisplay(record.channel)}`],
-      ['Audio', `${record.durationSeconds.toFixed(1)} sec · ${record.sampleRate.toLocaleString()} Hz mono${quality}`],
+      ['Audio', `${record.durationSeconds.toFixed(1)} sec shown · ${record.sourceDurationSeconds.toFixed(1)} sec source retained · ${record.sampleRate.toLocaleString()} Hz mono${quality}`],
       ['Storage', `${record.ids.length} records · ${(compressedBytes / 1024).toFixed(0)} KiB compressed from ${(audioBytes / 1024).toFixed(0)} KiB`]
     ]
     for (const [term, value] of metadataRows) {

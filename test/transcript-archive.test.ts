@@ -15,6 +15,8 @@ function record(startedMs: number, channel: string, wav = pcmToWav(randomBytes(4
     durationSeconds: 0.25,
     sampleRate: 8_000,
     minimumDiscriminatorNoise: 0.12,
+    activityStartSeconds: 0.05,
+    activityEndSeconds: 0.2,
     transcript: `voice on ${channel}`,
     wav
   }
@@ -29,6 +31,8 @@ test('stores playable zstd audio and transcript metadata in a private SQLite dat
   assert.equal(stored.channel, '16')
   assert.equal(stored.transcript, 'voice on 16')
   assert.equal(stored.minimumDiscriminatorNoise, 0.12)
+  assert.equal(stored.activityStartSeconds, 0.05)
+  assert.equal(stored.activityEndSeconds, 0.2)
   assert.deepEqual(archive.wav(stored.id), input.wav)
   assert.equal(archive.updateTranscript(stored.id, 'rebuilt with base')?.transcript, 'rebuilt with base')
   assert.equal(archive.updateTranscript(99_999, 'missing'), undefined)

@@ -187,7 +187,7 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   manager.close()
 })
 
-test('archives only measured activity with five seconds of padding on each side', async () => {
+test('archives the full source and marks activity with five seconds of padding on each side', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-trim-'))
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
@@ -215,9 +215,11 @@ test('archives only measured activity with five seconds of padding on each side'
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   const [record] = archive.list()
-  assert.equal(record?.startedAt, new Date(startedAt + 15_000).toISOString())
-  assert.equal(record?.durationSeconds, 15)
-  assert.equal(record?.audioBytes, 480_044)
+  assert.equal(record?.startedAt, new Date(startedAt).toISOString())
+  assert.equal(record?.durationSeconds, 60)
+  assert.equal(record?.audioBytes, 1_920_044)
+  assert.equal(record?.activityStartSeconds, 15)
+  assert.equal(record?.activityEndSeconds, 30)
   manager.close()
 })
 

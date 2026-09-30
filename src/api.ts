@@ -8,7 +8,7 @@ import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 35
+const UI_VERSION = 36
 
 interface ByteRange {
   start: number
@@ -103,6 +103,19 @@ function archiveSquelch(request: Request): number {
   return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 0
 }
 
+export function archivedPlaybackPcm(
+  record: { sampleRate: number; activityStartSeconds?: number; activityEndSeconds?: number },
+  wav: Buffer,
+  activityOnly: boolean
+): Buffer {
+  const pcm = wav.subarray(44)
+  if (!activityOnly || record.activityStartSeconds === undefined || record.activityEndSeconds === undefined) return pcm
+  const bytesPerSecond = record.sampleRate * 2
+  const start = Math.max(0, Math.min(pcm.length, Math.floor(record.activityStartSeconds * bytesPerSecond / 2) * 2))
+  const end = Math.max(start, Math.min(pcm.length, Math.floor(record.activityEndSeconds * bytesPerSecond / 2) * 2))
+  return pcm.subarray(start, end)
+}
+
 function ffmpegCleanerOrThrow(runtime: VhfRuntime, cleanup: FfmpegPlaybackCleanup) {
   if (!runtime.denoiser?.available(cleanup)) {
     throw new Error(cleanup === 'rnnoise'
@@ -165,15 +178,17 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     }
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const squelch = archiveSquelch(request)
+    const activityOnly = request.query.activity === '1'
+    const sourcePcm = archivedPlaybackPcm(record, wav, activityOnly)
     let playbackWav: Buffer
     try {
       if (isFfmpegPlaybackCleanup(cleanup)) {
-        const gated = cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, 'raw', squelch)
+        const gated = cleanArchivedPlaybackPcm(sourcePcm, record.sampleRate, 'raw', squelch)
         playbackWav = pcmToWav(await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(gated, record.sampleRate, cleanup), record.sampleRate)
       } else {
-        playbackWav = cleanup === 'raw' && squelch === 0
+        playbackWav = cleanup === 'raw' && squelch === 0 && !activityOnly
           ? wav
-          : pcmToWav(cleanArchivedPlaybackPcm(wav.subarray(44), record.sampleRate, cleanup, squelch), record.sampleRate)
+          : pcmToWav(cleanArchivedPlaybackPcm(sourcePcm, record.sampleRate, cleanup, squelch), record.sampleRate)
       }
     } catch (error) {
       response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
@@ -207,7 +222,8 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: 'Transcript session is not a continuous channel recording' })
       return
     }
-    const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
+    const activityOnly = request.query.activity === '1'
+    const pcm = Buffer.concat((wavs as Buffer[]).map((wav, index) => archivedPlaybackPcm(resolved[index]!, wav, activityOnly)))
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const squelch = archiveSquelch(request)
     try {
