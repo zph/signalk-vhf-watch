@@ -28,17 +28,20 @@ without radio hardware.
 Install the `rtl_sdr` utility on the Signal K host, then make the SDR USB device visible to Signal K.
 The npm package includes a statically linked `linux-arm64` sidecar, so Go is not required on the Pi;
 the configurable sidecar path supports development builds and future platforms. Choose `RTL-SDR
-wideband` in the plugin configuration and restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs both channelizers;
+wideband` in the plugin configuration and restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs the audio channelizers plus a sparse whole-band activity FFT;
 only low-rate PCM crosses into JavaScript. Independent channelizers provide Slot A voice and either
-an uninterrupted 24 kHz Channel 70 DSC decoder or Slot B voice. Changing either slot inside the
+an uninterrupted 24 kHz Channel 70 DSC decoder or Slot B voice. When Slot B carries voice, a
+separate Channel 70 channelizer keeps DSC reception continuous. Changing either slot inside the
 capture window does not restart or retune the hardware.
 
-Slot B can remain fixed on DSC 70 or a voice channel, or use Adaptive scan. Adaptive scan samples
-the nearby marine voice channels, holds an open channel until it goes quiet, and gives channels with
-recent voice activity more frequent revisits. Time-since-last-visit remains part of the priority so
-quiet channels cannot starve. Adaptive scan uses Slot B's channelizer, so Channel 70 DSC is visibly
-paused until Slot B returns to fixed DSC 70; the **16 + DSC 70** quick-watch button restores that
-watch immediately.
+Either voice slot can remain fixed or use wideband scan. The sparse FFT observes every analog marine
+channel in the 2.4 MHz capture window at once, highlights current RF activity, and sends the two
+audio demodulators directly to the strongest active channels instead of hopping blindly. Channel 16
+receives a small priority boost, an open voice channel is held until it goes quiet, and five seconds
+of per-slot pre-roll preserves the beginning of a call while discriminator squelch confirms speech.
+The two voice slots can preserve two simultaneous calls; additional collisions remain highlighted as
+RF activity but cannot produce audio without another SDR or demodulation slot. Channel 70 DSC stays
+continuous throughout in-band voice scanning.
 
 Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
 filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM

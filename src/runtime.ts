@@ -82,6 +82,7 @@ export interface RuntimeStatus {
     sampleRate: number
     minimumHz: number
     maximumHz: number
+    activity: { channel: string; frequencyHz: number; score: number; active: boolean }[]
   }
   error?: string
   transcription: TranscriptionStatus
@@ -111,15 +112,14 @@ export class VhfRuntime extends EventEmitter<{
   #scanLocked = false
   #scanOpenMs = 0
   #scanQuietMs = 0
-  #scanIndex = 0
-  #scanPriorityTurn = false
   #scanTimer?: ReturnType<typeof setTimeout>
+  #scanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
   #slotBScanLocked = false
   #slotBScanOpenMs = 0
   #slotBScanQuietMs = 0
   #slotBScanTimer?: ReturnType<typeof setTimeout>
+  #slotBScanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
   readonly #slotBActivityScores = new Map<string, number>()
-  readonly #slotBLastVisited = new Map<string, number>()
   #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
   #receiverState = 'Stopped'
@@ -131,6 +131,7 @@ export class VhfRuntime extends EventEmitter<{
   #lastDscSignalAt?: string
   #dscContinuous = false
   #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
+  readonly #spectrumActivityScores = new Map<string, number>()
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscCache?: DscMessageCache
   readonly #saveTuning?: (settings: TuningSettings) => void
@@ -366,9 +367,9 @@ export class VhfRuntime extends EventEmitter<{
       receiverMetrics: { ...this.#receiverMetrics },
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),
       dscWatch: {
-        enabled: !this.#singleFrequency && this.config.receiverMode === 'rtl_sdr' && this.config.enabled && this.#slotB.id === '70',
+        enabled: !this.#singleFrequency && this.config.receiverMode === 'rtl_sdr' && this.config.enabled,
         frequencyHz: DSC_CHANNEL_HZ,
-        continuous: !this.#singleFrequency && this.#slotB.id === '70' && this.#dscContinuous,
+        continuous: !this.#singleFrequency && this.#dscContinuous,
         level: this.#dscLevel,
         messages: this.#dscMessages.length,
         ...(this.#lastDscSignalAt ? { lastSignalAt: this.#lastDscSignalAt } : {})
@@ -378,7 +379,13 @@ export class VhfRuntime extends EventEmitter<{
           centerHz: this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ,
           sampleRate: WIDEBAND_SAMPLE_RATE,
           minimumHz: (this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ) - WIDEBAND_SAMPLE_RATE / 2,
-          maximumHz: (this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ) + WIDEBAND_SAMPLE_RATE / 2
+          maximumHz: (this.#singleFrequency ? this.#channel.frequencyHz : WIDEBAND_CENTER_HZ) + WIDEBAND_SAMPLE_RATE / 2,
+          activity: channelPlan(this.#channelRegion)
+            .filter((channel) => !channel.weather && canChannelize(channel.frequencyHz))
+            .map((channel) => {
+              const score = this.#spectrumActivityScores.get(channel.id) ?? 0
+              return { channel: channel.id, frequencyHz: channel.frequencyHz, score, active: score >= 0.8 }
+            })
         }
       } : {}),
       ...(this.#error ? { error: this.#error } : {}),
@@ -492,13 +499,21 @@ export class VhfRuntime extends EventEmitter<{
     })
     receiver.on('metrics', (metrics) => {
       this.#receiverMetrics = metrics
+      if (metrics.spectrumActivity) {
+        this.#spectrumActivityScores.clear()
+        for (const channel of channelPlan(this.#channelRegion)) {
+          const score = metrics.spectrumActivity[String(channel.frequencyHz)]
+          if (score !== undefined) this.#spectrumActivityScores.set(channel.id, score)
+        }
+        this.#retargetSpectrumScans()
+      }
       if (!this.#singleFrequency && metrics.dscDiscriminatorNoise !== undefined) {
         this.#dscLevel = Math.max(0, Math.min(1, 1 - metrics.dscDiscriminatorNoise / 0.35))
       }
       this.#emitStatus()
     })
     receiver.on('dscAudio', (chunk) => {
-      if (this.#singleFrequency || this.#slotB.id !== '70') return
+      if (this.#singleFrequency) return
       this.#dscContinuous = true
       const messages = this.#dscDecoder.push(chunk)
       if (messages.length > 0) {
@@ -559,16 +574,8 @@ export class VhfRuntime extends EventEmitter<{
     this.#scanTimer = setTimeout(() => {
       this.#scanTimer = undefined
       if (this.#slotAMode !== 'scan' || this.#scanLocked) return
-      const others = this.#scanChannels()
-      this.#scanPriorityTurn = !this.#scanPriorityTurn
-      const next = this.#scanPriorityTurn || others.length === 0
-        ? channelById('16', this.#channelRegion)!
-        : others[this.#scanIndex++ % others.length]!
-      this.#channel = next
-      this.#scanOpenMs = 0
-      if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tune(next)
-      this.#emitStatus()
-      this.#scheduleScan(650)
+      this.#retargetSpectrumScans()
+      this.#scheduleScan(500)
     }, delayMs)
   }
 
@@ -576,6 +583,7 @@ export class VhfRuntime extends EventEmitter<{
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#scanLocked) {
+      this.#appendScanPreRoll(this.#scanPreRoll, chunk, discriminatorNoise)
       this.#scanOpenMs = open ? this.#scanOpenMs + milliseconds : 0
       if (this.#scanOpenMs < 200) return
       this.#scanLocked = true
@@ -583,10 +591,17 @@ export class VhfRuntime extends EventEmitter<{
       if (this.#scanTimer) clearTimeout(this.#scanTimer)
       this.#scanTimer = undefined
       this.replay.setChannel(this.#channel.id)
+      for (const buffered of this.#scanPreRoll) {
+        for (const segment of this.replay.append(buffered.chunk, buffered.at, buffered.discriminatorNoise)) {
+          this.transcription.enqueue(segment, this.config.squelch)
+        }
+      }
+      this.#scanPreRoll = []
       this.#emitStatus()
-    }
-    for (const segment of this.replay.append(chunk, Date.now(), discriminatorNoise)) {
-      this.transcription.enqueue(segment, this.config.squelch)
+    } else {
+      for (const segment of this.replay.append(chunk, Date.now(), discriminatorNoise)) {
+        this.transcription.enqueue(segment, this.config.squelch)
+      }
     }
     this.#scanQuietMs = open ? 0 : this.#scanQuietMs + milliseconds
     if (this.#scanQuietMs >= 1_200) {
@@ -603,22 +618,8 @@ export class VhfRuntime extends EventEmitter<{
     this.#slotBScanTimer = setTimeout(() => {
       this.#slotBScanTimer = undefined
       if (this.#slotBMode !== 'scan' || this.#slotBScanLocked || this.#singleFrequency) return
-      for (const [channel, score] of this.#slotBActivityScores) {
-        const decayed = score * 0.97
-        if (decayed < 0.05) this.#slotBActivityScores.delete(channel)
-        else this.#slotBActivityScores.set(channel, decayed)
-      }
-      const now = Date.now()
-      const next = selectAdaptiveScanChannel(
-        this.#slotBScanChannels(), this.#slotBActivityScores, this.#slotBLastVisited, now, this.#slotB.id
-      )
-      if (!next) return
-      this.#slotB = next
-      this.#slotBLastVisited.set(next.id, now)
-      this.#slotBScanOpenMs = 0
-      if (this.#receiver instanceof NativeSidecarReceiver) this.#receiver.tuneSlotB(next)
-      this.#emitStatus()
-      this.#scheduleSlotBScan(650)
+      this.#retargetSpectrumScans()
+      this.#scheduleSlotBScan(500)
     }, delayMs)
   }
 
@@ -626,6 +627,7 @@ export class VhfRuntime extends EventEmitter<{
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#slotBScanLocked) {
+      this.#appendScanPreRoll(this.#slotBScanPreRoll, chunk, discriminatorNoise)
       this.#slotBScanOpenMs = open ? this.#slotBScanOpenMs + milliseconds : 0
       if (this.#slotBScanOpenMs < 200) return
       this.#slotBScanLocked = true
@@ -635,10 +637,17 @@ export class VhfRuntime extends EventEmitter<{
       if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
       this.#slotBScanTimer = undefined
       this.replayB.setChannel(this.#slotB.id)
+      for (const buffered of this.#slotBScanPreRoll) {
+        for (const segment of this.replayB.append(buffered.chunk, buffered.at, buffered.discriminatorNoise)) {
+          this.transcription.enqueue(segment, this.config.squelch)
+        }
+      }
+      this.#slotBScanPreRoll = []
       this.#emitStatus()
-    }
-    for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
-      this.transcription.enqueue(segment, this.config.squelch)
+    } else {
+      for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
+        this.transcription.enqueue(segment, this.config.squelch)
+      }
     }
     this.#slotBScanQuietMs = open ? 0 : this.#slotBScanQuietMs + milliseconds
     if (this.#slotBScanQuietMs >= 1_200) {
@@ -648,6 +657,43 @@ export class VhfRuntime extends EventEmitter<{
       this.#slotBScanQuietMs = 0
       this.#scheduleSlotBScan(0)
     }
+  }
+
+  #bestSpectrumChannel(candidates: VhfChannel[], excludedFrequency?: number): VhfChannel | undefined {
+    return candidates
+      .filter((channel) => channel.frequencyHz !== excludedFrequency)
+      .map((channel) => ({ channel, score: (this.#spectrumActivityScores.get(channel.id) ?? 0) * (channel.id === '16' ? 1.2 : 1) }))
+      .filter(({ score }) => score >= 0.8)
+      .sort((left, right) => right.score - left.score)[0]?.channel
+  }
+
+  #retargetSpectrumScans(): void {
+    if (this.#singleFrequency || !(this.#receiver instanceof NativeSidecarReceiver)) return
+    if (this.#slotAMode === 'scan' && !this.#scanLocked) {
+      const next = this.#bestSpectrumChannel(this.#scanChannels().concat(channelById('16', this.#channelRegion)!), this.#slotB.id === '70' ? undefined : this.#slotB.frequencyHz)
+      if (next && next.frequencyHz !== this.#channel.frequencyHz) {
+        this.#channel = next
+        this.#scanOpenMs = 0
+        this.#scanPreRoll = []
+        this.#receiver.tune(next)
+      }
+    }
+    if (this.#slotBMode === 'scan' && !this.#slotBScanLocked) {
+      const next = this.#bestSpectrumChannel(this.#slotBScanChannels(), this.#channel.frequencyHz)
+      if (next && next.frequencyHz !== this.#slotB.frequencyHz) {
+        this.#slotB = next
+        this.#slotBScanOpenMs = 0
+        this.#slotBScanPreRoll = []
+        this.#receiver.tuneSlotB(next)
+      }
+    }
+  }
+
+  #appendScanPreRoll(target: { chunk: Buffer; discriminatorNoise: number; at: number }[], chunk: Buffer, discriminatorNoise: number): void {
+    target.push({ chunk: Buffer.from(chunk), discriminatorNoise, at: Date.now() })
+    const maximumBytes = this.config.sampleRate * 2 * 5
+    let total = target.reduce((sum, entry) => sum + entry.chunk.length, 0)
+    while (total > maximumBytes && target.length > 1) total -= target.shift()!.chunk.length
   }
 
   #emitStatus(): void {

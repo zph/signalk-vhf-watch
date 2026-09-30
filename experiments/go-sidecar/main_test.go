@@ -154,3 +154,30 @@ func TestCountsPotentialIQClippingAtConverterEdges(t *testing.T) {
 		t.Fatalf("edge count = %d, want 6", count)
 	}
 }
+
+func TestSpectrumScannerFindsAnActiveChannelAcrossTheWidebandCapture(t *testing.T) {
+	const sampleRate = 2_400_000
+	const center = 156_750_000
+	const active = 156_800_000
+	const quiet = 156_425_000
+	scanner := newSpectrumScanner(sampleRate, center, []int{active, quiet})
+	iq := make([]byte, spectrumStride*4*2)
+	seed := uint32(1)
+	for sample := 0; sample < len(iq)/2; sample++ {
+		seed = seed*1664525 + 1013904223
+		noiseI := float64(int((seed>>24)&15)-7) * 0.8
+		seed = seed*1664525 + 1013904223
+		noiseQ := float64(int((seed>>24)&15)-7) * 0.8
+		phase := 2 * math.Pi * float64(active-center) * float64(sample) / sampleRate
+		iq[sample*2] = byte(math.Round(127.5 + 55*math.Cos(phase) + noiseI))
+		iq[sample*2+1] = byte(math.Round(127.5 + 55*math.Sin(phase) + noiseQ))
+	}
+	scanner.process(iq)
+	activity := scanner.snapshot()
+	if activity["156800000"] < 1 {
+		t.Fatalf("active score = %.3f, want a clear detection", activity["156800000"])
+	}
+	if activity["156800000"] <= activity["156425000"]*5 {
+		t.Fatalf("active score %.3f did not separate from quiet score %.3f", activity["156800000"], activity["156425000"])
+	}
+}

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 38
+  const CLIENT_BUILD = 39
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -178,7 +178,7 @@
     slotBModeLabel.textContent = status.slots.B.kind === 'paused'
       ? 'Paused'
       : status.slots.B.mode === 'scan'
-        ? status.slots.B.state === 'holding' ? 'Holding voice' : 'Adaptive scan'
+        ? status.slots.B.state === 'holding' ? 'Holding voice' : 'Wideband scan'
         : status.slots.B.kind === 'dsc' ? 'Continuous DSC' : 'Fixed'
     slotAPurpose.textContent = status.slots.A.mode === 'scan'
       ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
@@ -186,7 +186,7 @@
     slotBPurpose.textContent = status.slots.B.kind === 'paused'
       ? `Paused while Slot A receives ${status.slots.A.currentChannel.label} outside the marine band`
       : status.slots.B.mode === 'scan'
-        ? `Scanning now: CH ${status.slots.B.channel.label} · active channels receive more airtime · DSC 70 paused`
+        ? `Spectrum-guided now: CH ${status.slots.B.channel.label} · DSC 70 remains continuous`
         : status.slots.B.kind === 'dsc'
         ? 'Continuous digital selective calling watch'
         : status.slots.B.channel.purpose
@@ -195,14 +195,10 @@
     slotBChannel.disabled = singleFrequencyActive
     dscModeLabel.textContent = singleFrequencyActive
       ? 'Retained history · Channel 70 paused for weather'
-      : status.slots.B.kind === 'dsc'
-        ? 'Channel 70 · continuous'
-        : `Retained history · Channel 70 paused while Slot B ${status.slots.B.mode === 'scan' ? 'scans voice channels' : `monitors ${channelDisplay(status.slots.B.channel.id)}`}`
+      : 'Channel 70 · continuous'
     receiverFootnote.textContent = singleFrequencyActive
       ? 'Receive only. Channel 70 is paused during single-frequency reception.'
-      : status.slots.B.kind === 'dsc'
-        ? 'Receive only. Channel 70 is watched continuously.'
-        : `Receive only. Channel 70 is paused while Slot B ${status.slots.B.mode === 'scan' ? 'adaptively scans voice channels' : `monitors ${channelDisplay(status.slots.B.channel.id)}`}.`
+      : 'Receive only. Channel 70 is watched continuously while voice slots use the shared wideband capture.'
     const percentage = Math.min(100, Math.round(status.level * 650))
     signalBar.style.width = `${percentage}%`
     signalValue.textContent = `${percentage}%`
@@ -234,6 +230,10 @@
         channel: status.slots.B.channel.id,
         frequencyHz: status.slots.B.channel.frequencyHz
       })
+    }
+    for (const detected of status.wideband?.activity?.filter((entry) => entry.active) || []) {
+      if (receiverRows.some((row) => row.frequencyHz === detected.frequencyHz)) continue
+      receiverRows.push({ slot: 'RF', channel: detected.channel, frequencyHz: detected.frequencyHz, liveScore: detected.score })
     }
     const receiverRowsChanged = JSON.stringify(receiverRows) !== JSON.stringify(timelineReceiverRows)
     timelineReceiverRows = receiverRows
@@ -516,7 +516,7 @@
       const label = document.createElement('div')
       label.className = 'frequency-label'
       const channel = document.createElement('strong')
-      channel.textContent = `Slot ${row.slot} · ${channelDisplay(row.channel)}`
+      channel.textContent = row.slot === 'RF' ? `Detected · ${channelDisplay(row.channel)}` : `Slot ${row.slot} · ${channelDisplay(row.channel)}`
       const frequency = document.createElement('span')
       frequency.textContent = row.frequencyHz ? `${(row.frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
       label.append(channel, frequency)
@@ -525,6 +525,12 @@
       track.setAttribute('aria-label', row.marks.length > 0
         ? `${row.marks.length} detected activity bursts; faint trace is below squelch`
         : 'Listening; faint trace is below squelch; no activity bursts above squelch yet')
+      if (row.liveScore) {
+        const live = document.createElement('span')
+        live.className = 'frequency-live'
+        live.title = 'Wideband activity detected now; an available voice slot will record it'
+        track.append(live)
+      }
       for (const floor of row.floorMarks) {
         const left = Math.max(0, Math.min(100, (floor.segmentStart - startTime) / timeSpan * 100))
         const right = Math.max(left, Math.min(100, (floor.segmentEnd - startTime) / timeSpan * 100))

@@ -8,7 +8,7 @@ import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 38
+const UI_VERSION = 39
 
 interface ByteRange {
   start: number

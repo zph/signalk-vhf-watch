@@ -19,12 +19,14 @@ test('builds one receive-only wideband capture for voice and DSC', () => {
 test('builds native sidecar arguments without any transmit controls', () => {
   const config = normalizeConfig({ receiverMode: 'rtl_sdr', device: '00000001', ppm: 2, squelch: 15 })
   const args = nativeSidecarArgs(config, channelById('16')!)
-  assert.deepEqual(args, [
+  assert.deepEqual(args.slice(0, 20), [
     '--mode', 'stream', '--device', '00000001', '--sample-rate', '2400000',
     '--center', '156750000', '--voice', '156800000', '--dsc', '156525000',
     '--slot-b', '156525000',
     '--audio-rate', '16000', '--ppm', '2', '--squelch', '15'
   ])
+  assert.equal(args[20], '--scan-frequencies')
+  assert.match(args[21]!, /156800000/)
   assert.equal(args.some((arg) => /tx|transmit|ptt/i.test(arg)), false)
 
   const weatherArgs = nativeSidecarArgs(config, channelById('WX4')!, '70', true)
@@ -35,6 +37,7 @@ test('builds native sidecar arguments without any transmit controls', () => {
     '--audio-rate', '16000', '--ppm', '2', '--squelch', '15'
   ])
   assert.equal(weatherArgs.some((arg) => /tx|transmit|ptt/i.test(arg)), false)
+  assert.equal(weatherArgs.includes('--scan-frequencies'), false)
 })
 
 test('parses complete sidecar frames and retains a partial frame', () => {

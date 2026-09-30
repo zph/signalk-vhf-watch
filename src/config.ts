@@ -132,7 +132,7 @@ export const pluginSchema = {
     },
     slotBMode: {
       type: 'string', title: 'Receiver Slot B mode', enum: ['fixed', 'scan'],
-      enumNames: ['Fixed channel / continuous DSC', 'Adaptive voice scan'], default: 'fixed'
+      enumNames: ['Fixed channel / continuous DSC', 'Wideband activity scan'], default: 'fixed'
     },
     slotBChannel: { type: 'string', title: 'Receiver Slot B channel (70 for continuous DSC)', default: '70' },
     device: {

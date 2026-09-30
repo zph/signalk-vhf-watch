@@ -21,11 +21,13 @@ import (
 )
 
 const (
-	frameVoice  byte = 1
-	frameDSC    byte = 2
-	frameState  byte = 3
-	frameVoiceB byte = 4
-	channelRate      = 96_000
+	frameVoice      byte = 1
+	frameDSC        byte = 2
+	frameState      byte = 3
+	frameVoiceB     byte = 4
+	channelRate          = 96_000
+	spectrumFFTSize      = 4096
+	spectrumStride       = 32768
 )
 
 var normalizedIQ = func() [256]float64 {
@@ -57,6 +59,121 @@ type complexFIRDecimator struct {
 	writeIndex   int
 	decimation   int
 	count        int
+}
+
+// spectrumScanner performs a deliberately sparse FFT over the shared wideband IQ stream. It is
+// only a traffic detector: the FIR channelizers remain responsible for producing playable audio
+// and confirming voice with discriminator squelch. Sampling one FFT every spectrumStride input
+// samples keeps the all-channel detector much cheaper than demodulating every channel.
+type spectrumScanner struct {
+	inputRate, center int
+	frequencies       []int
+	window            []complex128
+	fill, skip        int
+	sums              map[int]float64
+	frames            int
+}
+
+func newSpectrumScanner(inputRate, center int, frequencies []int) *spectrumScanner {
+	return &spectrumScanner{
+		inputRate: inputRate, center: center, frequencies: frequencies,
+		window: make([]complex128, spectrumFFTSize), sums: make(map[int]float64),
+	}
+}
+
+func (s *spectrumScanner) process(iq []byte) {
+	if len(s.frequencies) == 0 {
+		return
+	}
+	for index := 0; index+1 < len(iq); index += 2 {
+		if s.skip > 0 {
+			s.skip--
+			continue
+		}
+		weight := 0.5 - 0.5*math.Cos(2*math.Pi*float64(s.fill)/float64(spectrumFFTSize-1))
+		s.window[s.fill] = complex(normalizedIQ[iq[index]]*weight, normalizedIQ[iq[index+1]]*weight)
+		s.fill++
+		if s.fill == spectrumFFTSize {
+			s.measure()
+			s.fill = 0
+			s.skip = spectrumStride - spectrumFFTSize
+		}
+	}
+}
+
+func (s *spectrumScanner) measure() {
+	fft(s.window)
+	binHz := float64(s.inputRate) / spectrumFFTSize
+	for _, frequency := range s.frequencies {
+		centerBin := int(math.Round(float64(frequency-s.center) / binHz))
+		signal, signalBins := 0.0, 0
+		noise, noiseBins := 0.0, 0
+		for offset := -22; offset <= 22; offset++ {
+			absolute := offset
+			if absolute < 0 {
+				absolute = -absolute
+			}
+			if absolute > 20 || (absolute > 7 && absolute < 12) {
+				continue
+			}
+			// RTL tuners commonly leave a narrow DC spike at the capture center. Ignore its
+			// innermost bins while retaining the modulated shoulders of Channel 15.
+			if centerBin == 0 && absolute <= 1 {
+				continue
+			}
+			bin := (centerBin + offset + spectrumFFTSize) % spectrumFFTSize
+			power := real(s.window[bin])*real(s.window[bin]) + imag(s.window[bin])*imag(s.window[bin])
+			if absolute <= 7 {
+				signal += power
+				signalBins++
+			} else {
+				noise += power
+				noiseBins++
+			}
+		}
+		if noise > 0 {
+			ratio := (signal / float64(signalBins)) / (noise / float64(noiseBins))
+			s.sums[frequency] += math.Max(0, ratio-1)
+		}
+	}
+	s.frames++
+}
+
+func (s *spectrumScanner) snapshot() map[string]float64 {
+	result := make(map[string]float64, len(s.frequencies))
+	if s.frames > 0 {
+		for _, frequency := range s.frequencies {
+			result[strconv.Itoa(frequency)] = s.sums[frequency] / float64(s.frames)
+		}
+	}
+	clear(s.sums)
+	s.frames = 0
+	return result
+}
+
+func fft(values []complex128) {
+	for index, reversed := 1, 0; index < len(values); index++ {
+		bit := len(values) >> 1
+		for reversed&bit != 0 {
+			reversed ^= bit
+			bit >>= 1
+		}
+		reversed ^= bit
+		if index < reversed {
+			values[index], values[reversed] = values[reversed], values[index]
+		}
+	}
+	for width := 2; width <= len(values); width <<= 1 {
+		step := complex(math.Cos(-2*math.Pi/float64(width)), math.Sin(-2*math.Pi/float64(width)))
+		for start := 0; start < len(values); start += width {
+			factor := complex(1, 0)
+			for offset := 0; offset < width/2; offset++ {
+				even, odd := values[start+offset], values[start+offset+width/2]*factor
+				values[start+offset], values[start+offset+width/2] = even+odd, even-odd
+				factor *= step
+			}
+		}
+	}
 }
 
 func lowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
@@ -263,6 +380,7 @@ type options struct {
 	mode, rtlPath, device                                          string
 	sampleRate, center, voice, dsc, slotB, audioRate, ppm, squelch int
 	rfCutoffHz                                                     int
+	scanFrequencies                                                []int
 	gain                                                           float64
 	gainSet                                                        bool
 }
@@ -281,6 +399,16 @@ func main() {
 	flag.IntVar(&opts.ppm, "ppm", 0, "frequency correction")
 	flag.IntVar(&opts.squelch, "squelch", 20, "voice squelch level")
 	flag.IntVar(&opts.rfCutoffHz, "rf-cutoff", 9_000, "pre-demodulation channel low-pass cutoff in Hz")
+	flag.Func("scan-frequencies", "comma-separated frequencies for wideband traffic detection", func(value string) error {
+		for _, field := range strings.Split(value, ",") {
+			frequency, err := strconv.Atoi(strings.TrimSpace(field))
+			if err != nil {
+				return err
+			}
+			opts.scanFrequencies = append(opts.scanFrequencies, frequency)
+		}
+		return nil
+	})
 	flag.Func("gain", "manual gain in dB", func(value string) error {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err == nil {
@@ -348,14 +476,18 @@ func runStream(opts options) error {
 	if err != nil {
 		return err
 	}
-	slotBRate := opts.audioRate
-	if opts.slotB == opts.dsc {
-		slotBRate = 24_000
-	}
-	dsc, err := newChannelizerWithRFCutoff(opts.sampleRate, slotBRate, opts.slotB-opts.center, opts.rfCutoffHz, 0)
+	dsc, err := newChannelizerWithRFCutoff(opts.sampleRate, 24_000, opts.dsc-opts.center, opts.rfCutoffHz, 0)
 	if err != nil {
 		return err
 	}
+	var slotB *channelizer
+	if opts.slotB != opts.dsc {
+		slotB, err = newChannelizerWithRFCutoff(opts.sampleRate, opts.audioRate, opts.slotB-opts.center, opts.rfCutoffHz, opts.squelch)
+		if err != nil {
+			return err
+		}
+	}
+	spectrum := newSpectrumScanner(opts.sampleRate, opts.center, opts.scanFrequencies)
 	args := []string{"-d", opts.device, "-f", strconv.Itoa(opts.center), "-s", strconv.Itoa(opts.sampleRate), "-p", strconv.Itoa(opts.ppm)}
 	if opts.gainSet {
 		args = append(args, "-g", strconv.FormatFloat(opts.gain, 'f', -1, 64))
@@ -390,8 +522,17 @@ func runStream(opts options) error {
 		select {
 		case request := <-tunes:
 			if request.slot == "B" {
-				dsc.tune(request.frequency - opts.center)
 				opts.slotB = request.frequency
+				if request.frequency == opts.dsc {
+					slotB = nil
+				} else if slotB == nil {
+					slotB, err = newChannelizerWithRFCutoff(opts.sampleRate, opts.audioRate, request.frequency-opts.center, opts.rfCutoffHz, opts.squelch)
+					if err != nil {
+						return err
+					}
+				} else {
+					slotB.tune(request.frequency - opts.center)
+				}
 			} else {
 				voice.tune(request.frequency - opts.center)
 				opts.voice = request.frequency
@@ -403,26 +544,29 @@ func runStream(opts options) error {
 			count -= count % 2
 			iqBytes += int64(count)
 			edgeBytes += countIQEdgeBytes(buffer[:count])
-			voicePCM, dscPCM := processBoth(voice, dsc, buffer[:count])
+			voicePCM, slotBPCM, dscPCM := processReceivers(voice, slotB, dsc, spectrum, buffer[:count])
 			if err := writeVoiceFrame(os.Stdout, voicePCM, voice.level); err != nil {
 				_ = command.Process.Kill()
 				return err
 			}
-			kind := frameVoiceB
-			if opts.slotB == opts.dsc {
-				kind = frameDSC
+			if slotB != nil {
+				err = writeVoiceBFrame(os.Stdout, slotBPCM, slotB.level)
+				if err != nil {
+					_ = command.Process.Kill()
+					return err
+				}
 			}
-			if kind == frameVoiceB {
-				err = writeVoiceBFrame(os.Stdout, dscPCM, dsc.level)
-			} else {
-				err = writePCMFrame(os.Stdout, kind, dscPCM)
-			}
+			err = writePCMFrame(os.Stdout, frameDSC, dscPCM)
 			if err != nil {
 				_ = command.Process.Kill()
 				return err
 			}
 			if time.Since(lastState) >= time.Second {
-				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "voice_carrier_offset_hz": voice.carrierOffsetHz(), "slot_b_frequency_hz": opts.slotB, "slot_b_level": dsc.level, "slot_b_carrier_offset_hz": dsc.carrierOffsetHz(), "dsc_level": dsc.level, "iq_edge_fraction": float64(edgeBytes) / float64(iqBytes), "iq_samples": iqBytes / 2})
+				slotBLevel, slotBCarrier := dsc.level, dsc.carrierOffsetHz()
+				if slotB != nil {
+					slotBLevel, slotBCarrier = slotB.level, slotB.carrierOffsetHz()
+				}
+				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "voice_carrier_offset_hz": voice.carrierOffsetHz(), "slot_b_frequency_hz": opts.slotB, "slot_b_level": slotBLevel, "slot_b_carrier_offset_hz": slotBCarrier, "dsc_level": dsc.level, "spectrum_activity": spectrum.snapshot(), "iq_edge_fraction": float64(edgeBytes) / float64(iqBytes), "iq_samples": iqBytes / 2})
 				if err := writeFrame(os.Stdout, frameState, state); err != nil {
 					_ = command.Process.Kill()
 					return err
@@ -458,6 +602,20 @@ func processBoth(voice, dsc *channelizer, chunk []byte) (voicePCM, dscPCM []int1
 	workers.Add(2)
 	go func() { defer workers.Done(); voicePCM = voice.process(chunk) }()
 	go func() { defer workers.Done(); dscPCM = dsc.process(chunk) }()
+	workers.Wait()
+	return
+}
+
+func processReceivers(voice, slotB, dsc *channelizer, spectrum *spectrumScanner, chunk []byte) (voicePCM, slotBPCM, dscPCM []int16) {
+	var workers sync.WaitGroup
+	workers.Add(3)
+	go func() { defer workers.Done(); voicePCM = voice.process(chunk) }()
+	go func() { defer workers.Done(); dscPCM = dsc.process(chunk) }()
+	go func() { defer workers.Done(); spectrum.process(chunk) }()
+	if slotB != nil {
+		workers.Add(1)
+		go func() { defer workers.Done(); slotBPCM = slotB.process(chunk) }()
+	}
 	workers.Wait()
 	return
 }

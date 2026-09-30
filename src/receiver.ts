@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
-import type { VhfChannel } from './channels'
+import { channelPlan, type VhfChannel } from './channels'
 import type { VhfWatchConfig } from './config'
 import { discriminatorThreshold } from './squelch'
 
@@ -31,6 +31,7 @@ export interface ReceiverMetrics {
   voiceCarrierOffsetHz?: number
   slotBCarrierOffsetHz?: number
   iqEdgeFraction?: number
+  spectrumActivity?: Record<string, number>
 }
 
 export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
@@ -61,6 +62,10 @@ export function nativeSidecarArgs(
 ): string[] {
   const centerHz = singleFrequency ? channel.frequencyHz : WIDEBAND_CENTER_HZ
   const secondaryHz = singleFrequency ? channel.frequencyHz : slotB === '70' ? DSC_CHANNEL_HZ : slotB.frequencyHz
+  const scanFrequencies = [...new Set(channelPlan('US_CA')
+    .filter((candidate) => !candidate.weather && candidate.frequencyHz !== DSC_CHANNEL_HZ && canChannelize(candidate.frequencyHz))
+    .map((candidate) => candidate.frequencyHz))]
+    .sort((left, right) => left - right)
   return [
     '--mode', 'stream',
     '--device', config.device,
@@ -72,6 +77,7 @@ export function nativeSidecarArgs(
     '--audio-rate', String(config.sampleRate),
     '--ppm', String(config.ppm),
     '--squelch', String(config.squelch),
+    ...(!singleFrequency && scanFrequencies.length > 0 ? ['--scan-frequencies', scanFrequencies.join(',')] : []),
     ...(config.gainDb === undefined ? [] : ['--gain', String(config.gainDb)])
   ]
 }
@@ -167,6 +173,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
               voice_carrier_offset_hz?: number
               slot_b_carrier_offset_hz?: number
               iq_edge_fraction?: number
+              spectrum_activity?: Record<string, number>
             }
             this.#metrics.voiceDiscriminatorNoise = state.voice_level
             this.#metrics.slotBDiscriminatorNoise = state.slot_b_level
@@ -174,6 +181,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
             this.#metrics.voiceCarrierOffsetHz = state.voice_carrier_offset_hz
             this.#metrics.slotBCarrierOffsetHz = state.slot_b_carrier_offset_hz
             this.#metrics.iqEdgeFraction = state.iq_edge_fraction
+            this.#metrics.spectrumActivity = state.spectrum_activity
             this.emit('metrics', { ...this.#metrics })
             this.emit('state', this.#singleFrequency
               ? `Single-frequency capture · Slot A ${this.#channel.label} · Slot B + DSC paused`
