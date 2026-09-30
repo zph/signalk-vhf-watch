@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 39
+  const CLIENT_BUILD = 40
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -61,6 +61,8 @@
   let poll
   let replaySquelchTouched = false
   let replayTimeline = []
+  let spectrumTimeline = []
+  let dscTimeline = []
   let timelineSegmentId
   let timelineFollowingLive = true
   let timelineWaitingAtEdge = false
@@ -179,7 +181,7 @@
       ? 'Paused'
       : status.slots.B.mode === 'scan'
         ? status.slots.B.state === 'holding' ? 'Holding voice' : 'Wideband scan'
-        : status.slots.B.kind === 'dsc' ? 'Continuous DSC' : 'Fixed'
+        : status.slots.B.kind === 'dsc' ? 'Voice slot idle' : 'Fixed voice'
     slotAPurpose.textContent = status.slots.A.mode === 'scan'
       ? `Scanning now: CH ${status.slots.A.currentChannel.label} · ${status.slots.A.state}`
       : status.slots.A.configuredChannel.purpose
@@ -188,7 +190,7 @@
       : status.slots.B.mode === 'scan'
         ? `Spectrum-guided now: CH ${status.slots.B.channel.label} · DSC 70 remains continuous`
         : status.slots.B.kind === 'dsc'
-        ? 'Continuous digital selective calling watch'
+        ? 'No second voice channel · DSC 70 remains continuous independently'
         : status.slots.B.channel.purpose
     slotAMode.disabled = singleFrequencyActive
     slotBMode.disabled = singleFrequencyActive
@@ -298,9 +300,9 @@
     )
     const dscOption = document.createElement('option')
     dscOption.value = '70'
-    dscOption.textContent = '70 · US+CA — Digital selective calling'
+    dscOption.textContent = 'Off · no second voice channel (DSC 70 stays continuous)'
     const dscGroup = document.createElement('optgroup')
-    dscGroup.label = 'Digital watch'
+    dscGroup.label = 'Second voice slot'
     dscGroup.append(dscOption)
     const slotBVoice = channels.filter((channel) => channel.availableSlotB !== false)
     slotBChannel.replaceChildren(dscGroup, optionGroup('Marine voice · numeric order', slotBVoice, 'B'))
@@ -479,36 +481,68 @@
     }
   }
 
+  function selectNonAudioMoment(timestamp, description) {
+    timelineFollowingLive = false
+    timelineWaitingAtEdge = false
+    timelineAudio.pause()
+    timelineAudio.removeAttribute('src')
+    timelineAudio.load()
+    timelineTime.textContent = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    timelineOffset.textContent = `${description} · no playable voice was captured`
+    timelineLatest.textContent = 'Go live'
+    timelineLatest.setAttribute('aria-pressed', 'false')
+  }
+
   function renderFrequencyMap() {
     const endTime = Date.now()
     const startTime = endTime - timelineWindowMinutes * 60_000
     const timeSpan = endTime - startTime
     const rows = new Map()
 
+    const ensureRow = (channel, frequencyHz) => {
+      const key = String(frequencyHz || channel)
+      if (!rows.has(key)) rows.set(key, { channel, frequencyHz, marks: [], floorMarks: [], rfMarks: [], dscMarks: [], monitoredSlots: new Set() })
+      return rows.get(key)
+    }
+
     for (const receiver of timelineReceiverRows) {
-      rows.set(`${receiver.slot}:${receiver.frequencyHz || receiver.channel}`, { ...receiver, marks: [], floorMarks: [] })
+      const row = ensureRow(receiver.channel, receiver.frequencyHz)
+      if (receiver.slot !== 'RF') row.monitoredSlots.add(receiver.slot)
+      row.liveScore = Math.max(row.liveScore || 0, receiver.liveScore || 0)
     }
 
     for (const [segmentIndex, segment] of replayTimeline.entries()) {
       const frequencyHz = channelFrequency(segment.channel)
-      const key = `${segment.slot}:${frequencyHz || segment.channel}`
-      if (!rows.has(key)) rows.set(key, { slot: segment.slot, channel: segment.channel, frequencyHz, marks: [], floorMarks: [] })
+      const row = ensureRow(segment.channel, frequencyHz)
       const segmentStart = Date.parse(segment.startedAt)
       const segmentDuration = Math.max(1, segment.durationSeconds * 1000)
       const segmentEnd = segmentStart + segmentDuration
       if (segment.minimumDiscriminatorNoise !== undefined && segmentEnd >= startTime && segmentStart <= endTime) {
-        rows.get(key).floorMarks.push({ segmentStart, segmentEnd, strength: rfStrength(segment) })
+        row.floorMarks.push({ segmentStart, segmentEnd, strength: rfStrength(segment) })
       }
       for (const run of activityRuns(segment)) {
         const runStart = segmentStart + segmentDuration * run.start / segment.activity.length
         const runEnd = segmentStart + segmentDuration * run.end / segment.activity.length
         if (runEnd < startTime || runStart > endTime) continue
-        rows.get(key).marks.push({ segment, segmentIndex, runStart, runEnd, activity: run.activity })
+        row.marks.push({ segment, segmentIndex, runStart, runEnd, activity: run.activity })
       }
     }
 
+    for (const event of spectrumTimeline) {
+      const eventStart = Date.parse(event.startedAt)
+      const eventEnd = event.endedAt ? Date.parse(event.endedAt) : endTime
+      if (eventEnd < startTime || eventStart > endTime) continue
+      ensureRow(event.channel, event.frequencyHz).rfMarks.push({ eventStart, eventEnd, score: event.score, open: !event.endedAt })
+    }
+
+    for (const message of dscTimeline) {
+      const receivedAt = Date.parse(message.receivedAt)
+      if (receivedAt < startTime || receivedAt > endTime) continue
+      ensureRow('70', 156_525_000).dscMarks.push({ receivedAt, message })
+    }
+
     const visibleRows = [...rows.values()]
-      .sort((left, right) => (left.frequencyHz || Number.MAX_SAFE_INTEGER) - (right.frequencyHz || Number.MAX_SAFE_INTEGER) || left.slot.localeCompare(right.slot))
+      .sort((left, right) => (left.frequencyHz || Number.MAX_SAFE_INTEGER) - (right.frequencyHz || Number.MAX_SAFE_INTEGER))
 
     const rowElements = visibleRows.map((row) => {
       const wrapper = document.createElement('div')
@@ -516,15 +550,21 @@
       const label = document.createElement('div')
       label.className = 'frequency-label'
       const channel = document.createElement('strong')
-      channel.textContent = row.slot === 'RF' ? `Detected · ${channelDisplay(row.channel)}` : `Slot ${row.slot} · ${channelDisplay(row.channel)}`
+      channel.textContent = channelDisplay(row.channel)
       const frequency = document.createElement('span')
-      frequency.textContent = row.frequencyHz ? `${(row.frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
+      const kinds = [
+        row.rfMarks.length > 0 ? 'RF' : '',
+        row.marks.length > 0 ? 'voice' : '',
+        row.dscMarks.length > 0 ? 'DSC' : '',
+        row.monitoredSlots.size > 0 ? `Slot ${[...row.monitoredSlots].join('+')}` : ''
+      ].filter(Boolean)
+      frequency.textContent = row.frequencyHz
+        ? `${(row.frequencyHz / 1_000_000).toFixed(3)} MHz${kinds.length ? ` · ${kinds.join(' · ')}` : ''}`
+        : 'Frequency unavailable'
       label.append(channel, frequency)
       const track = document.createElement('div')
       track.className = 'frequency-track'
-      track.setAttribute('aria-label', row.marks.length > 0
-        ? `${row.marks.length} detected activity bursts; faint trace is below squelch`
-        : 'Listening; faint trace is below squelch; no activity bursts above squelch yet')
+      track.setAttribute('aria-label', `${row.rfMarks.length} RF events, ${row.marks.length} playable voice events, ${row.dscMarks.length} DSC calls`)
       if (row.liveScore) {
         const live = document.createElement('span')
         live.className = 'frequency-live'
@@ -534,12 +574,38 @@
       for (const floor of row.floorMarks) {
         const left = Math.max(0, Math.min(100, (floor.segmentStart - startTime) / timeSpan * 100))
         const right = Math.max(left, Math.min(100, (floor.segmentEnd - startTime) / timeSpan * 100))
-        const trace = document.createElement('span')
+        const trace = document.createElement('button')
+        trace.type = 'button'
         trace.className = 'frequency-floor'
         trace.setAttribute('aria-hidden', 'true')
         trace.style.setProperty('--burst-left', `${left}%`)
         trace.style.setProperty('--burst-width', `${Math.max(0.08, right - left)}%`)
         trace.style.setProperty('--floor-opacity', (0.05 + floor.strength * 0.2).toFixed(2))
+        track.append(trace)
+      }
+      for (const mark of row.rfMarks) {
+        const left = Math.max(0, Math.min(100, (mark.eventStart - startTime) / timeSpan * 100))
+        const right = Math.max(left, Math.min(100, (mark.eventEnd - startTime) / timeSpan * 100))
+        const trace = document.createElement('span')
+        trace.className = `frequency-rf${mark.open ? ' active' : ''}`
+        trace.style.setProperty('--burst-left', `${left}%`)
+        trace.style.setProperty('--burst-width', `${Math.max(0.08, right - left)}%`)
+        const at = new Date(mark.eventStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        trace.title = `RF detected at ${at} · score ${mark.score.toFixed(2)}${mark.open ? ' · active now' : ''}`
+        trace.setAttribute('aria-label', `${channelDisplay(row.channel)} RF detected at ${at}; no playable voice capture`)
+        trace.addEventListener('click', () => selectNonAudioMoment(mark.eventStart, `${channelDisplay(row.channel)} · RF detected`))
+        track.append(trace)
+      }
+      for (const mark of row.dscMarks) {
+        const left = Math.max(0, Math.min(100, (mark.receivedAt - startTime) / timeSpan * 100))
+        const trace = document.createElement('button')
+        trace.type = 'button'
+        trace.className = 'frequency-dsc'
+        trace.style.setProperty('--burst-left', `${left}%`)
+        const at = new Date(mark.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        trace.title = `DSC ${mark.message.category || 'call'} decoded at ${at}`
+        trace.setAttribute('aria-label', `Channel 70 DSC ${mark.message.category || 'call'} decoded at ${at}`)
+        trace.addEventListener('click', () => selectNonAudioMoment(mark.receivedAt, `CH 70 · DSC ${mark.message.category || 'call'} decoded`))
         track.append(trace)
       }
       for (const mark of row.marks) {
@@ -556,7 +622,7 @@
         button.style.setProperty('--burst-opacity', (0.16 + strength * 0.84).toFixed(2))
         button.style.setProperty('--burst-glow', `${(4 + strength * 10).toFixed(1)}px`)
         const time = new Date(mark.runStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        button.setAttribute('aria-label', `Listen to Slot ${row.slot}, ${channelDisplay(row.channel)}, ${frequency.textContent}, activity burst at ${time}`)
+        button.setAttribute('aria-label', `Listen to Slot ${mark.segment.slot}, ${channelDisplay(row.channel)}, ${frequency.textContent}, voice captured at ${time}`)
         button.addEventListener('click', () => {
           timelineFollowingLive = false
           timelineWaitingAtEdge = false
@@ -568,12 +634,12 @@
       return wrapper
     })
     frequencyMap.replaceChildren(...rowElements)
-    const hasActivity = visibleRows.some((row) => row.marks.length > 0)
+    const hasActivity = visibleRows.some((row) => row.marks.length > 0 || row.rfMarks.length > 0 || row.dscMarks.length > 0)
     frequencyMap.hidden = visibleRows.length === 0
     frequencyEmpty.hidden = hasActivity
     frequencyEmpty.textContent = visibleRows.length === 0
       ? 'Starting receiver…'
-      : 'Listening — no bursts above squelch yet.'
+      : 'Listening — no RF, voice, or DSC activity yet.'
     highlightFrequencyBurst()
   }
 
@@ -696,6 +762,16 @@
     }
   }
 
+  async function updateSpectrumActivity() {
+    try {
+      const { events } = await request('activity')
+      spectrumTimeline = events
+      renderFrequencyMap()
+    } catch (error) {
+      setConnection('error', error.message)
+    }
+  }
+
   function renderProcessingQueue(sessions) {
     processingPanel.hidden = sessions.length === 0
     processingCount.textContent = String(sessions.length)
@@ -743,10 +819,12 @@
   async function updateDsc() {
     try {
       const { messages } = await request('dsc')
+      dscTimeline = messages
       dscList.replaceChildren(...messages.map(dscRow))
       dscCallCount.textContent = String(messages.length)
       dscEmpty.hidden = messages.length > 0
       dscEmpty.textContent = 'Waiting for a decoded DSC call…'
+      renderFrequencyMap()
     } catch (error) {
       dscEmpty.hidden = false
       dscEmpty.textContent = error.message
@@ -1170,9 +1248,10 @@
   async function initialize() {
     try {
       await loadChannels()
-      await Promise.all([updateStatus(), updateReplay(), updateDsc(), updateArchive()])
+      await Promise.all([updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
       poll = window.setInterval(updateStatus, 1000)
       window.setInterval(updateReplay, 5000)
+      window.setInterval(updateSpectrumActivity, 5000)
       window.setInterval(updateDsc, 5000)
       window.setInterval(updateArchive, 15_000)
     } catch (error) {

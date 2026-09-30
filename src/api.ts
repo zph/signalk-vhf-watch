@@ -8,7 +8,7 @@ import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
 
-const UI_VERSION = 39
+const UI_VERSION = 40
 
 interface ByteRange {
   start: number
@@ -151,6 +151,10 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       const squelch = Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : runtime.config.squelch
       response.set('Cache-Control', 'no-store').json({ segments: runtime.segments(squelch) })
     }
+  })
+  read.get('/api/activity', (_request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (runtime) response.set('Cache-Control', 'no-store').json({ events: runtime.activityEvents() })
   })
   read.get('/api/dsc', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -571,6 +575,7 @@ export function openApi(): object {
       '/api/status': { get: { summary: 'Get receiver status', responses: { '200': { description: 'Status' } } } },
       '/api/channels': { get: { summary: 'List supported receive channels', responses: { '200': { description: 'Channels' } } } },
       '/api/replay': { get: { summary: 'List private rolling replay segments', responses: { '200': { description: 'Replay segments' } } } },
+      '/api/activity': { get: { summary: 'List bounded whole-band RF activity events', responses: { '200': { description: 'Spectrum activity' } } } },
       '/api/replay/{id}': { delete: { summary: 'Delete one private rolling replay segment', responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } } },
       '/api/replay/{id}.wav': { get: { summary: 'Play one replay segment', responses: { '200': { description: 'WAV audio' } } } },
       '/api/replay/{id}/continuous.wav': { get: { summary: 'Play seamless replay through the live edge', responses: { '200': { description: 'Streaming WAV audio' } } } },

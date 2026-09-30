@@ -39,12 +39,12 @@
         </div>
       </article>
       <article class="channel-status">
-        <div class="channel-heading"><span>Second watch · Slot B</span><strong id="slot-b-mode-label">Continuous DSC</strong></div>
+        <div class="channel-heading"><span>Second voice · Slot B</span><strong id="slot-b-mode-label">Voice slot idle</strong></div>
         <div class="channel-number"><span id="slot-b-display">70</span><small id="slot-b-frequency">156.525 MHz</small></div>
         <p id="slot-b-purpose">Digital selective calling</p>
         <div class="channel-controls">
           <label for="slot-b-mode"><span>Mode</span>
-            <select id="slot-b-mode"><option value="fixed">Fixed / DSC</option><option value="scan">Wideband scan</option></select>
+            <select id="slot-b-mode"><option value="fixed">Fixed / off</option><option value="scan">Wideband scan</option></select>
           </label>
           <label for="slot-b-channel"><span>Channel</span>
             <select id="slot-b-channel" aria-describedby="slot-b-purpose"></select>
@@ -81,10 +81,10 @@
           <div class="frequency-overview">
             <div class="frequency-overview-heading">
               <strong>Frequency activity</strong>
-              <span><i class="frequency-legend-floor" aria-hidden="true"></i> below squelch <i class="frequency-legend-burst" aria-hidden="true"></i> above squelch</span>
+              <span><i class="frequency-legend-rf" aria-hidden="true"></i> RF detected <i class="frequency-legend-burst" aria-hidden="true"></i> playable voice <i class="frequency-legend-dsc" aria-hidden="true"></i> DSC</span>
             </div>
             <div id="frequency-map" class="frequency-map" role="group" aria-label="Radio activity by time and frequency"></div>
-            <p id="frequency-empty" class="frequency-empty">Listening — no bursts above squelch yet.</p>
+            <p id="frequency-empty" class="frequency-empty">Listening — no RF, voice, or DSC activity yet.</p>
             <div class="frequency-scale" aria-hidden="true"><span>24 hr ago</span><span>12 hr ago</span><span>Now</span></div>
           </div>
           <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />

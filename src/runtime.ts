@@ -20,6 +20,7 @@ import { discriminatorThreshold } from './squelch'
 import { NarrationManager, type NarrationStatus } from './narration'
 import type { TuningSettings } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
+import { SpectrumActivityLog, type SpectrumActivityEvent, type SpectrumActivitySample } from './activity-log'
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
@@ -136,6 +137,7 @@ export class VhfRuntime extends EventEmitter<{
   #dscContinuous = false
   #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
   readonly #spectrumActivityScores = new Map<string, number>()
+  readonly #spectrumActivityLog: SpectrumActivityLog
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscCache?: DscMessageCache
   readonly #saveTuning?: (settings: TuningSettings) => void
@@ -170,6 +172,7 @@ export class VhfRuntime extends EventEmitter<{
     this.#slotBConfigured = this.#slotB
     this.#dscCache = dscCache
     this.#saveTuning = saveTuning
+    this.#spectrumActivityLog = new SpectrumActivityLog(config.replayMinutes)
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.narration = narration
     this.denoiser = denoiser
@@ -430,6 +433,10 @@ export class VhfRuntime extends EventEmitter<{
     return [...this.#dscMessages]
   }
 
+  activityEvents(): SpectrumActivityEvent[] {
+    return this.#spectrumActivityLog.list()
+  }
+
   clearDscMessages(): void {
     this.#dscMessages = []
     this.#dscCache?.clear()
@@ -505,10 +512,17 @@ export class VhfRuntime extends EventEmitter<{
       this.#receiverMetrics = metrics
       if (metrics.spectrumActivity) {
         this.#spectrumActivityScores.clear()
+        const active: SpectrumActivitySample[] = []
         for (const channel of channelPlan(this.#channelRegion)) {
           const score = metrics.spectrumActivity[String(channel.frequencyHz)]
-          if (score !== undefined) this.#spectrumActivityScores.set(channel.id, score)
+          if (score !== undefined) {
+            this.#spectrumActivityScores.set(channel.id, score)
+            if (score >= 0.8 && !active.some((entry) => entry.frequencyHz === channel.frequencyHz)) {
+              active.push({ channel: channel.id, frequencyHz: channel.frequencyHz, score })
+            }
+          }
         }
+        this.#spectrumActivityLog.update(active)
         this.#retargetSpectrumScans()
       }
       if (!this.#singleFrequency && metrics.dscDiscriminatorNoise !== undefined) {

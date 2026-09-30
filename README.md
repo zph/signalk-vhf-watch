@@ -43,6 +43,12 @@ The two voice slots can preserve two simultaneous calls; additional collisions r
 RF activity but cannot produce audio without another SDR or demodulation slot. Channel 70 DSC stays
 continuous throughout in-band voice scanning.
 
+The 24-hour activity timeline is channel-centric. Blue spans retain bounded whole-band RF detections,
+green spans identify voice captures that can be played, and amber ticks mark decoded Channel 70 DSC
+calls. Tapping any mark shows its exact time; RF-only marks explicitly report that no playable voice
+was captured. Slot B's `70` selection means the second voice demodulator is idle—Channel 70 remains
+an independent continuous decoder regardless of either voice-slot selection.
+
 Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
 filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM
 discrimination. A slow residual-carrier tracker removes up to 1.5 kHz of tuner error without chasing
@@ -100,6 +106,7 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `GET /api/dsc` — decoded Channel 70 calls (MMSI/category/position when present)
 - `DELETE /api/dsc` — clear decoded calls
 - `GET /api/replay` — replay segment metadata
+- `GET /api/activity` — bounded whole-band RF activity events for the 24-hour timeline
 - `GET /api/replay/:id.wav` — one replay segment
 - `DELETE /api/replay` — clear the rolling buffer
 - `DELETE /api/replay/:id` — delete one retained replay segment
