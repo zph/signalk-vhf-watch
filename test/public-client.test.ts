@@ -16,7 +16,7 @@ test('minimal web client keeps receiver monitoring and one unified activity work
   assert.match(html, /Wideband scan/)
   assert.match(html, /id="preset-standard"[^>]*>16 \+ DSC 70</)
   assert.match(html, /id="preset-slot-a-16"[^>]*>Slot A · 16</)
-  assert.match(html, /id="preset-slot-b-70"[^>]*>Slot B · 70</)
+  assert.match(html, /id="preset-slot-b-70"[^>]*>Slot B · off</)
   assert.match(html, />Scan</)
   assert.match(html, /Recent activity/)
   assert.match(html, /DSC calls/)
