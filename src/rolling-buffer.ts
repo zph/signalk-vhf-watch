@@ -130,6 +130,31 @@ export class RollingReplay {
     return segment
   }
 
+  prepend(chunk: Buffer, startedAt: number, discriminatorNoise?: number): ReplaySegment[] {
+    if (chunk.length < 2) return []
+    if (this.#pending.length === 0) {
+      return this.append(chunk, startedAt, discriminatorNoise)
+    }
+    // Keep the live samples at the handoff and trim any duplicated recovered
+    // samples. The pending segment keeps its existing public playback id.
+    const prefixBytes = Math.min(chunk.length, Math.max(0,
+      Math.floor((this.#pendingStartedAt - startedAt) * this.#sampleRate / 1000) * 2))
+    if (prefixBytes === 0) return []
+    this.#pending = Buffer.concat([chunk.subarray(0, prefixBytes), this.#pending])
+    this.#pendingQuality.unshift({ bytes: prefixBytes,
+      ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
+    this.#pendingStartedAt = startedAt
+    const created: ReplaySegment[] = []
+    while (this.#pending.length >= this.#segmentBytes) {
+      const pcm = this.#pending.subarray(0, this.#segmentBytes)
+      this.#pending = Buffer.from(this.#pending.subarray(this.#segmentBytes))
+      created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(pcm.length)))
+      this.#pendingStartedAt += pcm.length / 2 / this.#sampleRate * 1000
+    }
+    this.#recomputeBreakState()
+    return created
+  }
+
   flush(): ReplaySegment | undefined {
     if (this.#pending.length < 2) return undefined
     const segment = this.#store(this.#pending, this.#pendingStartedAt, this.#takeQuality(this.#pending.length))

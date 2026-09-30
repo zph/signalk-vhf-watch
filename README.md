@@ -40,7 +40,9 @@ audio demodulators directly to the strongest active channels instead of hopping 
 receives a small priority boost, an open voice channel is held until it goes quiet, and five seconds
 of raw wideband IQ are retained in a circular ring. When the spectrum detector assigns a slot, a
 bounded background worker retrospectively demodulates that channel from the IQ ring and places it
-before the live audio, preserving speech that began before the assignment. Short gaps in spectrum
+at the beginning of the ongoing recording, trimming overlap with live samples and preserving speech
+that began before the assignment. Scan holds the channel through five seconds of squelched silence;
+recovered and live audio share the same recording and transcription window. Short gaps in spectrum
 detections are coalesced so one transmission is not shown as a burst of separate activity marks.
 The two voice slots can preserve two simultaneous calls; additional collisions remain highlighted as
 RF activity but cannot produce audio without another SDR or demodulation slot. Channel 70 DSC stays

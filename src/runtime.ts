@@ -603,8 +603,9 @@ export class VhfRuntime extends EventEmitter<{
 
   #handleScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
     if (this.#scanLocked && capturedAt !== undefined) {
-      const segment = this.replay.insert(chunk, capturedAt, discriminatorNoise)
-      if (segment) this.transcription.enqueue(segment, this.config.squelch)
+      for (const segment of this.replay.prepend(chunk, capturedAt, discriminatorNoise)) {
+        this.transcription.enqueue(segment, this.config.squelch)
+      }
       return
     }
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
@@ -632,8 +633,9 @@ export class VhfRuntime extends EventEmitter<{
       }
     }
     this.#scanQuietMs = open ? 0 : this.#scanQuietMs + milliseconds
-    if (this.#scanQuietMs >= 1_200) {
-      this.replay.flush()
+    if (this.#scanQuietMs >= 5_000) {
+      const segment = this.replay.flush()
+      if (segment) this.transcription.enqueue(segment, this.config.squelch)
       this.#scanLocked = false
       this.#scanOpenMs = 0
       this.#scanQuietMs = 0
@@ -653,8 +655,9 @@ export class VhfRuntime extends EventEmitter<{
 
   #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
     if (this.#slotBScanLocked && capturedAt !== undefined) {
-      const segment = this.replayB.insert(chunk, capturedAt, discriminatorNoise)
-      if (segment) this.transcription.enqueue(segment, this.config.squelch)
+      for (const segment of this.replayB.prepend(chunk, capturedAt, discriminatorNoise)) {
+        this.transcription.enqueue(segment, this.config.squelch)
+      }
       return
     }
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
@@ -684,8 +687,9 @@ export class VhfRuntime extends EventEmitter<{
       }
     }
     this.#slotBScanQuietMs = open ? 0 : this.#slotBScanQuietMs + milliseconds
-    if (this.#slotBScanQuietMs >= 1_200) {
-      this.replayB.flush()
+    if (this.#slotBScanQuietMs >= 5_000) {
+      const segment = this.replayB.flush()
+      if (segment) this.transcription.enqueue(segment, this.config.squelch)
       this.#slotBScanLocked = false
       this.#slotBScanOpenMs = 0
       this.#slotBScanQuietMs = 0

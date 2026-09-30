@@ -59,6 +59,24 @@ test('joins consecutive replay PCM without WAV boundaries and stops at a retune'
   assert.equal(pcm[1]?.readUInt8(0), 2)
 })
 
+test('joins recovered and live audio in one stable recording without duplicating overlap', () => {
+  const replay = new RollingReplay(8_000, 60, 60, '68')
+  const now = Date.now()
+  replay.append(Buffer.alloc(16_000, 2), now, 0.1)
+  const id = replay.list()[0]!.id
+  // Six recovered seconds overlap the first live second by one second.
+  assert.deepEqual(replay.prepend(Buffer.alloc(96_000, 1), now - 5_000, 0.2), [])
+  replay.append(Buffer.alloc(16_000, 3), now + 1_000, 0.1)
+  const segment = replay.flush()!
+  assert.equal(segment.id, id)
+  assert.equal(replay.list().length, 1)
+  assert.equal(segment.durationSeconds, 7)
+  assert.deepEqual(segment.wav.subarray(44), Buffer.concat([
+    Buffer.alloc(80_000, 1), Buffer.alloc(16_000, 2), Buffer.alloc(16_000, 3)
+  ]))
+  assert.deepEqual(segment.qualitySpans.map((span) => span.bytes), [80_000, 16_000, 16_000])
+})
+
 test('exposes a growing storage slice immediately with a stable playable id', async () => {
   const replay = new RollingReplay(8_000, 60, 120, 'WX4')
   replay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 8, 29), 0.10)
