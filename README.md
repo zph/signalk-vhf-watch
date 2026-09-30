@@ -33,6 +33,14 @@ only low-rate PCM crosses into JavaScript. Independent NFM streams provide the s
 channel and an uninterrupted 24 kHz Channel 70 DSC decoder. Changing voice channels inside the
 capture window does not restart or retune the hardware.
 
+Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
+filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM
+discrimination. A slow residual-carrier tracker removes up to 1.5 kHz of tuner error without chasing
+voice modulation. The polar discriminator is inherently amplitude-limited; an additional amplitude
+normalizer would not change its phase output, so the sidecar instead suppresses only numerically
+empty IQ samples. Status exposes measured carrier offsets and the fraction of ADC bytes near the
+converter rails to support PPM and manual-gain tuning.
+
 Select the tuner by its stable serial number when possible; a numeric device index is retained for
 single-SDR and backward-compatible configurations. Set the receiver's measured PPM correction in
 the plugin configuration. If the capture process or USB device fails, VHF Watch retries with bounded
@@ -41,7 +49,11 @@ channelizer cannot keep up, so a trial can distinguish quiet RF from an unhealth
 
 Marine mode is centered at 156.75 MHz. Its 2.4 MHz window covers Channel 70, Channel 16, and
 the 156–157.425 MHz simplex marine voice range simultaneously. A live Raspberry Pi trial sustained
-this native dual-channel DSP with more than 30× processing headroom and no RTL-SDR sample loss.
+the original native dual-channel DSP with more than 30× processing headroom and no RTL-SDR sample
+loss. The stronger two-stage FIR path processes a 60-second, 2.4 MS/s dual-channel capture in about
+19 seconds on the same Pi 5, retaining roughly 3.2× real-time headroom with under 8 MiB resident
+memory. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
+about 14% while preserving speech peaks and the complete one-minute output.
 Duplex coast-side and weather channels around 160–162 MHz are outside that instantaneous window.
 Selecting one in fixed Slot A mode switches the same SDR into single-frequency reception centered on
 that channel; Slot B, scanning, and Channel 70 DSC are visibly paused until Slot A returns to a marine

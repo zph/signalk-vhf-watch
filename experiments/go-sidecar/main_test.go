@@ -85,3 +85,58 @@ func TestAudioLimiterPreservesVoiceGainWithoutHardClipping(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelFIRRejectsAnAdjacentMarineCarrier(t *testing.T) {
+	response := func(frequencyHz float64) float64 {
+		filter := newComplexFIRDecimator(480_000, 9_000, 511, 5)
+		var phase, sumSquares float64
+		var count int
+		for index := 0; index < 30_000; index++ {
+			phase += 2 * math.Pi * frequencyHz / 480_000
+			i, q, ready := filter.push(math.Cos(phase), math.Sin(phase))
+			if ready && index > 2_000 {
+				sumSquares += i*i + q*q
+				count++
+			}
+		}
+		return math.Sqrt(sumSquares / float64(count))
+	}
+	passband := response(2_100)
+	adjacent := response(25_000)
+	if passband < 0.95 {
+		t.Fatalf("2100 Hz passband response = %.4f, want >= 0.95", passband)
+	}
+	if ratio := adjacent / passband; ratio > 0.01 {
+		t.Fatalf("25 kHz adjacent response ratio = %.6f, want <= 0.01", ratio)
+	}
+}
+
+func TestPolarDiscriminatorIsAmplitudeInvariantAndTracksCarrierOffset(t *testing.T) {
+	constant := func(amplitude func(int) float64) *channelizer {
+		channel, err := newChannelizer(2_400_000, 16_000, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var phase float64
+		for index := 0; index < channelRate*8; index++ {
+			phase += 2 * math.Pi * 300 / channelRate
+			magnitude := amplitude(index)
+			channel.discriminate(magnitude*math.Cos(phase), magnitude*math.Sin(phase))
+		}
+		return channel
+	}
+	fixed := constant(func(int) float64 { return 1 })
+	varying := constant(func(index int) float64 { return 0.2 + 0.8*float64(index%97)/96 })
+	if difference := math.Abs(fixed.carrierOffsetHz() - varying.carrierOffsetHz()); difference > 1e-6 {
+		t.Fatalf("amplitude changed carrier estimate by %.9f Hz", difference)
+	}
+	if offset := fixed.carrierOffsetHz(); offset < 290 || offset > 301 {
+		t.Fatalf("tracked carrier offset = %.3f Hz, want approximately 300 Hz", offset)
+	}
+}
+
+func TestCountsPotentialIQClippingAtConverterEdges(t *testing.T) {
+	if count := countIQEdgeBytes([]byte{0, 1, 3, 4, 128, 251, 252, 254, 255}); count != 6 {
+		t.Fatalf("edge count = %d, want 6", count)
+	}
+}

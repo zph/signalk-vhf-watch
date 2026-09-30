@@ -25,6 +25,7 @@ const (
 	frameDSC    byte = 2
 	frameState  byte = 3
 	frameVoiceB byte = 4
+	channelRate      = 96_000
 )
 
 var normalizedIQ = func() [256]float64 {
@@ -36,30 +37,115 @@ var normalizedIQ = func() [256]float64 {
 }()
 
 type channelizer struct {
-	inputRate, outputRate, firstDecimation, secondDecimation   int
-	oscillatorI, oscillatorQ                                   []float64
-	oscillatorIndex                                            int
-	mixI, mixQ                                                 float64
-	mixCount                                                   int
-	filterI1, filterQ1, filterI2, filterQ2, filterI3, filterQ3 float64
-	previousI, previousQ, audioSum, deemphasis, level          float64
-	audioCount, outputSamples                                  int64
-	checksum                                                   float64
-	squelch                                                    int
+	inputRate, outputRate, audioDecimation      int
+	oscillatorI, oscillatorQ                    []float64
+	oscillatorIndex                             int
+	firstRF, channelRF                          *complexFIRDecimator
+	previousI, previousQ, carrierBias, audioSum float64
+	carrierAlpha, maximumCarrierBias            float64
+	deemphasis, level                           float64
+	audioCount, outputSamples                   int64
+	checksum                                    float64
+	squelch                                     int
+	previousValid                               bool
+}
+
+type complexFIRDecimator struct {
+	coefficients []float64
+	historyI     []float64
+	historyQ     []float64
+	writeIndex   int
+	decimation   int
+	count        int
+}
+
+func lowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
+	if taps < 3 || taps%2 == 0 {
+		panic("FIR tap count must be odd and at least three")
+	}
+	coefficients := make([]float64, taps)
+	middle := float64(taps-1) / 2
+	normalizedCutoff := float64(cutoffHz) / float64(sampleRate)
+	var sum float64
+	for index := range coefficients {
+		distance := float64(index) - middle
+		value := 2 * normalizedCutoff
+		if distance != 0 {
+			value = math.Sin(2*math.Pi*normalizedCutoff*distance) / (math.Pi * distance)
+		}
+		// A Blackman window trades a little transition width for strong rejection of aliased
+		// wideband noise and adjacent marine channels.
+		window := 0.42 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(taps-1)) +
+			0.08*math.Cos(4*math.Pi*float64(index)/float64(taps-1))
+		coefficients[index] = value * window
+		sum += coefficients[index]
+	}
+	for index := range coefficients {
+		coefficients[index] /= sum
+	}
+	return coefficients
+}
+
+func newComplexFIRDecimator(sampleRate, cutoffHz, taps, decimation int) *complexFIRDecimator {
+	coefficients := lowpassCoefficients(sampleRate, cutoffHz, taps)
+	return &complexFIRDecimator{
+		coefficients: coefficients,
+		historyI:     make([]float64, taps), historyQ: make([]float64, taps),
+		decimation: decimation,
+	}
+}
+
+func (f *complexFIRDecimator) reset() {
+	clear(f.historyI)
+	clear(f.historyQ)
+	f.writeIndex, f.count = 0, 0
+}
+
+func (f *complexFIRDecimator) push(inputI, inputQ float64) (outputI, outputQ float64, ready bool) {
+	f.historyI[f.writeIndex], f.historyQ[f.writeIndex] = inputI, inputQ
+	f.writeIndex++
+	if f.writeIndex == len(f.coefficients) {
+		f.writeIndex = 0
+	}
+	f.count++
+	if f.count < f.decimation {
+		return 0, 0, false
+	}
+	f.count = 0
+	historyIndex := f.writeIndex - 1
+	if historyIndex < 0 {
+		historyIndex = len(f.coefficients) - 1
+	}
+	for _, coefficient := range f.coefficients {
+		outputI += coefficient * f.historyI[historyIndex]
+		outputQ += coefficient * f.historyQ[historyIndex]
+		historyIndex--
+		if historyIndex < 0 {
+			historyIndex = len(f.coefficients) - 1
+		}
+	}
+	return outputI, outputQ, true
 }
 
 func newChannelizer(inputRate, outputRate, offsetHz int, squelch ...int) (*channelizer, error) {
-	first := inputRate / 96_000
-	if first == 0 || inputRate%96_000 != 0 {
+	return newChannelizerWithRFCutoff(inputRate, outputRate, offsetHz, 9_000, squelch...)
+}
+
+func newChannelizerWithRFCutoff(inputRate, outputRate, offsetHz, rfCutoffHz int, squelch ...int) (*channelizer, error) {
+	const firstRFRate = 480_000
+	if inputRate%firstRFRate != 0 || firstRFRate%channelRate != 0 {
 		return nil, fmt.Errorf("input rate %d must be divisible by 96000", inputRate)
 	}
-	intermediate := inputRate / first
-	if intermediate%outputRate != 0 {
-		return nil, fmt.Errorf("intermediate rate %d does not divide output rate %d", intermediate, outputRate)
+	if channelRate%outputRate != 0 {
+		return nil, fmt.Errorf("channel rate %d does not divide output rate %d", channelRate, outputRate)
 	}
 	value := &channelizer{
-		inputRate: inputRate, outputRate: outputRate, firstDecimation: first,
-		secondDecimation: intermediate / outputRate, level: math.Pi / 2,
+		inputRate: inputRate, outputRate: outputRate,
+		audioDecimation: channelRate / outputRate, level: math.Pi / 2,
+		firstRF:            newComplexFIRDecimator(inputRate, 120_000, 63, inputRate/firstRFRate),
+		channelRF:          newComplexFIRDecimator(firstRFRate, rfCutoffHz, 511, firstRFRate/channelRate),
+		carrierAlpha:       1 - math.Exp(-1/(float64(channelRate)*2.0)),
+		maximumCarrierBias: 2 * math.Pi * 1_500 / channelRate,
 	}
 	if len(squelch) > 0 {
 		value.squelch = squelch[0]
@@ -79,46 +165,39 @@ func (c *channelizer) tune(offsetHz int) {
 		c.oscillatorI[index], c.oscillatorQ[index] = math.Cos(phase), math.Sin(phase)
 	}
 	c.oscillatorIndex = 0
-	c.mixI, c.mixQ, c.mixCount = 0, 0, 0
-	c.filterI1, c.filterQ1, c.filterI2, c.filterQ2, c.filterI3, c.filterQ3 = 0, 0, 0, 0, 0, 0
-	c.previousI, c.previousQ, c.audioSum, c.deemphasis, c.audioCount = 0, 0, 0, 0, 0
+	c.firstRF.reset()
+	c.channelRF.reset()
+	c.previousI, c.previousQ, c.carrierBias = 0, 0, 0
+	c.audioSum, c.deemphasis, c.audioCount = 0, 0, 0
+	c.previousValid = false
 	c.level = math.Pi / 2
 }
 
 func (c *channelizer) process(iq []byte) []int16 {
-	output := make([]int16, 0, len(iq)/2/c.firstDecimation/c.secondDecimation+1)
-	intermediateRate := float64(c.inputRate / c.firstDecimation)
-	rfAlpha := 1 - math.Exp(-2*math.Pi*12_500/intermediateRate)
+	output := make([]int16, 0, len(iq)/2/(c.inputRate/channelRate)/c.audioDecimation+1)
 	deAlpha := 1 - math.Exp(-1/(float64(c.outputRate)*75e-6))
 	for index := 0; index+1 < len(iq); index += 2 {
 		sourceI, sourceQ := normalizedIQ[iq[index]], normalizedIQ[iq[index+1]]
 		oscillatorI, oscillatorQ := c.oscillatorI[c.oscillatorIndex], c.oscillatorQ[c.oscillatorIndex]
-		c.mixI += sourceI*oscillatorI - sourceQ*oscillatorQ
-		c.mixQ += sourceI*oscillatorQ + sourceQ*oscillatorI
+		mixedI := sourceI*oscillatorI - sourceQ*oscillatorQ
+		mixedQ := sourceI*oscillatorQ + sourceQ*oscillatorI
 		c.oscillatorIndex++
 		if c.oscillatorIndex == len(c.oscillatorI) {
 			c.oscillatorIndex = 0
 		}
-		c.mixCount++
-		if c.mixCount < c.firstDecimation {
+		firstI, firstQ, ready := c.firstRF.push(mixedI, mixedQ)
+		if !ready {
 			continue
 		}
-		mixedI, mixedQ := c.mixI/float64(c.mixCount), c.mixQ/float64(c.mixCount)
-		c.mixI, c.mixQ, c.mixCount = 0, 0, 0
-		c.filterI1 += rfAlpha * (mixedI - c.filterI1)
-		c.filterQ1 += rfAlpha * (mixedQ - c.filterQ1)
-		c.filterI2 += rfAlpha * (c.filterI1 - c.filterI2)
-		c.filterQ2 += rfAlpha * (c.filterQ1 - c.filterQ2)
-		c.filterI3 += rfAlpha * (c.filterI2 - c.filterI3)
-		c.filterQ3 += rfAlpha * (c.filterQ2 - c.filterQ3)
-		cross := c.previousI*c.filterQ3 - c.previousQ*c.filterI3
-		dot := c.previousI*c.filterI3 + c.previousQ*c.filterQ3
-		c.previousI, c.previousQ = c.filterI3, c.filterQ3
-		demodulated := math.Atan2(cross, dot)
+		filteredI, filteredQ, ready := c.channelRF.push(firstI, firstQ)
+		if !ready {
+			continue
+		}
+		demodulated := c.discriminate(filteredI, filteredQ)
 		c.level = c.level*0.995 + math.Abs(demodulated)*0.005
 		c.audioSum += demodulated
 		c.audioCount++
-		if c.audioCount < int64(c.secondDecimation) {
+		if c.audioCount < int64(c.audioDecimation) {
 			continue
 		}
 		sample := c.audioSum / float64(c.audioCount)
@@ -131,6 +210,30 @@ func (c *channelizer) process(iq []byte) []int16 {
 		output = append(output, softLimitAudio(c.deemphasis))
 	}
 	return output
+}
+
+func (c *channelizer) discriminate(filteredI, filteredQ float64) float64 {
+	// Polar FM discrimination is already an ideal amplitude limiter: scaling either complex
+	// sample by a positive magnitude multiplies cross and dot equally, leaving atan2 unchanged.
+	// Avoid fabricating phase only when the filtered magnitude is numerically empty.
+	magnitudeSquared := filteredI*filteredI + filteredQ*filteredQ
+	rawPhase := 0.0
+	if magnitudeSquared >= 1e-18 {
+		if c.previousValid {
+			cross := c.previousI*filteredQ - c.previousQ*filteredI
+			dot := c.previousI*filteredI + c.previousQ*filteredQ
+			rawPhase = math.Atan2(cross, dot)
+		}
+		c.previousI, c.previousQ, c.previousValid = filteredI, filteredQ, true
+	}
+	carrierError := math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
+	c.carrierBias += c.carrierAlpha * carrierError
+	c.carrierBias = math.Max(-c.maximumCarrierBias, math.Min(c.maximumCarrierBias, c.carrierBias))
+	return math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
+}
+
+func (c *channelizer) carrierOffsetHz() float64 {
+	return c.carrierBias * channelRate / (2 * math.Pi)
 }
 
 func softLimitAudio(sample float64) int16 {
@@ -150,12 +253,16 @@ type report struct {
 	DSCAudioSamples   int64   `json:"dsc_audio_samples"`
 	VoiceLevel        float64 `json:"voice_level"`
 	DSCLevel          float64 `json:"dsc_level"`
+	VoiceCarrierHz    float64 `json:"voice_carrier_offset_hz"`
+	DSCCarrierHz      float64 `json:"dsc_carrier_offset_hz"`
+	IQEdgeFraction    float64 `json:"iq_edge_fraction"`
 	DSPChecksum       float64 `json:"dsp_checksum"`
 }
 
 type options struct {
 	mode, rtlPath, device                                          string
 	sampleRate, center, voice, dsc, slotB, audioRate, ppm, squelch int
+	rfCutoffHz                                                     int
 	gain                                                           float64
 	gainSet                                                        bool
 }
@@ -173,6 +280,7 @@ func main() {
 	flag.IntVar(&opts.audioRate, "audio-rate", 16_000, "voice PCM sample rate")
 	flag.IntVar(&opts.ppm, "ppm", 0, "frequency correction")
 	flag.IntVar(&opts.squelch, "squelch", 20, "voice squelch level")
+	flag.IntVar(&opts.rfCutoffHz, "rf-cutoff", 9_000, "pre-demodulation channel low-pass cutoff in Hz")
 	flag.Func("gain", "manual gain in dB", func(value string) error {
 		parsed, err := strconv.ParseFloat(value, 64)
 		if err == nil {
@@ -195,7 +303,7 @@ func main() {
 }
 
 func runProbe(opts options, input io.Reader, output io.Writer) error {
-	voice, err := newChannelizer(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.squelch)
+	voice, err := newChannelizerWithRFCutoff(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.rfCutoffHz, opts.squelch)
 	if err != nil {
 		return err
 	}
@@ -203,18 +311,19 @@ func runProbe(opts options, input io.Reader, output io.Writer) error {
 	if opts.slotB == opts.dsc {
 		slotBRate = 24_000
 	}
-	dsc, err := newChannelizer(opts.sampleRate, slotBRate, opts.slotB-opts.center, 0)
+	dsc, err := newChannelizerWithRFCutoff(opts.sampleRate, slotBRate, opts.slotB-opts.center, opts.rfCutoffHz, 0)
 	if err != nil {
 		return err
 	}
 	buffer := make([]byte, 1024*1024)
-	var bytesRead int64
+	var bytesRead, edgeBytes int64
 	var dspTime time.Duration
 	started := time.Now()
 	for {
 		count, readErr := input.Read(buffer)
 		if count > 0 {
 			count -= count % 2
+			edgeBytes += countIQEdgeBytes(buffer[:count])
 			began := time.Now()
 			processBoth(voice, dsc, buffer[:count])
 			dspTime += time.Since(began)
@@ -228,14 +337,14 @@ func runProbe(opts options, input io.Reader, output io.Writer) error {
 		}
 	}
 	elapsed, samples := time.Since(started).Seconds(), bytesRead/2
-	result := report{IQSamples: samples, ElapsedSeconds: elapsed, SamplesPerSecond: float64(samples) / elapsed, RealTimeRatio: (float64(samples) / elapsed) / float64(opts.sampleRate), DSPSeconds: dspTime.Seconds(), DSPHeadroomRatio: (float64(samples) / float64(opts.sampleRate)) / dspTime.Seconds(), VoiceAudioSamples: voice.outputSamples, DSCAudioSamples: dsc.outputSamples, VoiceLevel: voice.level, DSCLevel: dsc.level, DSPChecksum: voice.checksum + dsc.checksum}
+	result := report{IQSamples: samples, ElapsedSeconds: elapsed, SamplesPerSecond: float64(samples) / elapsed, RealTimeRatio: (float64(samples) / elapsed) / float64(opts.sampleRate), DSPSeconds: dspTime.Seconds(), DSPHeadroomRatio: (float64(samples) / float64(opts.sampleRate)) / dspTime.Seconds(), VoiceAudioSamples: voice.outputSamples, DSCAudioSamples: dsc.outputSamples, VoiceLevel: voice.level, DSCLevel: dsc.level, VoiceCarrierHz: voice.carrierOffsetHz(), DSCCarrierHz: dsc.carrierOffsetHz(), IQEdgeFraction: float64(edgeBytes) / float64(bytesRead), DSPChecksum: voice.checksum + dsc.checksum}
 	encoder := json.NewEncoder(output)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(result)
 }
 
 func runStream(opts options) error {
-	voice, err := newChannelizer(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.squelch)
+	voice, err := newChannelizerWithRFCutoff(opts.sampleRate, opts.audioRate, opts.voice-opts.center, opts.rfCutoffHz, opts.squelch)
 	if err != nil {
 		return err
 	}
@@ -243,7 +352,7 @@ func runStream(opts options) error {
 	if opts.slotB == opts.dsc {
 		slotBRate = 24_000
 	}
-	dsc, err := newChannelizer(opts.sampleRate, slotBRate, opts.slotB-opts.center, 0)
+	dsc, err := newChannelizerWithRFCutoff(opts.sampleRate, slotBRate, opts.slotB-opts.center, opts.rfCutoffHz, 0)
 	if err != nil {
 		return err
 	}
@@ -275,6 +384,7 @@ func runStream(opts options) error {
 	tunes := make(chan int, 1)
 	go readControls(os.Stdin, tunes)
 	buffer := make([]byte, 1024*1024)
+	var iqBytes, edgeBytes int64
 	lastState := time.Time{}
 	for {
 		select {
@@ -286,6 +396,8 @@ func runStream(opts options) error {
 		count, readErr := iq.Read(buffer)
 		if count > 0 {
 			count -= count % 2
+			iqBytes += int64(count)
+			edgeBytes += countIQEdgeBytes(buffer[:count])
 			voicePCM, dscPCM := processBoth(voice, dsc, buffer[:count])
 			if err := writeVoiceFrame(os.Stdout, voicePCM, voice.level); err != nil {
 				_ = command.Process.Kill()
@@ -305,7 +417,7 @@ func runStream(opts options) error {
 				return err
 			}
 			if time.Since(lastState) >= time.Second {
-				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "slot_b_frequency_hz": opts.slotB, "slot_b_level": dsc.level, "dsc_level": dsc.level, "iq_samples": voice.outputSamples * int64(opts.sampleRate) / int64(opts.audioRate)})
+				state, _ := json.Marshal(map[string]any{"voice_frequency_hz": opts.voice, "voice_level": voice.level, "voice_carrier_offset_hz": voice.carrierOffsetHz(), "slot_b_frequency_hz": opts.slotB, "slot_b_level": dsc.level, "slot_b_carrier_offset_hz": dsc.carrierOffsetHz(), "dsc_level": dsc.level, "iq_edge_fraction": float64(edgeBytes) / float64(iqBytes), "iq_samples": iqBytes / 2})
 				if err := writeFrame(os.Stdout, frameState, state); err != nil {
 					_ = command.Process.Kill()
 					return err
@@ -324,6 +436,16 @@ func runStream(opts options) error {
 			return readErr
 		}
 	}
+}
+
+func countIQEdgeBytes(iq []byte) int64 {
+	var count int64
+	for _, value := range iq {
+		if value <= 3 || value >= 252 {
+			count++
+		}
+	}
+	return count
 }
 
 func processBoth(voice, dsc *channelizer, chunk []byte) (voicePCM, dscPCM []int16) {

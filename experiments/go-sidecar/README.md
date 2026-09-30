@@ -8,7 +8,7 @@ and 24 kHz Channel 70 DSC, and emits framed PCM to the Signal K plugin. JavaScri
 Build a static Raspberry Pi binary from macOS or Linux:
 
 ```sh
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o vhf-go-sidecar .
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o vhf-go-sidecar .
 ```
 
 The plugin starts stream mode itself. Its stdin accepts `tune <frequency-hz>` commands, allowing an
@@ -41,7 +41,19 @@ exact audio counts expected for 20 seconds:
 This establishes that the Raspberry Pi and tuner can sustain the desired 2.4 MS/s dual-channel
 workload. The dropped-IQ problem is specific to the JavaScript implementation.
 
-The next sidecar stage will add inexpensive in-band channel-presence detectors, prioritize Channel
-16 audio, and demodulate other active channels on demand. A bounded
-full-band RAM ring plus triggered narrowband IQ/audio recordings can preserve pre-roll and permit
-later decoder experiments without continuously writing roughly 17 GB/hour of full CU8 IQ.
+The production sidecar now replaces the original integrate-and-dump channelizer with two stages of
+Blackman-windowed FIR filtering. Its default 9 kHz pre-demodulation passband, slow residual-carrier
+tracking, and controlled decimation were selected by replaying the same 60-second NOAA CU8 capture
+through the old and candidate paths. The selected filter reduced quiet-window PCM RMS about 14%,
+retained all 960,000 expected 16 kHz samples, and completed the dual-channel replay in about 19
+seconds (roughly 3.2x real-time headroom) on the Pi 5. `--rf-cutoff` remains available for bounded
+comparison trials.
+
+The polar phase discriminator is already invariant to positive IQ amplitude scaling, so an explicit
+amplitude limiter produced no different demodulated samples. Instead, near-zero filtered samples are
+handled without inventing phase. Stream status reports residual carrier offsets and the CU8 edge-byte
+fraction so PPM and front-end gain can be tuned from measured data rather than by aggressively
+blanking valid RF peaks.
+
+A bounded full-band RAM ring plus triggered narrowband IQ/audio recordings could preserve pre-roll
+for later decoder experiments without continuously writing roughly 17 GB/hour of full CU8 IQ.

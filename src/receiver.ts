@@ -28,6 +28,9 @@ export interface ReceiverMetrics {
   voiceDiscriminatorNoise?: number
   slotBDiscriminatorNoise?: number
   dscDiscriminatorNoise?: number
+  voiceCarrierOffsetHz?: number
+  slotBCarrierOffsetHz?: number
+  iqEdgeFraction?: number
 }
 
 export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
@@ -161,10 +164,16 @@ export class NativeSidecarReceiver extends AudioReceiver {
               voice_level?: number
               slot_b_level?: number
               dsc_level?: number
+              voice_carrier_offset_hz?: number
+              slot_b_carrier_offset_hz?: number
+              iq_edge_fraction?: number
             }
             this.#metrics.voiceDiscriminatorNoise = state.voice_level
             this.#metrics.slotBDiscriminatorNoise = state.slot_b_level
             this.#metrics.dscDiscriminatorNoise = state.dsc_level
+            this.#metrics.voiceCarrierOffsetHz = state.voice_carrier_offset_hz
+            this.#metrics.slotBCarrierOffsetHz = state.slot_b_carrier_offset_hz
+            this.#metrics.iqEdgeFraction = state.iq_edge_fraction
             this.emit('metrics', { ...this.#metrics })
             this.emit('state', this.#singleFrequency
               ? `Single-frequency capture · Slot A ${this.#channel.label} · Slot B + DSC paused`
