@@ -114,11 +114,15 @@ export class VhfRuntime extends EventEmitter<{
   #scanQuietMs = 0
   #scanTimer?: ReturnType<typeof setTimeout>
   #scanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
+  #scanTargetedAt = 0
+  readonly #scanRejectedUntil = new Map<string, number>()
   #slotBScanLocked = false
   #slotBScanOpenMs = 0
   #slotBScanQuietMs = 0
   #slotBScanTimer?: ReturnType<typeof setTimeout>
   #slotBScanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
+  #slotBScanTargetedAt = 0
+  readonly #slotBScanRejectedUntil = new Map<string, number>()
   readonly #slotBActivityScores = new Map<string, number>()
   #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
@@ -659,9 +663,9 @@ export class VhfRuntime extends EventEmitter<{
     }
   }
 
-  #bestSpectrumChannel(candidates: VhfChannel[], excludedFrequency?: number): VhfChannel | undefined {
+  #bestSpectrumChannel(candidates: VhfChannel[], rejectedUntil: ReadonlyMap<string, number>, now: number, excludedFrequency?: number): VhfChannel | undefined {
     return candidates
-      .filter((channel) => channel.frequencyHz !== excludedFrequency)
+      .filter((channel) => channel.frequencyHz !== excludedFrequency && (rejectedUntil.get(channel.id) ?? 0) <= now)
       .map((channel) => ({ channel, score: (this.#spectrumActivityScores.get(channel.id) ?? 0) * (channel.id === '16' ? 1.2 : 1) }))
       .filter(({ score }) => score >= 0.8)
       .sort((left, right) => right.score - left.score)[0]?.channel
@@ -669,23 +673,37 @@ export class VhfRuntime extends EventEmitter<{
 
   #retargetSpectrumScans(): void {
     if (this.#singleFrequency || !(this.#receiver instanceof NativeSidecarReceiver)) return
+    const now = Date.now()
     if (this.#slotAMode === 'scan' && !this.#scanLocked) {
-      const next = this.#bestSpectrumChannel(this.#scanChannels().concat(channelById('16', this.#channelRegion)!), this.#slotB.id === '70' ? undefined : this.#slotB.frequencyHz)
+      if (this.#scanTargetedAt > 0 && now - this.#scanTargetedAt >= 1_500) {
+        this.#scanRejectedUntil.set(this.#channel.id, now + 8_000)
+        this.#scanTargetedAt = 0
+      }
+      const next = this.#bestSpectrumChannel(
+        this.#scanChannels().concat(channelById('16', this.#channelRegion)!), this.#scanRejectedUntil, now,
+        this.#slotB.id === '70' ? undefined : this.#slotB.frequencyHz
+      )
       if (next && next.frequencyHz !== this.#channel.frequencyHz) {
         this.#channel = next
         this.#scanOpenMs = 0
         this.#scanPreRoll = []
+        this.#scanTargetedAt = now
         this.#receiver.tune(next)
-      }
+      } else if (next && this.#scanTargetedAt === 0) this.#scanTargetedAt = now
     }
     if (this.#slotBMode === 'scan' && !this.#slotBScanLocked) {
-      const next = this.#bestSpectrumChannel(this.#slotBScanChannels(), this.#channel.frequencyHz)
+      if (this.#slotBScanTargetedAt > 0 && now - this.#slotBScanTargetedAt >= 1_500) {
+        this.#slotBScanRejectedUntil.set(this.#slotB.id, now + 8_000)
+        this.#slotBScanTargetedAt = 0
+      }
+      const next = this.#bestSpectrumChannel(this.#slotBScanChannels(), this.#slotBScanRejectedUntil, now, this.#channel.frequencyHz)
       if (next && next.frequencyHz !== this.#slotB.frequencyHz) {
         this.#slotB = next
         this.#slotBScanOpenMs = 0
         this.#slotBScanPreRoll = []
+        this.#slotBScanTargetedAt = now
         this.#receiver.tuneSlotB(next)
-      }
+      } else if (next && this.#slotBScanTargetedAt === 0) this.#slotBScanTargetedAt = now
     }
   }
 
