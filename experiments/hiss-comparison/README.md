@@ -31,5 +31,9 @@ python3 experiments/hiss-comparison/run.py \
 
 The noise model, thresholds, metrics, and selected Whisper setup are experimental choices. Results
 on this public control do not establish performance on marine radio speech or justify changing the
-production playback pipeline. Evaluate that only after the user authorizes the specific recordings
-and destination needed for an in-domain comparison.
+production playback pipeline. For an authorized, bounded in-domain trial, `run_vhf_in_situ.py`
+processes selected archived calls entirely on boat-pi and emits aggregate metrics without exporting
+audio or transcript text. See `VHF_IN_SITU_RESULTS.md`; that small trial is inconclusive about
+voice quality without ground truth and human listening. `analyze_vhf_waveforms.py` reproduces its
+raw-vs-output gain/correlation/residual diagnostics from the Pi-local trial artifacts without
+rerunning denoising or transcription.
