@@ -17,8 +17,12 @@ still need testing with weak real calls.
 
 Adaptive mode estimates a spectral noise floor from noise-like frames, applies smoothed Wiener-style
 gains, and limits audio to the voice band. It runs before the gate, so silence from squelch never
-contaminates its noise estimate. It adds approximately 32 ms latency and is off by default. This is
-an experiment for listening comparisons; it has not been validated on boat-pi audio.
+contaminates its noise estimate. It adds approximately 32 ms latency and is off by default. This
+remains an experiment for listening comparisons; it has not shown an overall transcription gain on
+boat-pi audio.
+
+[The paired Base Whisper evaluation](EVALUATION.md) found both recovered and lost speech. Keep
+transcription on the raw audio path; adaptive mode is for listening trials only.
 
 ```sh
 cd go-sidecar
