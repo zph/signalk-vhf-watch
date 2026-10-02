@@ -59,6 +59,71 @@ test('joins consecutive replay PCM without WAV boundaries and stops at a retune'
   assert.equal(pcm[1]?.readUInt8(0), 2)
 })
 
+test('playback cursor reads bounded chronological slices and stops at the first channel change', async () => {
+  const replay = new RollingReplay(8_000, 1, 60, '16')
+  const first = Buffer.alloc(16_000, 0x11)
+  const second = Buffer.alloc(16_000, 0x22)
+  const startedAt = Date.UTC(2026, 9, 2)
+  replay.append(Buffer.concat([first, second]), startedAt, 0.31)
+  const firstId = replay.list().slice().reverse()[0]!.id
+  replay.setChannel('WX4')
+  replay.append(Buffer.alloc(16_000, 0x33), startedAt + 2_000, 0.32)
+  let cursor = replay.playbackCursor(firstId)!
+  let payload
+  const output: Buffer[] = []
+  for (;;) {
+    const read = await replay.readPlaybackCursor(cursor, 6_000, payload)
+    if (read.kind === 'chunk') {
+      output.push(read.pcm)
+      cursor = read.cursor
+      payload = read.payload
+      if (read.after?.kind === 'advance') { cursor = read.after.cursor; payload = undefined }
+      else if (read.after?.kind === 'channel-change') break
+      continue
+    }
+    if (read.kind === 'advance') { cursor = read.cursor; payload = undefined; continue }
+    if (read.kind === 'edge') break
+    assert.equal(read.reason, 'channel-change')
+    break
+  }
+  assert.deepEqual(Buffer.concat(output), Buffer.concat([first, second]))
+  assert.equal(output.every((part) => part.length <= 6_000), true)
+})
+
+test('cursor preserves unread suffix when a pending segment becomes stored', async () => {
+  const replay = new RollingReplay(8_000, 1, 60, '16')
+  const first = Buffer.alloc(8_000, 0x41)
+  const suffix = Buffer.alloc(8_000, 0x42)
+  const startedAt = Date.UTC(2026, 9, 2)
+  replay.append(first, startedAt, 0.21)
+  const cursor = replay.playbackCursor(replay.list()[0]!.id)!
+  const initial = await replay.readPlaybackCursor(cursor, 6_000)
+  assert.equal(initial.kind, 'chunk')
+  if (initial.kind !== 'chunk') return
+  replay.append(suffix, startedAt + 500, 0.42)
+  const continuation = await replay.readPlaybackCursor(initial.cursor, 20_000, initial.payload)
+  assert.equal(continuation.kind, 'chunk')
+  if (continuation.kind !== 'chunk') return
+  assert.deepEqual(continuation.pcm, Buffer.concat([first, suffix]).subarray(6_000))
+  assert.equal(continuation.qualitySpans?.reduce((sum, span) => sum + span.bytes, 0), continuation.pcm.length)
+  assert.equal(continuation.after?.kind, 'edge')
+})
+
+test('cursor detects deletion and retroactive prepend identity changes', async () => {
+  const deleted = new RollingReplay(8_000, 1, 60, '16')
+  deleted.append(Buffer.alloc(16_000), Date.UTC(2026, 9, 2))
+  const cursor = deleted.playbackCursor(deleted.list()[0]!.id)!
+  assert.equal(deleted.delete(cursor.id), true)
+  assert.deepEqual(await deleted.readPlaybackCursor(cursor), { kind: 'end', reason: 'retired' })
+
+  const prepended = new RollingReplay(8_000, 60, 60, '68')
+  const startedAt = Date.UTC(2026, 9, 2)
+  prepended.append(Buffer.alloc(8_000), startedAt, 0.1)
+  const pending = prepended.playbackCursor(prepended.list()[0]!.id)!
+  prepended.prepend(Buffer.alloc(4_000), startedAt - 250, 0.2)
+  assert.deepEqual(await prepended.readPlaybackCursor(pending), { kind: 'end', reason: 'retired' })
+})
+
 test('joins recovered and live audio in one stable recording without duplicating overlap', () => {
   const replay = new RollingReplay(8_000, 60, 60, '68')
   const now = Date.now()

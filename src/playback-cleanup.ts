@@ -1,14 +1,14 @@
-export type PlaybackCleanup = 'raw' | 'voice' | 'comfort' | 'maximum' | 'strong' | 'rnnoise'
+export type LegacyPlaybackCleanup = 'raw' | 'voice' | 'comfort' | 'maximum' | 'strong' | 'rnnoise'
+export type PlaybackCleanup = LegacyPlaybackCleanup | 'modified'
+export type PlaybackSelection = 'raw' | 'modified'
 
-export function parsePlaybackCleanup(value: unknown): PlaybackCleanup {
-  return value === 'voice' || value === 'comfort' || value === 'maximum' || value === 'strong' || value === 'rnnoise'
-    ? value
-    : 'raw'
+export function parsePlaybackCleanup(value: unknown): PlaybackSelection {
+  return value === 'raw' ? 'raw' : 'modified'
 }
 
 export class PlaybackCleaner {
   readonly #sampleRate: number
-  readonly #mode: PlaybackCleanup
+  readonly #mode: LegacyPlaybackCleanup
   readonly #highPassAlpha: number
   readonly #lowPassAlpha: number
   readonly #squelchThreshold: number
@@ -22,7 +22,7 @@ export class PlaybackCleaner {
   #gain = 1
   #squelchHoldBlocks = 0
 
-  constructor(sampleRate: number, mode: PlaybackCleanup, squelch = 0) {
+  constructor(sampleRate: number, mode: LegacyPlaybackCleanup, squelch = 0) {
     this.#sampleRate = sampleRate
     this.#mode = mode
     const highPassHz = mode === 'strong' ? 350 : 250
@@ -89,10 +89,10 @@ export class PlaybackCleaner {
   }
 }
 
-export function cleanPlaybackPcm(pcm: Buffer, sampleRate: number, mode: PlaybackCleanup): Buffer {
+export function cleanPlaybackPcm(pcm: Buffer, sampleRate: number, mode: LegacyPlaybackCleanup): Buffer {
   return new PlaybackCleaner(sampleRate, mode).process(pcm)
 }
 
-export function cleanArchivedPlaybackPcm(pcm: Buffer, sampleRate: number, mode: PlaybackCleanup, squelch: number): Buffer {
+export function cleanArchivedPlaybackPcm(pcm: Buffer, sampleRate: number, mode: LegacyPlaybackCleanup, squelch: number): Buffer {
   return new PlaybackCleaner(sampleRate, mode, squelch).process(pcm)
 }

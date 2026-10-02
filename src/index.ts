@@ -10,9 +10,11 @@ import { TranscriptArchive } from './transcript-archive'
 import { NarrationManager } from './narration'
 import { TuningSettingsStore } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
+import { ModifiedPlayback } from './modified-playback'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
+  let modifiedPlayback: ModifiedPlayback | undefined
 
   return {
     id: 'signalk-vhf-watch',
@@ -38,6 +40,7 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       })
       const archive = new TranscriptArchive(path.join(app.getDataDirPath(), 'transcript-archive', 'transcripts.sqlite3'))
       const denoiser = new RnnoiseDenoiser()
+      modifiedPlayback = new ModifiedPlayback()
       const transcription = new TranscriptionManager(
         path.join(app.getDataDirPath(), 'transcription-settings.json'),
         undefined,
@@ -63,9 +66,11 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
     },
     stop: () => {
       runtime?.stop()
+      modifiedPlayback?.shutdown()
       runtime = undefined
+      modifiedPlayback = undefined
     },
-    registerWithRouter: (router) => registerRoutes(router, () => runtime),
+    registerWithRouter: (router) => registerRoutes(router, () => runtime, () => modifiedPlayback),
     getOpenApi: openApi,
     statusMessage: () => {
       const status = runtime?.status()

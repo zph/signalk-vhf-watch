@@ -32,6 +32,29 @@ export interface ReplaySegment {
   transcription?: ReplayTranscription
 }
 
+export interface ReplayPlaybackCursor {
+  id: number
+  slot: 'A' | 'B'
+  channel: string
+  startedAt: string
+  consumedBytes: number
+}
+
+export interface ReplayPlaybackPayload {
+  id: number
+  slot: 'A' | 'B'
+  channel: string
+  startedAt: string
+  pcm: Buffer
+  qualitySpans: ReplayQualitySpan[]
+}
+
+export type ReplayPlaybackRead =
+  | { kind: 'chunk'; cursor: ReplayPlaybackCursor; payload: ReplayPlaybackPayload; pcm: Buffer; qualitySpans?: ReplayQualitySpan[]; after?: { kind: 'advance'; cursor: ReplayPlaybackCursor } | { kind: 'edge' } | { kind: 'channel-change' } }
+  | { kind: 'edge'; cursor: ReplayPlaybackCursor }
+  | { kind: 'advance'; cursor: ReplayPlaybackCursor }
+  | { kind: 'end'; reason: 'retired' | 'channel-change' | 'decode-failed' }
+
 export type ReplaySegmentSummary = Omit<ReplaySegment, 'wav' | 'qualitySpans'> & {
   bytes: number
   minimumDiscriminatorNoise?: number
@@ -191,6 +214,128 @@ export class RollingReplay {
   get(id: number): ReplaySegment | undefined {
     return this.#segments.find((segment) => segment.id === id) ??
       (this.#pending.length >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
+  }
+
+  /** Capture an immutable raw snapshot synchronously before a replay-to-live handoff. */
+  snapshotFrom(id: number): ReplaySegment[] | undefined {
+    const pending = this.#pendingSegment()
+    const segments = pending ? [...this.#segments, pending] : this.#segments
+    const start = segments.findIndex((segment) => segment.id === id)
+    if (start < 0) return undefined
+    const channel = segments[start]!.channel
+    const contiguous: ReplaySegment[] = []
+    for (const segment of segments.slice(start)) {
+      if (segment.channel !== channel) break
+      contiguous.push(segment)
+    }
+    return contiguous.map((segment) => ({
+      ...segment,
+      // Stored payload buffers are immutable; retain references instead of duplicating
+      // an entire rolling archive on the event loop. Pending audio is materialized above.
+      wav: segment.wav,
+      ...(segment.opus ? { opus: segment.opus } : {}),
+      qualitySpans: segment.qualitySpans.map((span) => ({ ...span }))
+    }))
+  }
+
+  async snapshotPcm(segment: ReplaySegment): Promise<Buffer | undefined> {
+    if (segment.wav.length >= 44) return segment.wav.subarray(44)
+    const decoded = await this.#decodeOpus(segment)
+    return decoded ? Buffer.from(decoded) : undefined
+  }
+
+  playbackCursor(id: number): ReplayPlaybackCursor | undefined {
+    const segment = this.get(id)
+    if (!segment) return undefined
+    return { id: segment.id, slot: segment.slot, channel: segment.channel, startedAt: segment.startedAt, consumedBytes: 0 }
+  }
+
+  /** Read at most one small, immutable slice from the current retained segment. */
+  async readPlaybackCursor(
+    cursor: ReplayPlaybackCursor,
+    maximumBytes = 64_000,
+    prepared?: ReplayPlaybackPayload
+  ): Promise<ReplayPlaybackRead> {
+    const segment = this.get(cursor.id)
+    if (!segment || segment.startedAt !== cursor.startedAt) return { kind: 'end', reason: 'retired' }
+    if (segment.channel !== cursor.channel || segment.slot !== cursor.slot) return { kind: 'end', reason: 'channel-change' }
+    let payload = prepared
+    const segmentBytes = segment.wav.length >= 44
+      ? segment.wav.length - 44
+      : Math.round(segment.durationSeconds * this.#sampleRate) * 2
+    if (!payload || payload.id !== cursor.id || payload.startedAt !== cursor.startedAt || payload.pcm.length < segmentBytes) {
+      const snapshot: ReplaySegment = {
+        ...segment,
+        wav: segment.wav,
+        ...(segment.opus ? { opus: segment.opus } : {}),
+        qualitySpans: segment.qualitySpans.map((span) => ({ ...span }))
+      }
+      const pcm = snapshot.wav.length >= 44 ? snapshot.wav.subarray(44) : await this.#decodeOpus(snapshot)
+      if (!pcm) return { kind: 'end', reason: 'decode-failed' }
+      payload = {
+        id: cursor.id, slot: cursor.slot, channel: cursor.channel, startedAt: cursor.startedAt,
+        pcm, qualitySpans: snapshot.qualitySpans
+      }
+    }
+    const current = this.get(cursor.id)
+    if (!current || current.startedAt !== cursor.startedAt) return { kind: 'end', reason: 'retired' }
+    if (current.channel !== cursor.channel || current.slot !== cursor.slot) return { kind: 'end', reason: 'channel-change' }
+    if (cursor.consumedBytes > payload.pcm.length) return { kind: 'end', reason: 'retired' }
+    const limit = Math.max(2, Math.floor(maximumBytes / 2) * 2)
+    const end = Math.min(payload.pcm.length, cursor.consumedBytes + limit)
+    if (end > cursor.consumedBytes) {
+      const nextCursor = { ...cursor, consumedBytes: end }
+      const qualitySpans = this.#sliceQuality(payload.qualitySpans, cursor.consumedBytes, end)
+      let after: Extract<ReplayPlaybackRead, { kind: 'chunk' }>['after']
+      const pending = this.#pending.length >= 2 && cursor.id === this.#sequence + this.#sequenceStep
+      if (!pending && end === segmentBytes && end === payload.pcm.length) {
+        const next = this.#nextAfter(cursor.id)
+        after = next
+          ? next.channel === cursor.channel
+            ? { kind: 'advance', cursor: { ...cursor, id: next.id, startedAt: next.startedAt, consumedBytes: 0 } }
+            : { kind: 'channel-change' }
+          : { kind: 'edge' }
+      }
+      return {
+        kind: 'chunk', cursor: nextCursor, payload, pcm: payload.pcm.subarray(cursor.consumedBytes, end),
+        ...(qualitySpans.reduce((sum, span) => sum + span.bytes, 0) === end - cursor.consumedBytes ? { qualitySpans } : {}),
+        ...(after ? { after } : {})
+      }
+    }
+    if (this.#pending.length >= 2 && cursor.id === this.#sequence + this.#sequenceStep) {
+      return { kind: 'edge', cursor }
+    }
+    const next = this.#nextAfter(cursor.id)
+    if (!next) return { kind: 'edge', cursor }
+    if (next.channel !== cursor.channel) return { kind: 'end', reason: 'channel-change' }
+    return { kind: 'advance', cursor: { ...cursor, id: next.id, startedAt: next.startedAt, consumedBytes: 0 } }
+  }
+
+  /** Synchronous edge check to pair atomically with a runtime audio listener. */
+  playbackCursorHasData(cursor: ReplayPlaybackCursor): boolean {
+    const segment = this.get(cursor.id)
+    if (!segment || segment.startedAt !== cursor.startedAt) return true
+    const sampleBytes = segment.wav.length >= 44 ? segment.wav.length - 44 : Math.round(segment.durationSeconds * this.#sampleRate) * 2
+    if (sampleBytes > cursor.consumedBytes) return true
+    const next = this.#nextAfter(cursor.id)
+    return next !== undefined
+  }
+
+  playbackCursorSuccessor(cursor: ReplayPlaybackCursor): ReplayPlaybackCursor | undefined {
+    const current = this.get(cursor.id)
+    if (!current || current.startedAt !== cursor.startedAt || current.channel !== cursor.channel) return undefined
+    const next = this.#nextAfter(cursor.id)
+    if (!next || next.channel !== cursor.channel) return undefined
+    return { ...cursor, id: next.id, startedAt: next.startedAt, consumedBytes: 0 }
+  }
+
+  #nextAfter(id: number): ReplaySegment | undefined {
+    const pending = this.#pendingSegment()
+    const segments = pending ? [...this.#segments, pending] : this.#segments
+    const current = segments.find((segment) => segment.id === id)
+    if (!current) return undefined
+    const index = segments.indexOf(current)
+    return segments[index + 1]
   }
 
   async wavFor(id: number, squelch: number): Promise<Buffer | undefined> {

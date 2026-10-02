@@ -7,8 +7,11 @@ import type { VhfRuntime } from './runtime'
 import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
+import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
+import type { TranscriptArchiveRecord } from './transcript-archive'
+import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 
-const UI_VERSION = 40
+const UI_VERSION = 44
 
 interface ByteRange {
   start: number
@@ -125,7 +128,38 @@ function ffmpegCleanerOrThrow(runtime: VhfRuntime, cleanup: FfmpegPlaybackCleanu
   return runtime.denoiser
 }
 
-export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntime | undefined): void {
+function modifiedOr503(getPlayback: () => ModifiedPlayback | undefined, response: Response): ModifiedPlayback | undefined {
+  const playback = getPlayback()
+  if (!playback) response.status(503).json({ error: 'Modified playback is unavailable; choose Raw' })
+  return playback
+}
+
+function playbackFailure(response: Response, error: unknown): void {
+  if (response.destroyed || response.writableEnded) return
+  const status = error instanceof ModifiedPlaybackError ? error.status : 503
+  response.status(status).json({ error: error instanceof Error ? error.message : String(error) })
+}
+
+function responseAbortSignal(response: Response): AbortSignal {
+  const controller = new AbortController()
+  response.once('close', () => {
+    if (!response.writableEnded) controller.abort(new ModifiedPlaybackError('Modified playback request was cancelled'))
+  })
+  return controller.signal
+}
+
+function sameArchiveSource(left: TranscriptArchiveRecord | undefined, right: TranscriptArchiveRecord): boolean {
+  return Boolean(left && right && left.id === right.id && left.startedAt === right.startedAt &&
+    left.endedAt === right.endedAt && left.sampleRate === right.sampleRate && left.audioBytes === right.audioBytes)
+}
+
+export function registerRoutes(
+  router: PluginRouter,
+  getRuntime: () => VhfRuntime | undefined,
+  getModifiedPlayback?: () => ModifiedPlayback | undefined
+): void {
+  const fallbackModifiedPlayback = new ModifiedPlayback()
+  const getPlayback = getModifiedPlayback ?? (() => fallbackModifiedPlayback)
   const read = router.access('readonly')
   read.get('/api/status', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -186,7 +220,16 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const sourcePcm = archivedPlaybackPcm(record, wav, activityOnly)
     let playbackWav: Buffer
     try {
-      if (isFfmpegPlaybackCleanup(cleanup)) {
+      if (cleanup === 'modified') {
+        const playback = modifiedOr503(getPlayback, response)
+        if (!playback) return
+        const processed = await playback.processPcm(sourcePcm, record.sampleRate, {
+          cacheKey: `archive:${id}:${activityOnly ? 'activity' : 'full'}:modified-v1`,
+          stillCurrent: () => sameArchiveSource(runtime.transcription.archiveRecord(id), record),
+          signal: responseAbortSignal(response)
+        })
+        playbackWav = pcmToWav(processed, record.sampleRate)
+      } else if (isFfmpegPlaybackCleanup(cleanup)) {
         const gated = cleanArchivedPlaybackPcm(sourcePcm, record.sampleRate, 'raw', squelch)
         playbackWav = pcmToWav(await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(gated, record.sampleRate, cleanup), record.sampleRate)
       } else {
@@ -227,8 +270,28 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       return
     }
     const activityOnly = request.query.activity === '1'
-    const pcm = Buffer.concat((wavs as Buffer[]).map((wav, index) => archivedPlaybackPcm(resolved[index]!, wav, activityOnly)))
+    const sourceChunks = (wavs as Buffer[]).map((wav, index) => archivedPlaybackPcm(resolved[index]!, wav, activityOnly))
+    const sourceBytes = sourceChunks.reduce((sum, chunk) => sum + chunk.length, 0)
+    if (sourceBytes > 20 * 1024 * 1024) {
+      response.status(413).json({ error: 'Modified playback session exceeds the 20 MiB processing limit' })
+      return
+    }
+    const pcm = Buffer.concat(sourceChunks, sourceBytes)
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    if (cleanup === 'modified') {
+      const playback = modifiedOr503(getPlayback, response)
+      if (!playback) return
+      try {
+        const processed = await playback.processPcm(pcm, first.sampleRate, {
+          cacheKey: `archive-session:${ids!.join(',')}:${activityOnly ? 'activity' : 'full'}:modified-v1`,
+          stillCurrent: () => ids!.every((id, index) => sameArchiveSource(runtime.transcription.archiveRecord(id), resolved[index]!)),
+          signal: responseAbortSignal(response)
+        })
+        sendSeekableWav(request, response, pcmToWav(processed, first.sampleRate),
+          `vhf-transcript-${first.channel}-session.wav`, 'no-store, private')
+      } catch (error) { playbackFailure(response, error) }
+      return
+    }
     const squelch = archiveSquelch(request)
     try {
       const externalCleanup = isFfmpegPlaybackCleanup(cleanup)
@@ -286,26 +349,37 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     if (!runtime) return
     const id = Number(request.params.id)
     const segment = runtime.replaySegment(id)
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
-    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
+    const squelch = cleanup === 'modified' ? 0 : Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
     const wav = await runtime.replayWavFor(id, squelch)
     if (!segment || !wav) {
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
-    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     let playbackWav: Buffer
     try {
-      playbackWav = cleanup === 'raw'
-        ? wav
-        : pcmToWav(
-            isFfmpegPlaybackCleanup(cleanup)
-              ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(wav.subarray(44), runtime.config.sampleRate, cleanup)
-              : cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup),
-            runtime.config.sampleRate
-          )
+      if (cleanup === 'modified') {
+        const playback = modifiedOr503(getPlayback, response)
+        if (!playback) return
+        const rawPcm = wav.subarray(44)
+        const qualityBytes = segment.qualitySpans.reduce((sum, span) => sum + span.bytes, 0)
+        const pcm = await playback.processPcm(rawPcm, runtime.config.sampleRate, {
+          ...(qualityBytes === rawPcm.length ? { qualitySpans: segment.qualitySpans } : {}),
+          cacheKey: `replay:${id}:${segment.startedAt}:${segment.endedAt}:modified-v1`,
+          stillCurrent: () => runtime.replayStillCurrent(id, segment.startedAt),
+          signal: responseAbortSignal(response)
+        })
+        playbackWav = pcmToWav(pcm, runtime.config.sampleRate)
+      } else if (cleanup === 'raw') playbackWav = wav
+      else playbackWav = pcmToWav(
+        isFfmpegPlaybackCleanup(cleanup)
+          ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(wav.subarray(44), runtime.config.sampleRate, cleanup)
+          : cleanPlaybackPcm(wav.subarray(44), runtime.config.sampleRate, cleanup),
+        runtime.config.sampleRate
+      )
     } catch (error) {
-      response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
+      playbackFailure(response, error)
       return
     }
     sendSeekableWav(
@@ -320,8 +394,9 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const ids = requestedIds(request.query.ids, 240)
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
-    const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
+    const squelch = cleanup === 'modified' ? 0 : Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
     const segments = ids?.map((id) => runtime.replaySegment(id))
     if (!ids || !segments || segments.some((segment) => !segment)) {
       response.status(404).json({ error: 'Replay session not found' })
@@ -338,8 +413,32 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(400).json({ error: 'Replay session is not a continuous channel recording' })
       return
     }
+    if (cleanup === 'modified') {
+      const playback = modifiedOr503(getPlayback, response)
+      if (!playback) return
+      const sourceBytes = (wavs as Buffer[]).reduce((sum, wav) => sum + wav.length - 44, 0)
+      if (sourceBytes > 20 * 1024 * 1024) {
+        response.status(413).json({ error: 'Modified playback session exceeds the 20 MiB limit' })
+        return
+      }
+      const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)), sourceBytes)
+      const qualitySpans = resolved.flatMap((segment) => segment.qualitySpans)
+      const alignedQualitySpans = qualitySpans.reduce((sum, span) => sum + span.bytes, 0) === pcm.length
+        ? qualitySpans
+        : undefined
+      try {
+        const processed = await playback.processPcm(pcm, runtime.config.sampleRate, {
+          ...(alignedQualitySpans ? { qualitySpans: alignedQualitySpans } : {}),
+          cacheKey: `replay-session:${ids!.join(',')}:${first.slot}:${first.channel}:modified-v1`,
+          stillCurrent: () => ids!.every((id, index) => runtime.replayStillCurrent(id, resolved[index]!.startedAt)),
+          signal: responseAbortSignal(response)
+        })
+        sendSeekableWav(request, response, pcmToWav(processed, runtime.config.sampleRate),
+          `vhf-${first.channel}-session.wav`, 'no-store, private')
+      } catch (error) { playbackFailure(response, error) }
+      return
+    }
     const pcm = Buffer.concat((wavs as Buffer[]).map((wav) => wav.subarray(44)))
-    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     try {
       const playbackPcm = isFfmpegPlaybackCleanup(cleanup)
         ? await ffmpegCleanerOrThrow(runtime, cleanup).processPcm(pcm, runtime.config.sampleRate, cleanup)
@@ -360,6 +459,191 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
     if (!runtime) return
     const id = Number(request.params.id)
     const segment = runtime.replaySegment(id)
+    const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    if (cleanup === 'modified') {
+      const playback = modifiedOr503(getPlayback, response)
+      if (!playback) return
+      const initialCursor = runtime.replayPlaybackCursorFrom(id)
+      if (!segment || !initialCursor) {
+        response.status(404).json({ error: 'Replay segment not found' })
+        return
+      }
+      let cursor: ReplayPlaybackCursor = initialCursor
+      const abort = new AbortController()
+      response.once('close', () => { if (!response.writableEnded) abort.abort() })
+      let stream
+      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal) }
+      catch (error) { playbackFailure(response, error); return }
+      if (response.destroyed) { stream.close(); return }
+      const event = segment.slot === 'A' ? 'rawAudio' : 'rawSlotBAudio'
+      let tailing = false
+      let inputBlocked = false
+      let inputEnded = false
+      let stopped = false
+      let endSent = false
+      let detached = false
+      let joined = false
+      let payload: ReplayPlaybackPayload | undefined
+      let pendingBytes = 0
+      const pendingLive: { pcm: Buffer; noise: number }[] = []
+      const detach = (): void => {
+        if (detached) return
+        detached = true
+        runtime.off(event, onRawAudio)
+        if (joined) { joined = false; runtime.listenerLeft() }
+      }
+      const stopStream = (): void => {
+        if (stopped) return
+        stopped = true
+        inputEnded = true
+        detach()
+        abort.abort()
+        stream.close()
+      }
+      const endInput = (): void => {
+        if (inputEnded) return
+        inputEnded = true
+        detach()
+        if (tailing) flushLive()
+        else if (!endSent) { endSent = true; stream.end() }
+      }
+      const waitDrain = async (): Promise<void> => {
+        inputBlocked = true
+        await Promise.race([
+          new Promise<void>((resolve) => stream.onDrain(resolve)),
+          stream.completion.then((exit) => {
+            throw new Error(exit.stderr || exit.error?.message || `GTCRN playback helper exited ${exit.code} before input drained`)
+          })
+        ])
+        inputBlocked = false
+      }
+      const flushLive = (): void => {
+        if (!tailing || stopped || inputBlocked) return
+        while (pendingLive.length > 0) {
+          const next = pendingLive.shift()!
+          pendingBytes -= next.pcm.length
+          if (!stream.write(next.pcm, next.noise)) {
+            inputBlocked = true
+            stream.onDrain(() => { inputBlocked = false; flushLive() })
+            return
+          }
+        }
+        if (inputEnded && !endSent) { endSent = true; stream.end() }
+      }
+      const onRawAudio = (chunk: Buffer, noise: number): void => {
+        if (inputEnded || stopped || response.destroyed) return
+        if (!runtime.canTailPlaybackCursor(cursor)) { endInput(); return }
+        if (inputBlocked) {
+          pendingLive.push({ pcm: Buffer.from(chunk), noise })
+          pendingBytes += chunk.length
+          if (pendingBytes + stream.bufferedBytes > runtime.config.sampleRate * 2 * 2) {
+            stopStream()
+            response.destroy(new Error('Modified replay fell more than two seconds behind live audio'))
+          }
+          return
+        }
+        if (!stream.write(chunk, noise)) {
+          inputBlocked = true
+          stream.onDrain(() => { inputBlocked = false; flushLive() })
+        }
+      }
+      const enterTail = (): boolean => {
+        if (!runtime.canTailPlaybackCursor(cursor)) { endInput(); return true }
+        runtime.on(event, onRawAudio)
+        detached = false
+        runtime.listenerJoined()
+        joined = true
+        // If an append beat listener registration, leave it to the durable cursor
+        // rather than feeding the same audio twice from the temporary live queue.
+        if (runtime.replayPlaybackCursorHasData(cursor)) {
+          pendingLive.length = 0
+          pendingBytes = 0
+          detach()
+          const successor = runtime.replayPlaybackCursorSuccessor(cursor)
+          if (successor) { cursor = successor; payload = undefined }
+          return false
+        }
+        tailing = true
+        if (inputBlocked) stream.onDrain(() => { inputBlocked = false; flushLive() })
+        return true
+      }
+      response.status(200).set({
+        'Content-Type': 'audio/wav', 'Cache-Control': 'no-store, private',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Disposition': `inline; filename="vhf-${segment.channel}-continuous.wav"`
+      })
+      response.flushHeaders()
+      response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
+      stream.stdout.on('data', (chunk: Buffer) => {
+        if (!response.destroyed && !response.write(chunk)) stream.stdout.pause()
+      })
+      response.on('drain', () => stream.stdout.resume())
+      let stdoutEnded = false
+      let completionSeen = false
+      const maybeFinishResponse = (): void => {
+        if (stdoutEnded && completionSeen && !response.destroyed && !response.writableEnded) response.end()
+      }
+      stream.stdout.on('error', (error) => {
+        stopStream()
+        if (!response.destroyed) response.destroy(error)
+      })
+      stream.stdout.on('end', () => { stdoutEnded = true; maybeFinishResponse() })
+      void stream.completion.then((exit) => {
+        completionSeen = true
+        if (exit.code !== 0 || exit.error) {
+          const error = new Error(exit.stderr || exit.error?.message || `GTCRN playback helper exited ${exit.code}`)
+          if (!response.destroyed) response.destroy(error)
+          stopStream()
+        } else maybeFinishResponse()
+      })
+      response.on('close', stopStream)
+      try {
+        while (!inputEnded && !stopped) {
+          const next = await runtime.replayPlaybackCursorRead(cursor, 64_000, payload)
+          if (inputEnded || stopped) return
+          if (next.kind === 'end') {
+            if (next.reason === 'retired') throw new Error('Replay data expired before Modified playback reached it')
+            if (next.reason === 'decode-failed') throw new Error('A replay segment could not be decoded')
+            endInput()
+            return
+          }
+          if (next.kind === 'chunk') {
+            cursor = next.cursor
+            payload = next.payload
+            const parts: { pcm: Buffer; noise?: number }[] = []
+            if (next.qualitySpans) {
+              let offset = 0
+              for (const span of next.qualitySpans) {
+                const end = offset + span.bytes
+                for (let at = offset; at < end; at += 64_000) {
+                  parts.push({ pcm: next.pcm.subarray(at, Math.min(end, at + 64_000)), noise: span.discriminatorNoise })
+                }
+                offset = end
+              }
+            } else parts.push({ pcm: next.pcm })
+            for (let index = 0; index < parts.length; index += 1) {
+              const part = parts[index]!
+              const writable = stream.write(part.pcm, part.noise)
+              if (!writable) inputBlocked = true
+              if (index === parts.length - 1 && next.after) {
+                if (next.after.kind === 'advance') { cursor = next.after.cursor; payload = undefined }
+                else if (next.after.kind === 'channel-change') endInput()
+                else if (enterTail()) return
+              }
+              if (!writable) await waitDrain()
+              if (inputEnded || stopped || tailing) return
+            }
+            continue
+          }
+          if (next.kind === 'advance') { cursor = next.cursor; payload = undefined; continue }
+          if (enterTail()) return
+        }
+      } catch (error) {
+        stopStream()
+        if (!response.destroyed) response.destroy(error instanceof Error ? error : new Error(String(error)))
+      }
+      return
+    }
     const requestedSquelch = Number(request.query.squelch ?? runtime.config.squelch)
     const squelch = Number.isFinite(requestedSquelch) ? Math.min(100, Math.max(0, requestedSquelch)) : runtime.config.squelch
     const chunks = runtime.replayPcmFrom(id, squelch)
@@ -367,7 +651,6 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       response.status(404).json({ error: 'Replay segment not found' })
       return
     }
-    const cleanup = parsePlaybackCleanup(request.query.cleanup)
     let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
     try {
       if (isFfmpegPlaybackCleanup(cleanup)) {
@@ -427,10 +710,93 @@ export function registerRoutes(router: PluginRouter, getRuntime: () => VhfRuntim
       if (!response.destroyed) response.end()
     })
   })
-  read.get('/api/live.wav', (request: Request, response: Response) => {
+  read.get('/api/live.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     const cleanup = parsePlaybackCleanup(request.query.cleanup)
+    if (cleanup === 'modified') {
+      const playback = modifiedOr503(getPlayback, response)
+      if (!playback) return
+      const abort = new AbortController()
+      response.once('close', () => { if (!response.writableEnded) abort.abort() })
+      let stream
+      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal) }
+      catch (error) { playbackFailure(response, error); return }
+      if (response.destroyed) { stream.close(); return }
+      let inputEnded = false
+      let stopped = false
+      let blocked = false
+      let endSent = false
+      let queuedBytes = 0
+      const queued: { pcm: Buffer; noise?: number }[] = []
+      const event = runtime.config.receiverMode === 'rtl_sdr' ? 'rawAudio' : 'audio'
+      const sourceChannel = runtime.status().channel.id
+      const detach = (): void => {
+        runtime.off('audio', onAudio)
+        runtime.off('rawAudio', onRawAudio)
+      }
+      const stop = (): void => {
+        if (stopped) return
+        stopped = true
+        inputEnded = true
+        detach()
+        abort.abort()
+        stream.close()
+      }
+      const endInput = (): void => {
+        if (inputEnded) return
+        inputEnded = true
+        detach()
+        flush()
+      }
+      const flush = (): void => {
+        if (stopped || blocked) return
+        while (queued.length) {
+          const next = queued.shift()!
+          queuedBytes -= next.pcm.length
+          if (!stream.write(next.pcm, next.noise)) {
+            blocked = true
+            stream.onDrain(() => { blocked = false; flush() })
+            return
+          }
+        }
+        if (inputEnded && !endSent) { endSent = true; stream.end() }
+      }
+      const submit = (pcm: Buffer, noise?: number): void => {
+        if (inputEnded || stopped || response.destroyed) return
+        if (runtime.status().channel.id !== sourceChannel) { endInput(); return }
+        if (blocked) {
+          queued.push({ pcm: Buffer.from(pcm), noise })
+          queuedBytes += pcm.length
+          if (queuedBytes + stream.bufferedBytes > runtime.config.sampleRate * 2 * 2) {
+            stop()
+            response.destroy(new Error('Modified live playback fell more than two seconds behind the receiver'))
+          }
+          return
+        }
+        if (!stream.write(pcm, noise)) {
+          blocked = true
+          stream.onDrain(() => { blocked = false; flush() })
+        }
+      }
+      const onAudio = (chunk: Buffer): void => submit(chunk)
+      const onRawAudio = (chunk: Buffer, noise: number): void => submit(chunk, noise)
+      response.status(200).set({
+        'Content-Type': 'audio/wav', 'Cache-Control': 'no-store, private',
+        'X-Content-Type-Options': 'nosniff'
+      })
+      response.flushHeaders()
+      response.write(wavHeader(runtime.config.sampleRate, 0xffff_ff00))
+      stream.stdout.on('data', (chunk: Buffer) => { if (!response.destroyed && !response.write(chunk)) stream.stdout.pause() })
+      response.on('drain', () => stream.stdout.resume())
+      stream.stdout.on('end', () => { if (!response.destroyed) response.end() })
+      stream.stdout.on('error', stop)
+      response.on('close', stop)
+      runtime.on(event, event === 'audio' ? onAudio : onRawAudio)
+      runtime.listenerJoined()
+      response.once('close', () => runtime.listenerLeft())
+      return
+    }
     let denoiseStream: ReturnType<NonNullable<typeof runtime.denoiser>['createPcmStream']> | undefined
     try {
       if (isFfmpegPlaybackCleanup(cleanup)) {

@@ -132,20 +132,27 @@ compacted to 24 kbps mono Opus in memory; raw PCM remains available until Whispe
 compressed-audio limit defaults to 750 MiB and cannot be configured above 750 MiB.
 
 The native receiver preserves low-rate unsquelched voice PCM in that bounded replay buffer together
-with discriminator-noise metadata. The Recent radio control can therefore apply a different squelch
-when a segment is played without changing live listening or future recordings; `Off / raw` is useful
-for investigating weak signals. Timeline and transcript playback also offer non-destructive cleanup:
-**Voice focus** limits audio to the useful speech band. **Comfort · adaptive hiss reduction** uses a
-mostly-wet adaptive spectral filter to lower steady VHF hiss while preserving speech. **Maximum hiss
-reduction** adds a 180–3200 Hz speech band before a gentler spectral pass; it is easier on the ears but
-can remove parts of weak words. **Strong static reduction** is the lightweight built-in gate, while
-**Speech denoise** runs the bundled RNNoise speech/recording-noise model through FFmpeg and mixes it
-50/50 with the raw signal. These controls affect only playback and never rewrite audio. Whisper uses
-the unfiltered FIR-demodulated recording because validation retained more spoken facts than either
-adaptive listening filter. Whisper receives a full one-minute context window with ten seconds of
-overlap, and the durable archive keeps that complete source minute. The web player presents only the
-measured carrier-active interval plus five seconds before and after, while the full recording remains
-available through the archive API.
+with discriminator-noise metadata. The **Raw playback squelch** selector controls Raw playback and is
+disabled while Modified is selected; Modified uses its own conservative hiss detector. The
+timeline and transcript controls offer only **Raw** and **Modified**. Modified applies the pinned
+streaming GTCRN speech enhancer followed by a gradual, raw-audio-driven soft gate. It uses a fixed
+playback gain with transparent peak protection; it does not rewrite the saved recording or affect
+Whisper/TTS. Live and rolling replay use time-local receiver quality where available; archived clips,
+which do not retain per-frame receiver quality, use the raw-audio detector. The gate intentionally
+leaves uncertain or short regions open, and denoising is not proof that every weak word is preserved.
+Modified currently requires 16 kHz audio; if its runtime is missing, busy, or the rate is unsupported,
+the player reports that condition and Raw remains available. Whisper always uses the unfiltered
+FIR-demodulated source. It receives a full one-minute context window with ten seconds of overlap, and
+the durable archive keeps that complete source minute. The web player presents the measured
+carrier-active interval plus five seconds before and after, while the full recording remains available
+through the archive API.
+
+The playback runtime is optional and is not part of the npm plugin package. To build it from this
+repository on Debian arm64, run `packaging/build-vhf-playback-runtime-deb.sh /tmp/vhf-playback-deb`
+from the plugin checkout, then install the generated package with
+`sudo dpkg -i /tmp/vhf-playback-deb/vhf-playback-runtime_1.13.8-1_arm64.deb`. The builder verifies
+the pinned runtime, converted model, upstream GTCRN source file, and complete third-party notices
+before packaging. If the runtime is absent, Raw playback remains available.
 
 ### Optional local transcription
 

@@ -14,7 +14,7 @@ import {
   type ReceiverMetrics,
   type ReceiverQualitySpan
 } from './receiver'
-import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
+import { RollingReplay, type ReplayPlaybackCursor, type ReplayPlaybackPayload, type ReplayPlaybackRead, type ReplaySegment, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
 import { TranscriptionManager, type TranscriptionStatus } from './transcription'
 import { discriminatorThreshold } from './squelch'
@@ -525,6 +525,34 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   replaySegment(id: number) { return this.replay.get(id) ?? this.replayB.get(id) }
+  replayPlaybackSnapshotFrom(id: number) {
+    if (this.replay.get(id)) return this.replay.snapshotFrom(id)
+    if (this.replayB.get(id)) return this.replayB.snapshotFrom(id)
+    return undefined
+  }
+  replayPlaybackSnapshotPcm(segment: ReplaySegment) {
+    return (segment.slot === 'A' ? this.replay : this.replayB).snapshotPcm(segment)
+  }
+  replayPlaybackCursorFrom(id: number): ReplayPlaybackCursor | undefined {
+    if (this.replay.get(id)) return this.replay.playbackCursor(id)
+    if (this.replayB.get(id)) return this.replayB.playbackCursor(id)
+    return undefined
+  }
+  replayPlaybackCursorRead(cursor: ReplayPlaybackCursor, maximumBytes = 64_000, payload?: ReplayPlaybackPayload): Promise<ReplayPlaybackRead> {
+    return (cursor.slot === 'A' ? this.replay : this.replayB).readPlaybackCursor(cursor, maximumBytes, payload)
+  }
+  replayPlaybackCursorHasData(cursor: ReplayPlaybackCursor): boolean {
+    return (cursor.slot === 'A' ? this.replay : this.replayB).playbackCursorHasData(cursor)
+  }
+  replayPlaybackCursorSuccessor(cursor: ReplayPlaybackCursor): ReplayPlaybackCursor | undefined {
+    return (cursor.slot === 'A' ? this.replay : this.replayB).playbackCursorSuccessor(cursor)
+  }
+  canTailPlaybackCursor(cursor: ReplayPlaybackCursor): boolean {
+    if (!this.config.enabled) return false
+    if (cursor.slot === 'A') return cursor.channel === this.#channel.id
+    return !this.#singleFrequency && this.#slotB.id !== '70' && cursor.channel === this.#slotB.id
+  }
+  replayStillCurrent(id: number, startedAt: string): boolean { return this.replaySegment(id)?.startedAt === startedAt }
   async replayWavFor(id: number, squelch: number) {
     if (this.replay.get(id)) return this.replay.wavFor(id, squelch)
     if (this.replayB.get(id)) return this.replayB.wavFor(id, squelch)

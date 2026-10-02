@@ -12,12 +12,11 @@ function tone(sampleRate: number, frequency: number, amplitude: number, seconds:
 }
 
 test('parses only supported playback cleanup modes', () => {
-  assert.equal(parsePlaybackCleanup('voice'), 'voice')
-  assert.equal(parsePlaybackCleanup('comfort'), 'comfort')
-  assert.equal(parsePlaybackCleanup('maximum'), 'maximum')
-  assert.equal(parsePlaybackCleanup('strong'), 'strong')
-  assert.equal(parsePlaybackCleanup('rnnoise'), 'rnnoise')
-  assert.equal(parsePlaybackCleanup('anything-else'), 'raw')
+  assert.equal(parsePlaybackCleanup('raw'), 'raw')
+  assert.equal(parsePlaybackCleanup('modified'), 'modified')
+  assert.equal(parsePlaybackCleanup('voice'), 'modified')
+  assert.equal(parsePlaybackCleanup('comfort'), 'modified')
+  assert.equal(parsePlaybackCleanup('anything-else'), 'modified')
 })
 
 test('voice focus preserves speech frequencies while reducing low rumble', () => {

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 40
+  const CLIENT_BUILD = 44
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -82,13 +82,22 @@
     try { window.localStorage.setItem(`vhf-watch:${key}`, String(value)) } catch { /* private browsing or disabled storage */ }
   }
 
+  function playbackPreference(key, fallback) {
+    const value = storedPreference(key, '')
+    if (value === 'raw' || value === 'modified') return value
+    if (value) {
+      savePreference(key, 'modified')
+      return 'modified'
+    }
+    return fallback
+  }
+
   const storedSquelch = storedPreference('replay-squelch', '')
   if (replaySquelch.querySelector(`option[value="${storedSquelch}"]`)) {
     replaySquelch.value = storedSquelch
     replaySquelchTouched = true
   }
-  const storedCleanup = storedPreference('timeline-cleanup', '')
-  if (timelineCleanup.querySelector(`option[value="${storedCleanup}"]`)) timelineCleanup.value = storedCleanup
+  timelineCleanup.value = playbackPreference('timeline-cleanup', timelineCleanup.value)
   settingsPanel.open = storedPreference('settings-open', 'false') === 'true'
 
   async function request(path, options) {
@@ -968,7 +977,7 @@
     const controls = document.createElement('div')
     controls.className = 'archive-controls'
     const squelchLabel = document.createElement('label')
-    squelchLabel.textContent = 'Playback squelch'
+    squelchLabel.textContent = 'Raw playback squelch'
     const squelch = document.createElement('select')
     squelch.innerHTML = '<option value="0">Off / raw</option><option value="10">Low</option><option value="20" selected>Medium</option><option value="30">High</option><option value="40">Very high</option>'
     const preferenceKey = `archive:${record.ids.join(',')}`
@@ -978,9 +987,9 @@
     const cleanupLabel = document.createElement('label')
     cleanupLabel.textContent = 'Background noise'
     const cleanup = document.createElement('select')
-    cleanup.innerHTML = '<option value="raw">Raw</option><option value="voice" selected>Voice focus</option><option value="comfort">Comfort · adaptive hiss reduction</option><option value="maximum">Maximum hiss reduction</option><option value="strong">Strong reduction</option><option value="rnnoise">Speech denoise · RNNoise</option>'
-    const preferredCleanup = storedPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
-    if (cleanup.querySelector(`option[value="${preferredCleanup}"]`)) cleanup.value = preferredCleanup
+    cleanup.innerHTML = '<option value="raw">Raw</option><option value="modified" selected>Modified</option>'
+    const preferredCleanup = playbackPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
+    cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
     controls.append(squelchLabel, cleanupLabel)
 
@@ -1087,6 +1096,7 @@
     const updatePlayback = () => {
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
+      squelch.disabled = cleanup.value === 'modified'
       setArchivePlayback(audio, download, cleanup.value, squelch.value)
     }
     cleanup.addEventListener('change', updatePlayback)
@@ -1287,9 +1297,11 @@
   })
   timelineCleanup.addEventListener('change', () => {
     savePreference('timeline-cleanup', timelineCleanup.value)
+    replaySquelch.disabled = timelineCleanup.value === 'modified'
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
   })
+  replaySquelch.disabled = timelineCleanup.value === 'modified'
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)

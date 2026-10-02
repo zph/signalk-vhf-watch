@@ -94,11 +94,7 @@
             <label for="timeline-cleanup">Playback sound</label>
             <select id="timeline-cleanup">
               <option value="raw">Raw</option>
-              <option value="voice" selected>Voice focus</option>
-              <option value="comfort">Comfort · adaptive hiss reduction</option>
-              <option value="maximum">Maximum hiss reduction</option>
-              <option value="strong">Strong static reduction</option>
-              <option value="rnnoise">Speech denoise · RNNoise</option>
+              <option value="modified" selected>Modified</option>
             </select>
           </div>
         </section>
@@ -155,7 +151,7 @@
               </select>
             </label>
             <hr />
-            <label for="replay-squelch">Activity / playback squelch
+            <label for="replay-squelch">Raw playback squelch
               <select id="replay-squelch">
                 <option value="0">Off / raw</option>
                 <option value="10">Low · 10</option>
@@ -205,6 +201,6 @@
 
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
-  <script src="./main.js?v=38"></script>
+  <script src="./main.js?v=44"></script>
 </body>
 </html>

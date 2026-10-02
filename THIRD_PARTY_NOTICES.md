@@ -19,6 +19,19 @@ installs the upstream model license and exact source URLs. FFmpeg, supplied by t
 system, encodes generated PCM as Ogg Opus. No TTS binary or model is included in the VHF Watch npm
 package itself.
 
+The optional `vhf-playback-runtime` Debian package uses the Sherpa-ONNX 1.13.8 C API and its Linux
+aarch64 shared CPU runtime (Apache License 2.0), plus ONNX Runtime (MIT License; the package installs
+its full license and third-party notices). The GTCRN source implementation and committed streaming
+ONNX file are in [Xiaobin-Rong/gtcrn at pinned commit
+`502ebfab64da7c4a9af78dcb9c6ceef1ebb01c73`](https://github.com/Xiaobin-Rong/gtcrn/tree/502ebfab64da7c4a9af78dcb9c6ceef1ebb01c73);
+the package includes that repository's full MIT notice. The runtime uses the streaming-converted
+[`gtcrn_simple.onnx` from Sherpa-ONNX's speech-enhancement-models release](https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx),
+whose hash differs from the pinned source-repository ONNX file. The release asset has no separate
+weight-specific license file or embedded license metadata; the package records this source
+provenance but does not assert an independently verified license for the converted weight. Runtime,
+model, source-model, and notice SHA-256 hashes are pinned in the package builder. No playback runtime
+binary or model is included in the VHF Watch npm package.
+
 VHF Watch includes the `somnolent-hogwash` speech/recording-noise model from
 [`GregorR/rnnoise-models`](https://github.com/GregorR/rnnoise-models). The repository states that,
 apart from its README and tools, the model work is not creative and is not subject to copyright.
