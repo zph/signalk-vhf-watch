@@ -36,4 +36,6 @@ processes selected archived calls entirely on boat-pi and emits aggregate metric
 audio or transcript text. See `VHF_IN_SITU_RESULTS.md`; that small trial is inconclusive about
 voice quality without ground truth and human listening. `analyze_vhf_waveforms.py` reproduces its
 raw-vs-output gain/correlation/residual diagnostics from the Pi-local trial artifacts without
-rerunning denoising or transcription.
+rerunning denoising or transcription. `soft_squelch.py` is a separate offline close-only raw-hiss
+heuristic applied after a fixed-gain GTCRN listening copy; see `SOFT_SQUELCH_TRIAL.md` for the
+single-call result and limitations. It is not part of the production playback path.

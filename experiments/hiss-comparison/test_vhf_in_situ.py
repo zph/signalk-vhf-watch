@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import run_vhf_in_situ as trial
 import analyze_vhf_waveforms as waveform_analysis
+import soft_squelch as gate
 
 
 class InSituHelpersTest(unittest.TestCase):
@@ -51,6 +52,40 @@ class InSituHelpersTest(unittest.TestCase):
         lag, correlation = waveform_analysis.find_alignment_lag(reference, estimate, 500, 500, max_lag=100)
         self.assertEqual(lag, shift)
         self.assertGreater(correlation, 0.99999)
+
+    def test_constant_ambiguous_raw_abstains_open(self):
+        result = gate.analyze_raw([1200] * 16_000)
+        self.assertTrue(result["abstain_reasons"])
+        self.assertTrue(all(result["open_frames"]))
+        self.assertEqual(result["sustained_hiss_frame_count"], 0)
+
+    def test_unsmoothed_quiet_frame_cannot_be_classified_as_hiss(self):
+        candidates = gate.hiss_candidates(
+            [-1, -1, -3.1, -1], [0, 0, 0, 0], [7, 7, 7, 7], [0, 0, 0, 0], 0, 7
+        )
+        self.assertEqual(candidates, [True, True, False, True])
+
+    def test_open_guard_preroll_hold_release_and_smooth_bounds(self):
+        open_frames = [False] * 200
+        open_frames[60:100] = [True] * 40
+        envelope = gate.build_envelope(open_frames, 200 * gate.HOP)
+        self.assertTrue(all(value == 1.0 for value in envelope[: round(0.15 * gate.RATE)]))
+        self.assertTrue(all(value == 1.0 for value in envelope[60 * gate.HOP : 100 * gate.HOP]))
+        self.assertGreater(envelope[155 * gate.HOP], gate.FLOOR)
+        self.assertAlmostEqual(envelope[-1], gate.FLOOR, places=4)
+        self.assertGreaterEqual(min(envelope), gate.FLOOR)
+        self.assertLessEqual(max(envelope), 1.0)
+        self.assertLess(max(abs(a - b) for a, b in zip(envelope, envelope[1:])), 0.02)
+
+    def test_gating_preserves_sample_count_and_does_not_clip(self):
+        samples = [32767, -32768, 1234, -2345]
+        gains = [1.0, 0.5, gate.FLOOR, 1.0]
+        output = gate.gated_samples(samples, gains)
+        self.assertEqual(len(output), len(samples))
+        self.assertEqual(output[0], samples[0])
+        self.assertLess(abs(output[1]), abs(samples[1]))
+        self.assertLess(abs(output[2]), abs(samples[2]))
+        self.assertTrue(all(abs(value) <= 32767 for value in output))
 
 
 if __name__ == "__main__":
