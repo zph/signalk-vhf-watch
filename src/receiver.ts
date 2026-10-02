@@ -69,7 +69,8 @@ export class WidebandRtlReceiver extends AudioReceiver {
         audioSampleRate: this.#config.sampleRate,
         voiceFrequencyHz: this.#channel.frequencyHz,
         dscFrequencyHz: DSC_CHANNEL_HZ,
-        squelch: this.#config.squelch
+        squelch: this.#config.squelch,
+        hissReduction: this.#config.hissReduction
       }
     })
     this.#worker = worker

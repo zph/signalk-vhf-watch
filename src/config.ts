@@ -1,6 +1,7 @@
 import { channelById, type ChannelRegion } from './channels'
 
 export type ReceiverMode = 'demo' | 'rtl_sdr'
+export type HissReduction = 'off' | 'adaptive'
 
 export interface VhfWatchConfig {
   enabled: boolean
@@ -10,6 +11,7 @@ export interface VhfWatchConfig {
   deviceIndex: number
   gainDb?: number
   squelch: number
+  hissReduction: HissReduction
   sampleRate: number
   replayMinutes: number
   segmentSeconds: number
@@ -23,6 +25,7 @@ export const DEFAULT_CONFIG: VhfWatchConfig = {
   initialChannel: '16',
   deviceIndex: 0,
   squelch: 20,
+  hissReduction: 'off',
   sampleRate: 16_000,
   replayMinutes: 30,
   segmentSeconds: 5,
@@ -55,6 +58,7 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     deviceIndex: Math.max(0, Math.floor(finiteNumber(value.deviceIndex, DEFAULT_CONFIG.deviceIndex))),
     ...(gain === undefined ? {} : { gainDb: gain }),
     squelch: Math.min(100, Math.max(0, Math.floor(finiteNumber(value.squelch, DEFAULT_CONFIG.squelch)))),
+    hissReduction: value.hissReduction === 'adaptive' ? 'adaptive' : 'off',
     sampleRate: [8_000, 16_000, 24_000, 32_000, 48_000].includes(Number(value.sampleRate))
       ? Number(value.sampleRate)
       : DEFAULT_CONFIG.sampleRate,
@@ -86,6 +90,7 @@ export const pluginSchema = {
     deviceIndex: { type: 'integer', title: 'RTL-SDR device index', minimum: 0, default: 0 },
     gainDb: { type: 'number', title: 'Manual tuner gain (dB; blank for automatic)', minimum: 0, maximum: 49.6 },
     squelch: { type: 'integer', title: 'Voice squelch level', minimum: 0, maximum: 100, default: 20 },
+    hissReduction: { type: 'string', title: 'Voice hiss reduction', enum: ['off', 'adaptive'], enumNames: ['Off', 'Adaptive spectral filter'], default: 'off' },
     sampleRate: { type: 'integer', title: 'Audio sample rate', enum: [8000, 16000, 24000, 32000, 48000], default: 16000 },
     replayMinutes: { type: 'integer', title: 'Private rolling replay (minutes)', minimum: 1, maximum: 120, default: 30 },
     segmentSeconds: { type: 'integer', title: 'Replay segment length (seconds)', minimum: 2, maximum: 30, default: 5 },

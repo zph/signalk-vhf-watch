@@ -53,3 +53,81 @@ test('worker channelizes voice and DSC from one wideband IQ capture', async () =
     await worker.terminate()
   }
 })
+
+test('voice squelch rejects idle IQ noise and opens for an FM carrier', async () => {
+  const worker = new Worker(path.resolve(__dirname, '../src/channelizer-worker.js'), {
+    workerData: {
+      centerHz: 156_750_000,
+      iqSampleRate: 2_400_000,
+      audioSampleRate: 16_000,
+      voiceFrequencyHz: 156_800_000,
+      dscFrequencyHz: 156_525_000,
+      squelch: 20
+    }
+  })
+  const receiveVoice = (iq: ArrayBuffer): Promise<Int16Array> => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('voice squelch timed out')), 5_000)
+    const onMessage = (message: { type: string; pcm?: ArrayBuffer }) => {
+      if (message.type !== 'voice' || !message.pcm) return
+      clearTimeout(timeout)
+      worker.off('message', onMessage)
+      resolve(new Int16Array(message.pcm))
+    }
+    worker.on('message', onMessage)
+    worker.postMessage({ type: 'iq', iq }, [iq])
+  })
+  try {
+    const idle = new Uint8Array(2_400_000 * 2 * 0.08)
+    let state = 1
+    for (let index = 0; index < idle.length; index += 1) {
+      state ^= state << 13
+      state ^= state >>> 17
+      state ^= state << 5
+      idle[index] = state & 255
+    }
+    const noise = await receiveVoice(idle.buffer)
+    assert.ok(noise.subarray(800).every((sample) => sample === 0))
+
+    const carrier = await receiveVoice(fmIq(2_400_000, 50_000, 1_000, 3_000, 0.08))
+    assert.ok(carrier.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0) > 1_000)
+  } finally {
+    await worker.terminate()
+  }
+})
+
+test('adaptive hiss reduction keeps voice and DSC streams independent', async () => {
+  const worker = new Worker(path.resolve(__dirname, '../src/channelizer-worker.js'), {
+    workerData: {
+      centerHz: 156_750_000,
+      iqSampleRate: 2_400_000,
+      audioSampleRate: 16_000,
+      voiceFrequencyHz: 156_800_000,
+      dscFrequencyHz: 156_525_000,
+      squelch: 20,
+      hissReduction: 'adaptive'
+    }
+  })
+  try {
+    const outputs = new Map<string, ArrayBuffer>()
+    const complete = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('adaptive worker timed out')), 5_000)
+      worker.on('error', reject)
+      worker.on('message', (message: { type: string; pcm?: ArrayBuffer }) => {
+        if (message.pcm) outputs.set(message.type, message.pcm)
+        if (outputs.has('voice') && outputs.has('dsc')) {
+          clearTimeout(timeout)
+          resolve()
+        }
+      })
+    })
+    const iq = fmIq(2_400_000, 50_000, 1_000, 3_000, 0.12)
+    worker.postMessage({ type: 'iq', iq }, [iq])
+    await complete
+    const voice = new Int16Array(outputs.get('voice')!)
+    const dsc = new Int16Array(outputs.get('dsc')!)
+    assert.ok(voice.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0) > 1_000)
+    assert.ok(dsc.length >= 2_800)
+  } finally {
+    await worker.terminate()
+  }
+})

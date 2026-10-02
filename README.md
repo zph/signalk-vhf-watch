@@ -29,6 +29,20 @@ opens the tuner once at 2.4 MS/s and sends its IQ stream to a worker-backed chan
 NFM streams provide the selected voice channel and an uninterrupted 24 kHz Channel 70 DSC decoder.
 Changing voice channels inside the capture window does not restart or retune the hardware.
 
+Voice squelch now measures high-frequency noise in the FM discriminator, where an idle channel is
+noisy and a received carrier quiets the receiver. It uses hysteresis, a 250 ms hang, and short fades
+to avoid chattering between words. The squelch state resets on a channel change. Setting squelch to
+zero passes audio unchanged, and Channel 70 DSC is never squelched. This gate removes off-air static;
+it does not remove hiss underneath a weak received voice.
+
+The optional adaptive spectral filter reduces steady hiss under received speech. It estimates a
+per-frequency noise floor from the quietest frames in successive 600 ms windows, applies smoothed
+Wiener-style gains, and limits output to the marine voice band. It runs on voice audio before
+squelch, so the gate cannot contaminate its noise estimate with silence. It adds about 32 ms of
+audio delay and leaves the DSC stream untouched. The default is Off until it can be compared with
+raw recordings on the target receiver; weak speech can lose detail if the estimated noise floor is
+too high.
+
 The shared capture is centered at 156.750 MHz. It covers Channel 70 and the nearby simplex marine
 voice channels simultaneously. Duplex coast-side and weather channels around 160–162 MHz are
 outside an RTL-SDR's instantaneous bandwidth and are disabled in hardware mode. Monitoring those

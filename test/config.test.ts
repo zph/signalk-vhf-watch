@@ -10,6 +10,7 @@ test('normalizes safe defaults and rejects channel 70', () => {
   assert.equal(config.replayMinutes, 120)
   assert.equal(config.segmentSeconds, 2)
   assert.equal(config.maxBufferMiB, 64)
+  assert.equal(config.hissReduction, 'off')
 })
 
 test('validates the startup channel against its regional plan', () => {
@@ -23,4 +24,5 @@ test('accepts RTL-SDR settings and migrates the old rtl_fm mode', () => {
   assert.equal(config.initialChannel, 'WX2')
   assert.equal(config.deviceIndex, 2)
   assert.equal(config.gainDb, 27.4)
+  assert.equal(normalizeConfig({ hissReduction: 'adaptive' }).hissReduction, 'adaptive')
 })
