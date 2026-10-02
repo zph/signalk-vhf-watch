@@ -91,6 +91,48 @@ func TestWritesTimestampedBackfillFrame(t *testing.T) {
 	}
 }
 
+func TestBackfillWorkerWritesPerSliceQualityWithOneChannelizer(t *testing.T) {
+	const sampleRate = 960_000
+	const sliceBytes = sampleRate * 2 / 50
+	jobs := make(chan backfillJob, 1)
+	jobs <- backfillJob{
+		slot: frameVoiceBackfill, frequency: 156_800_000, center: 156_750_000,
+		sampleRate: sampleRate, audioRate: 16_000, rfCutoffHz: 9_000, squelch: 20,
+		iq: make([]byte, sliceBytes*2), startedAt: 1_234,
+	}
+	close(jobs)
+	var output bytes.Buffer
+	runBackfillWorker(jobs, &output)
+	written := output.Bytes()
+	if written[0] != frameVoiceSpansBackfill {
+		t.Fatalf("frame kind = %d, want %d", written[0], frameVoiceSpansBackfill)
+	}
+	payload := written[5:]
+	if int(binary.LittleEndian.Uint32(written[1:5])) != len(payload) || len(payload) < 20 {
+		t.Fatalf("invalid framed payload length: header=%d actual=%d", binary.LittleEndian.Uint32(written[1:5]), len(payload))
+	}
+	if int64(binary.LittleEndian.Uint64(payload[:8])) != 1_234 || int(binary.LittleEndian.Uint64(payload[8:16])) != 156_800_000 {
+		t.Fatalf("unexpected backfill identity: start=%d frequency=%d", int64(binary.LittleEndian.Uint64(payload[:8])), binary.LittleEndian.Uint64(payload[8:16]))
+	}
+	if count := binary.LittleEndian.Uint32(payload[16:20]); count != 2 {
+		t.Fatalf("span count = %d, want 2", count)
+	}
+	offset := 20
+	totalBytes := uint32(0)
+	for span := 0; span < 2; span++ {
+		byteCount := binary.LittleEndian.Uint32(payload[offset : offset+4])
+		noise := math.Float64frombits(binary.LittleEndian.Uint64(payload[offset+4 : offset+12]))
+		if byteCount != 640 || math.IsNaN(noise) || math.IsInf(noise, 0) {
+			t.Fatalf("span %d = %d bytes, noise %v", span, byteCount, noise)
+		}
+		totalBytes += byteCount
+		offset += 12
+	}
+	if totalBytes != uint32(len(payload)-offset) {
+		t.Fatalf("span bytes = %d, PCM bytes = %d", totalBytes, len(payload)-offset)
+	}
+}
+
 func TestIQRingRetainsOnlyTheLatestBoundedCapture(t *testing.T) {
 	ring := newIQRing(4, 1)
 	ring.append([]byte{1, 2, 3, 4, 5, 6})

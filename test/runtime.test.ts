@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { normalizeConfig } from '../src/config'
-import { selectAdaptiveScanChannel, VhfRuntime } from '../src/runtime'
+import { mergeTimestampedScanPreRoll, ScanRecoveryWindow, selectAdaptiveScanChannel, VhfRuntime } from '../src/runtime'
 
 test('demo runtime produces bounded replay audio and can retune', async () => {
   const runtime = new VhfRuntime(normalizeConfig({
@@ -53,6 +53,56 @@ test('Slot B adaptive scan favors recent voice without starving quiet channels',
   const now = 100_000
   assert.equal(selectAdaptiveScanChannel(channels, new Map([['68', 4]]), new Map([['68', 98_000], ['69', 98_000]]), now)?.id, '68')
   assert.equal(selectAdaptiveScanChannel(channels, new Map([['68', 4]]), new Map([['68', 99_900], ['69', 1_000]]), now)?.id, '69')
+})
+
+test('scan recovery rejects late slices and stale same-frequency backfill', () => {
+  const recovery = new ScanRecoveryWindow()
+  const sampleRate = 8_000
+  recovery.reset(10_000)
+  recovery.target(11_000)
+  recovery.beginCall()
+  const twoSecondSliceBytes = sampleRate * 2 * 2
+  assert.equal(recovery.canPrepend(9_000, twoSecondSliceBytes, sampleRate, 156_800_000, 156_800_000), true)
+  recovery.markStored()
+  assert.equal(recovery.canPrepend(9_000, twoSecondSliceBytes, sampleRate, 156_800_000, 156_800_000), false)
+  recovery.endCall(12_000)
+  assert.equal(recovery.accepts(9_000, twoSecondSliceBytes, sampleRate, 156_800_000, 156_800_000), false)
+  assert.equal(recovery.accepts(11_000, twoSecondSliceBytes, sampleRate, 156_800_000, 156_800_000), true)
+  assert.equal(recovery.accepts(11_000, twoSecondSliceBytes, sampleRate, 156_800_000, 156_425_000), false)
+})
+
+test('scan pre-roll trims timestamped live overlap and its quality metadata', () => {
+  const preRoll: Parameters<typeof mergeTimestampedScanPreRoll>[0] = []
+  mergeTimestampedScanPreRoll(preRoll, {
+    chunk: Buffer.alloc(16_000 * 6, 1), discriminatorNoise: 0.35, at: 0, recovered: true,
+    qualitySpans: [
+      { bytes: 16_000 * 3, discriminatorNoise: 0.6 },
+      { bytes: 16_000 * 3, discriminatorNoise: 0.1 }
+    ]
+  }, 8_000, 10)
+  mergeTimestampedScanPreRoll(preRoll, {
+    chunk: Buffer.alloc(16_000 * 2, 2), discriminatorNoise: 0.3, at: 5_000, recovered: false,
+    qualitySpans: [
+      { bytes: 16_000, discriminatorNoise: 0.5 },
+      { bytes: 16_000, discriminatorNoise: 0.1 }
+    ]
+  }, 8_000, 10)
+  mergeTimestampedScanPreRoll(preRoll, {
+    chunk: Buffer.alloc(16_000, 3), discriminatorNoise: 0.4, at: 5_000, recovered: false,
+    qualitySpans: [{ bytes: 16_000, discriminatorNoise: 0.4 }]
+  }, 8_000, 10)
+  assert.equal(preRoll.length, 3)
+  assert.equal(preRoll[0]?.chunk.length, 16_000 * 5)
+  assert.deepEqual(preRoll[0]?.qualitySpans, [
+    { bytes: 16_000 * 3, discriminatorNoise: 0.6 },
+    { bytes: 16_000 * 2, discriminatorNoise: 0.1 }
+  ])
+  assert.equal(preRoll[1]?.chunk.length, 16_000 * 2)
+  assert.equal(preRoll[1]?.chunk[0], 2)
+  assert.equal(preRoll[1]?.at, 5_000)
+  assert.equal(preRoll[2]?.chunk.length, 16_000)
+  assert.equal(preRoll[2]?.chunk[0], 3)
+  assert.equal(preRoll[2]?.at, 7_000)
 })
 
 test('switches between marine wideband and distant single-frequency reception', () => {

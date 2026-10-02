@@ -11,7 +11,8 @@ import {
   WIDEBAND_SAMPLE_RATE,
   NativeSidecarReceiver,
   type AudioReceiver,
-  type ReceiverMetrics
+  type ReceiverMetrics,
+  type ReceiverQualitySpan
 } from './receiver'
 import { RollingReplay, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
@@ -23,6 +24,111 @@ import { RnnoiseDenoiser } from './rnnoise'
 import { SpectrumActivityLog, type SpectrumActivityEvent, type SpectrumActivitySample } from './activity-log'
 
 const SPECTRUM_ACTIVITY_THRESHOLD = 2
+
+export class ScanRecoveryWindow {
+  #cutoffAt = 0
+  #storedSinceCallStart = false
+
+  target(at: number): void {
+    this.#cutoffAt = Math.max(this.#cutoffAt, at)
+  }
+
+  reset(at: number): void {
+    this.#cutoffAt = at
+    this.#storedSinceCallStart = false
+  }
+
+  endCall(at: number): void {
+    this.#cutoffAt = at
+  }
+
+  beginCall(): void {
+    this.#storedSinceCallStart = false
+  }
+
+  markStored(): void {
+    this.#storedSinceCallStart = true
+  }
+
+  accepts(capturedAt: number, byteLength: number, sampleRate: number, targetFrequencyHz: number, capturedFrequencyHz?: number): boolean {
+    if (capturedFrequencyHz !== undefined && capturedFrequencyHz !== targetFrequencyHz) return false
+    const endsAt = capturedAt + byteLength / 2 / sampleRate * 1_000
+    return Number.isFinite(endsAt) && endsAt + 1 >= this.#cutoffAt
+  }
+
+  canPrepend(capturedAt: number, byteLength: number, sampleRate: number, targetFrequencyHz: number, capturedFrequencyHz?: number): boolean {
+    return !this.#storedSinceCallStart && this.accepts(capturedAt, byteLength, sampleRate, targetFrequencyHz, capturedFrequencyHz)
+  }
+}
+
+export interface ScanPreRollChunk {
+  chunk: Buffer
+  discriminatorNoise: number
+  at: number
+  recovered?: boolean
+  qualitySpans?: ReceiverQualitySpan[]
+}
+
+export function mergeTimestampedScanPreRoll(target: ScanPreRollChunk[], entry: ScanPreRollChunk, sampleRate: number, maximumSeconds = 7): void {
+  let at = entry.at
+  if (!entry.recovered) {
+    const latestLive = target.filter((current) => !current.recovered).at(-1)
+    if (latestLive) at = Math.max(at, latestLive.at + latestLive.chunk.length / 2 / sampleRate * 1_000)
+  }
+  target.push({ ...entry, at, chunk: Buffer.from(entry.chunk),
+    ...(entry.qualitySpans ? { qualitySpans: entry.qualitySpans.map((span) => ({ ...span })) } : {}) })
+  const liveEntries = target.filter((current) => !current.recovered)
+  const firstLiveAt = liveEntries.reduce((earliest, current) => Math.min(earliest, current.at), Number.POSITIVE_INFINITY)
+  const normalized = target.flatMap((current) => {
+    if (!current.recovered || !Number.isFinite(firstLiveAt)) return [current]
+    const keepBytes = Math.min(current.chunk.length, Math.max(0,
+      Math.floor((firstLiveAt - current.at) * sampleRate / 1_000) * 2))
+    if (keepBytes === 0) return []
+    if (keepBytes === current.chunk.length) return [current]
+    return [{ ...current, chunk: current.chunk.subarray(0, keepBytes),
+      ...(current.qualitySpans ? { qualitySpans: sliceScanQualitySpans(current.qualitySpans, 0, keepBytes) } : {}) }]
+  })
+  normalized.sort((left, right) => left.at - right.at || Number(Boolean(right.recovered)) - Number(Boolean(left.recovered)))
+  let previousEnd = Number.NEGATIVE_INFINITY
+  let previousLiveEnd = Number.NEGATIVE_INFINITY
+  const merged: ScanPreRollChunk[] = []
+  for (const current of normalized) {
+    if (!current.recovered) {
+      const at = Math.max(current.at, previousLiveEnd)
+      const live = { ...current, at }
+      merged.push(live)
+      previousLiveEnd = at + live.chunk.length / 2 / sampleRate * 1_000
+      previousEnd = Math.max(previousEnd, previousLiveEnd)
+      continue
+    }
+    const overlapBytes = Math.min(current.chunk.length, Math.max(0,
+      Math.ceil((previousEnd - current.at) * sampleRate / 1_000) * 2))
+    if (overlapBytes >= current.chunk.length) continue
+    const chunk = overlapBytes === 0 ? current.chunk : current.chunk.subarray(overlapBytes)
+    const qualitySpans = current.qualitySpans && overlapBytes > 0
+      ? sliceScanQualitySpans(current.qualitySpans, overlapBytes, current.chunk.length)
+      : current.qualitySpans
+    const at = current.at + overlapBytes / 2 / sampleRate * 1_000
+    merged.push({ ...current, chunk, at, ...(qualitySpans ? { qualitySpans } : {}) })
+    previousEnd = at + chunk.length / 2 / sampleRate * 1_000
+  }
+  target.splice(0, target.length, ...merged)
+  const maximumBytes = sampleRate * 2 * maximumSeconds
+  let total = target.reduce((sum, current) => sum + current.chunk.length, 0)
+  while (total > maximumBytes && target.length > 1) total -= target.shift()!.chunk.length
+}
+
+function sliceScanQualitySpans(spans: ReceiverQualitySpan[], start: number, end: number): ReceiverQualitySpan[] {
+  const trimmed: ReceiverQualitySpan[] = []
+  let offset = 0
+  for (const span of spans) {
+    const bytes = Math.max(0, Math.min(end, offset + span.bytes) - Math.max(start, offset))
+    if (bytes > 0) trimmed.push({ bytes, discriminatorNoise: span.discriminatorNoise })
+    offset += span.bytes
+    if (offset >= end) break
+  }
+  return trimmed
+}
 
 export type ReceiverSlotChannel = VhfChannel | { id: '70'; label: '70'; frequencyHz: number; purpose: string; countries: ('US' | 'CA')[] }
 
@@ -116,15 +222,17 @@ export class VhfRuntime extends EventEmitter<{
   #scanOpenMs = 0
   #scanQuietMs = 0
   #scanTimer?: ReturnType<typeof setTimeout>
-  #scanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
+  #scanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number; qualitySpans?: ReceiverQualitySpan[] }[] = []
   #scanTargetedAt = 0
+  readonly #scanRecovery = new ScanRecoveryWindow()
   readonly #scanRejectedUntil = new Map<string, number>()
   #slotBScanLocked = false
   #slotBScanOpenMs = 0
   #slotBScanQuietMs = 0
   #slotBScanTimer?: ReturnType<typeof setTimeout>
-  #slotBScanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number }[] = []
+  #slotBScanPreRoll: { chunk: Buffer; discriminatorNoise: number; at: number; qualitySpans?: ReceiverQualitySpan[] }[] = []
   #slotBScanTargetedAt = 0
+  readonly #slotBScanRecovery = new ScanRecoveryWindow()
   readonly #slotBScanRejectedUntil = new Map<string, number>()
   readonly #slotBActivityScores = new Map<string, number>()
   #channelRegion: ChannelRegion
@@ -259,16 +367,21 @@ export class VhfRuntime extends EventEmitter<{
     if (!singleFrequency && slotB.id !== '70' && slotB.frequencyHz === slotA.frequencyHz) throw new Error('Slots A and B must use different channels')
     const slotBChanged = slotB.id !== this.#slotB.id || slotB.frequencyHz !== this.#slotB.frequencyHz || slotBMode !== this.#slotBMode
     const captureModeChanged = singleFrequency !== this.#singleFrequency
+    const configuredAt = Date.now()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.#scanTimer = undefined
     this.#scanLocked = false
     this.#scanOpenMs = 0
     this.#scanQuietMs = 0
+    this.#scanPreRoll = []
+    this.#scanRecovery.reset(configuredAt)
     if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
     this.#slotBScanTimer = undefined
     this.#slotBScanLocked = false
     this.#slotBScanOpenMs = 0
     this.#slotBScanQuietMs = 0
+    this.#slotBScanPreRoll = []
+    this.#slotBScanRecovery.reset(configuredAt)
     this.#slotAMode = mode
     this.#slotAConfigured = slotA
     this.#channel = slotA
@@ -482,9 +595,9 @@ export class VhfRuntime extends EventEmitter<{
       }
       this.emit('audio', chunk)
     })
-    receiver.on('replayAudio', (chunk, discriminatorNoise, capturedAt) => {
+    receiver.on('replayAudio', (chunk, discriminatorNoise, capturedAt, frequencyHz, qualitySpans) => {
       if (this.#slotAMode === 'scan') {
-        this.#handleScanAudio(chunk, discriminatorNoise, capturedAt)
+        this.#handleScanAudio(chunk, discriminatorNoise, capturedAt, frequencyHz, qualitySpans)
         if (capturedAt === undefined) this.emit('rawAudio', chunk, discriminatorNoise)
         return
       }
@@ -494,10 +607,10 @@ export class VhfRuntime extends EventEmitter<{
       }
       this.emit('rawAudio', chunk, discriminatorNoise)
     })
-    receiver.on('slotBReplayAudio', (chunk, discriminatorNoise, capturedAt) => {
+    receiver.on('slotBReplayAudio', (chunk, discriminatorNoise, capturedAt, frequencyHz, qualitySpans) => {
       if (this.#singleFrequency) return
       if (this.#slotBMode === 'scan') {
-        this.#handleSlotBScanAudio(chunk, discriminatorNoise, capturedAt)
+        this.#handleSlotBScanAudio(chunk, discriminatorNoise, capturedAt, frequencyHz, qualitySpans)
         if (capturedAt === undefined) this.emit('rawSlotBAudio', chunk, discriminatorNoise)
         return
       }
@@ -601,9 +714,13 @@ export class VhfRuntime extends EventEmitter<{
     }, delayMs)
   }
 
-  #handleScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
+  #handleScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number, frequencyHz?: number, qualitySpans?: ReceiverQualitySpan[]): void {
+    if (capturedAt !== undefined && !this.#scanRecovery.accepts(capturedAt, chunk.length, this.config.sampleRate, this.#channel.frequencyHz, frequencyHz)) return
     if (this.#scanLocked && capturedAt !== undefined) {
-      for (const segment of this.replay.prepend(chunk, capturedAt, discriminatorNoise)) {
+      if (!this.#scanRecovery.canPrepend(capturedAt, chunk.length, this.config.sampleRate, this.#channel.frequencyHz, frequencyHz)) return
+      const segments = this.replay.prepend(chunk, capturedAt, discriminatorNoise, qualitySpans)
+      if (segments.length > 0) this.#scanRecovery.markStored()
+      for (const segment of segments) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
       return
@@ -611,7 +728,7 @@ export class VhfRuntime extends EventEmitter<{
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#scanLocked) {
-      this.#appendScanPreRoll(this.#scanPreRoll, chunk, discriminatorNoise, capturedAt)
+      this.#appendScanPreRoll(this.#scanPreRoll, chunk, discriminatorNoise, capturedAt, qualitySpans)
       if (capturedAt !== undefined) return
       this.#scanOpenMs = open ? this.#scanOpenMs + milliseconds : 0
       if (this.#scanOpenMs < 200) return
@@ -620,15 +737,20 @@ export class VhfRuntime extends EventEmitter<{
       if (this.#scanTimer) clearTimeout(this.#scanTimer)
       this.#scanTimer = undefined
       this.replay.setChannel(this.#channel.id)
+      this.#scanRecovery.beginCall()
       for (const buffered of this.#scanPreRoll) {
-        for (const segment of this.replay.append(buffered.chunk, buffered.at, buffered.discriminatorNoise)) {
+        const segments = this.replay.append(buffered.chunk, buffered.at, buffered.discriminatorNoise, buffered.qualitySpans)
+        if (segments.length > 0) this.#scanRecovery.markStored()
+        for (const segment of segments) {
           this.transcription.enqueue(segment, this.config.squelch)
         }
       }
       this.#scanPreRoll = []
       this.#emitStatus()
     } else {
-      for (const segment of this.replay.append(chunk, Date.now(), discriminatorNoise)) {
+      const segments = this.replay.append(chunk, Date.now(), discriminatorNoise)
+      if (segments.length > 0) this.#scanRecovery.markStored()
+      for (const segment of segments) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
     }
@@ -639,6 +761,7 @@ export class VhfRuntime extends EventEmitter<{
       this.#scanLocked = false
       this.#scanOpenMs = 0
       this.#scanQuietMs = 0
+      this.#scanRecovery.endCall(Date.now())
       this.#scheduleScan(0)
     }
   }
@@ -653,9 +776,13 @@ export class VhfRuntime extends EventEmitter<{
     }, delayMs)
   }
 
-  #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
+  #handleSlotBScanAudio(chunk: Buffer, discriminatorNoise: number, capturedAt?: number, frequencyHz?: number, qualitySpans?: ReceiverQualitySpan[]): void {
+    if (capturedAt !== undefined && !this.#slotBScanRecovery.accepts(capturedAt, chunk.length, this.config.sampleRate, this.#slotB.frequencyHz, frequencyHz)) return
     if (this.#slotBScanLocked && capturedAt !== undefined) {
-      for (const segment of this.replayB.prepend(chunk, capturedAt, discriminatorNoise)) {
+      if (!this.#slotBScanRecovery.canPrepend(capturedAt, chunk.length, this.config.sampleRate, this.#slotB.frequencyHz, frequencyHz)) return
+      const segments = this.replayB.prepend(chunk, capturedAt, discriminatorNoise, qualitySpans)
+      if (segments.length > 0) this.#slotBScanRecovery.markStored()
+      for (const segment of segments) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
       return
@@ -663,7 +790,7 @@ export class VhfRuntime extends EventEmitter<{
     const milliseconds = chunk.length / 2 / this.config.sampleRate * 1_000
     const open = discriminatorNoise < discriminatorThreshold(this.config.squelch)
     if (!this.#slotBScanLocked) {
-      this.#appendScanPreRoll(this.#slotBScanPreRoll, chunk, discriminatorNoise, capturedAt)
+      this.#appendScanPreRoll(this.#slotBScanPreRoll, chunk, discriminatorNoise, capturedAt, qualitySpans)
       if (capturedAt !== undefined) return
       this.#slotBScanOpenMs = open ? this.#slotBScanOpenMs + milliseconds : 0
       if (this.#slotBScanOpenMs < 200) return
@@ -674,15 +801,20 @@ export class VhfRuntime extends EventEmitter<{
       if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
       this.#slotBScanTimer = undefined
       this.replayB.setChannel(this.#slotB.id)
+      this.#slotBScanRecovery.beginCall()
       for (const buffered of this.#slotBScanPreRoll) {
-        for (const segment of this.replayB.append(buffered.chunk, buffered.at, buffered.discriminatorNoise)) {
+        const segments = this.replayB.append(buffered.chunk, buffered.at, buffered.discriminatorNoise, buffered.qualitySpans)
+        if (segments.length > 0) this.#slotBScanRecovery.markStored()
+        for (const segment of segments) {
           this.transcription.enqueue(segment, this.config.squelch)
         }
       }
       this.#slotBScanPreRoll = []
       this.#emitStatus()
     } else {
-      for (const segment of this.replayB.append(chunk, Date.now(), discriminatorNoise)) {
+      const segments = this.replayB.append(chunk, Date.now(), discriminatorNoise)
+      if (segments.length > 0) this.#slotBScanRecovery.markStored()
+      for (const segment of segments) {
         this.transcription.enqueue(segment, this.config.squelch)
       }
     }
@@ -693,6 +825,7 @@ export class VhfRuntime extends EventEmitter<{
       this.#slotBScanLocked = false
       this.#slotBScanOpenMs = 0
       this.#slotBScanQuietMs = 0
+      this.#slotBScanRecovery.endCall(Date.now())
       this.#scheduleSlotBScan(0)
     }
   }
@@ -722,6 +855,7 @@ export class VhfRuntime extends EventEmitter<{
         this.#scanOpenMs = 0
         this.#scanPreRoll = []
         this.#scanTargetedAt = now
+        this.#scanRecovery.target(now)
         this.#receiver.tune(next)
       } else if (next && this.#scanTargetedAt === 0) this.#scanTargetedAt = now
     }
@@ -736,17 +870,16 @@ export class VhfRuntime extends EventEmitter<{
         this.#slotBScanOpenMs = 0
         this.#slotBScanPreRoll = []
         this.#slotBScanTargetedAt = now
+        this.#slotBScanRecovery.target(now)
         this.#receiver.tuneSlotB(next)
       } else if (next && this.#slotBScanTargetedAt === 0) this.#slotBScanTargetedAt = now
     }
   }
 
-  #appendScanPreRoll(target: { chunk: Buffer; discriminatorNoise: number; at: number }[], chunk: Buffer, discriminatorNoise: number, capturedAt?: number): void {
-    target.push({ chunk: Buffer.from(chunk), discriminatorNoise, at: capturedAt ?? Date.now() })
-    target.sort((left, right) => left.at - right.at)
-    const maximumBytes = this.config.sampleRate * 2 * 7
-    let total = target.reduce((sum, entry) => sum + entry.chunk.length, 0)
-    while (total > maximumBytes && target.length > 1) total -= target.shift()!.chunk.length
+  #appendScanPreRoll(target: ScanPreRollChunk[], chunk: Buffer, discriminatorNoise: number, capturedAt?: number, qualitySpans?: ReceiverQualitySpan[]): void {
+    const durationMs = chunk.length / 2 / this.config.sampleRate * 1_000
+    mergeTimestampedScanPreRoll(target, { chunk, discriminatorNoise, at: capturedAt ?? Date.now() - durationMs, recovered: capturedAt !== undefined,
+      ...(qualitySpans ? { qualitySpans: qualitySpans.map((span) => ({ ...span })) } : {}) }, this.config.sampleRate)
   }
 
   #emitStatus(): void {

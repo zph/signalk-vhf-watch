@@ -27,6 +27,8 @@ const (
 	frameVoiceB         byte = 4
 	frameVoiceBackfill  byte = 5
 	frameVoiceBBackfill byte = 6
+	frameVoiceSpansBackfill  byte = 7
+	frameVoiceBSpansBackfill byte = 8
 	channelRate              = 96_000
 	spectrumFFTSize          = 4096
 	spectrumStride           = 32768
@@ -79,6 +81,11 @@ type backfillJob struct {
 	frequency, center, sampleRate, audioRate, rfCutoffHz, squelch int
 	iq                                                            []byte
 	startedAt                                                     int64
+}
+
+type backfillSpan struct {
+	byteCount uint32
+	noise     float64
 }
 
 var normalizedIQ = func() [256]float64 {
@@ -670,8 +677,31 @@ func runBackfillWorker(jobs <-chan backfillJob, output io.Writer) {
 		if err != nil {
 			continue
 		}
-		pcm := channel.process(job.iq)
-		_ = writeBackfillFrame(output, job.slot, job.startedAt, job.frequency, pcm, channel.level)
+		sliceBytes := job.sampleRate * 2 / 50
+		if sliceBytes < 2 {
+			continue
+		}
+		var pcm []int16
+		spans := make([]backfillSpan, 0, (len(job.iq)+sliceBytes-1)/sliceBytes)
+		for offset := 0; offset+1 < len(job.iq); offset += sliceBytes {
+			end := min(len(job.iq), offset+sliceBytes)
+			end -= (end - offset) % 2
+			if end <= offset {
+				continue
+			}
+			part := channel.process(job.iq[offset:end])
+			partBytes := uint32(len(part) * 2)
+			if partBytes == 0 {
+				continue
+			}
+			spans = append(spans, backfillSpan{byteCount: partBytes, noise: channel.level})
+			pcm = append(pcm, part...)
+		}
+		kind := frameVoiceSpansBackfill
+		if job.slot == frameVoiceBBackfill || job.slot == frameVoiceBSpansBackfill {
+			kind = frameVoiceBSpansBackfill
+		}
+		_ = writeSpannedBackfillFrame(output, kind, job.startedAt, job.frequency, spans, pcm)
 	}
 }
 
@@ -769,6 +799,24 @@ func writeBackfillFrame(output io.Writer, kind byte, startedAt int64, frequency 
 	binary.LittleEndian.PutUint64(payload[16:24], math.Float64bits(discriminatorNoise))
 	for index, sample := range samples {
 		binary.LittleEndian.PutUint16(payload[24+index*2:], uint16(sample))
+	}
+	return writeFrame(output, kind, payload)
+}
+func writeSpannedBackfillFrame(output io.Writer, kind byte, startedAt int64, frequency int, spans []backfillSpan, samples []int16) error {
+	const fixedBytes = 20
+	payload := make([]byte, fixedBytes+len(spans)*12+len(samples)*2)
+	binary.LittleEndian.PutUint64(payload[0:8], uint64(startedAt))
+	binary.LittleEndian.PutUint64(payload[8:16], uint64(frequency))
+	binary.LittleEndian.PutUint32(payload[16:20], uint32(len(spans)))
+	offset := fixedBytes
+	for _, span := range spans {
+		binary.LittleEndian.PutUint32(payload[offset:offset+4], span.byteCount)
+		binary.LittleEndian.PutUint64(payload[offset+4:offset+12], math.Float64bits(span.noise))
+		offset += 12
+	}
+	for _, sample := range samples {
+		binary.LittleEndian.PutUint16(payload[offset:], uint16(sample))
+		offset += 2
 	}
 	return writeFrame(output, kind, payload)
 }

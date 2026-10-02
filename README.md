@@ -76,7 +76,11 @@ loss. The stronger two-stage FIR path processes a 60-second, 2.4 MS/s dual-chann
 memory before retrospective scan capture. The five-second IQ ring adds about 23 MiB of steady
 memory. Retrospective jobs run one at a time and the queue is capped at two; under rapid retuning,
 the active job plus queued snapshots can add up to about 69 MiB transiently, with the oldest queued
-job discarded in favor of the newest. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
+job discarded in favor of the newest. Backfill is demodulated in 20 ms slices through one continuous
+channelizer, and each slice carries its own discriminator-noise measurement into replay so earlier
+speech remains playable when later recovered audio is only noise. A late backfill is ignored after
+the current scan call has stored a completed replay slice, and timestamped recovery from an older
+scan target is discarded. Against identical NOAA IQ, the selected 9 kHz passband reduced the quiet-window PCM RMS by
 about 14% while preserving speech peaks and the complete one-minute output. The discriminator
 squelch scale is calibrated to this filtered noise floor; `Medium` separates the measured idle
 0.31–0.34 range from the strong NOAA value near 0.05.

@@ -88,18 +88,19 @@ export class RollingReplay {
     this.#pendingStartedAt = Date.now()
   }
 
-  append(chunk: Buffer, receivedAt = Date.now(), discriminatorNoise?: number): ReplaySegment[] {
+  append(chunk: Buffer, receivedAt = Date.now(), discriminatorNoise?: number, qualitySpans?: ReplayQualitySpan[]): ReplaySegment[] {
     if (chunk.length === 0) return []
     this.#prune(receivedAt)
+    const appendedQuality = qualitySpans?.length
+      ? this.#sliceQuality(qualitySpans, 0, chunk.length)
+      : [{ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) }]
+    if (appendedQuality.reduce((sum, span) => sum + span.bytes, 0) !== chunk.length) {
+      throw new Error('Replay quality spans must cover the supplied PCM exactly')
+    }
     if (this.#pending.length === 0) this.#pendingStartedAt = receivedAt
     this.#pending = Buffer.concat([this.#pending, chunk])
-    this.#pendingQuality.push({ bytes: chunk.length, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
-    if (this.#breakSquelch !== undefined && discriminatorNoise !== undefined) {
-      if (discriminatorNoise < discriminatorThreshold(this.#breakSquelch)) {
-        this.#pendingHasSignal = true
-        this.#pendingQuietBytes = 0
-      } else if (this.#pendingHasSignal) this.#pendingQuietBytes += chunk.length
-    }
+    this.#pendingQuality.push(...appendedQuality)
+    this.#recordBreakState(appendedQuality)
     const created: ReplaySegment[] = []
     while (this.#pending.length >= this.#segmentBytes) {
       const pcm = this.#pending.subarray(0, this.#segmentBytes)
@@ -130,19 +131,24 @@ export class RollingReplay {
     return segment
   }
 
-  prepend(chunk: Buffer, startedAt: number, discriminatorNoise?: number): ReplaySegment[] {
+  prepend(chunk: Buffer, startedAt: number, discriminatorNoise?: number, qualitySpans?: ReplayQualitySpan[]): ReplaySegment[] {
     if (chunk.length < 2) return []
     if (this.#pending.length === 0) {
-      return this.append(chunk, startedAt, discriminatorNoise)
+      return this.append(chunk, startedAt, discriminatorNoise, qualitySpans)
     }
     // Keep the live samples at the handoff and trim any duplicated recovered
     // samples. The pending segment keeps its existing public playback id.
     const prefixBytes = Math.min(chunk.length, Math.max(0,
       Math.floor((this.#pendingStartedAt - startedAt) * this.#sampleRate / 1000) * 2))
     if (prefixBytes === 0) return []
+    const prefixQuality = qualitySpans?.length
+      ? this.#sliceQuality(qualitySpans, 0, prefixBytes)
+      : [{ bytes: prefixBytes, ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) }]
+    if (prefixQuality.reduce((sum, span) => sum + span.bytes, 0) !== prefixBytes) {
+      throw new Error('Replay quality spans must cover the supplied PCM exactly')
+    }
     this.#pending = Buffer.concat([chunk.subarray(0, prefixBytes), this.#pending])
-    this.#pendingQuality.unshift({ bytes: prefixBytes,
-      ...(discriminatorNoise === undefined ? {} : { discriminatorNoise }) })
+    this.#pendingQuality.unshift(...prefixQuality)
     this.#pendingStartedAt = startedAt
     const created: ReplaySegment[] = []
     while (this.#pending.length >= this.#segmentBytes) {
@@ -252,6 +258,32 @@ export class RollingReplay {
       if (span.bytes === 0) this.#pendingQuality.shift()
     }
     return taken
+  }
+
+  #sliceQuality(spans: ReplayQualitySpan[], start: number, end: number): ReplayQualitySpan[] {
+    const sliced: ReplayQualitySpan[] = []
+    let offset = 0
+    for (const span of spans) {
+      const spanStart = offset
+      const spanEnd = spanStart + span.bytes
+      const bytes = Math.max(0, Math.min(end, spanEnd) - Math.max(start, spanStart))
+      if (bytes > 0) sliced.push({ bytes,
+        ...(span.discriminatorNoise === undefined ? {} : { discriminatorNoise: span.discriminatorNoise }) })
+      offset = spanEnd
+      if (offset >= end) break
+    }
+    return sliced
+  }
+
+  #recordBreakState(spans: ReplayQualitySpan[]): void {
+    if (this.#breakSquelch === undefined) return
+    for (const span of spans) {
+      const open = span.discriminatorNoise === undefined || span.discriminatorNoise < discriminatorThreshold(this.#breakSquelch)
+      if (open) {
+        this.#pendingHasSignal = true
+        this.#pendingQuietBytes = 0
+      } else if (this.#pendingHasSignal) this.#pendingQuietBytes += span.bytes
+    }
   }
 
   #recomputeBreakState(): void {

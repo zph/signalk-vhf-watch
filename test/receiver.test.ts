@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { channelById } from '../src/channels'
 import { normalizeConfig } from '../src/config'
-import { canChannelize, nativeSidecarArgs, parseSidecarFrames, rtlSdrArgs } from '../src/receiver'
+import { canChannelize, nativeSidecarArgs, parseSidecarFrames, parseSpannedBackfillFrame, rtlSdrArgs } from '../src/receiver'
 import { discriminatorThreshold } from '../src/squelch'
 
 test('builds one receive-only wideband capture for voice and DSC', () => {
@@ -50,6 +50,34 @@ test('parses complete sidecar frames and retains a partial frame', () => {
   const parsed = parseSidecarFrames(Buffer.concat([first, partial]))
   assert.deepEqual(parsed.frames, [{ kind: 1, payload: voice }])
   assert.deepEqual(parsed.remaining, partial)
+})
+
+test('validates quality-spanned backfill metadata and exact PCM coverage', () => {
+  const payload = Buffer.alloc(20 + 2 * 12 + 8)
+  payload.writeBigInt64LE(1_234n, 0)
+  payload.writeBigInt64LE(156_800_000n, 8)
+  payload.writeUInt32LE(2, 16)
+  payload.writeUInt32LE(4, 20)
+  payload.writeDoubleLE(0.1, 24)
+  payload.writeUInt32LE(4, 32)
+  payload.writeDoubleLE(0.5, 36)
+  payload.fill(0x12, 44)
+  const parsed = parseSpannedBackfillFrame(payload)
+  assert.equal(parsed.capturedAt, 1_234)
+  assert.equal(parsed.frequencyHz, 156_800_000)
+  assert.equal(parsed.discriminatorNoise, 0.3)
+  assert.deepEqual(parsed.qualitySpans, [
+    { bytes: 4, discriminatorNoise: 0.1 },
+    { bytes: 4, discriminatorNoise: 0.5 }
+  ])
+  assert.deepEqual(parsed.pcm, Buffer.alloc(8, 0x12))
+
+  const mismatched = Buffer.from(payload)
+  mismatched.writeUInt32LE(6, 20)
+  assert.throws(() => parseSpannedBackfillFrame(mismatched), /Invalid quality span/)
+  const nonFinite = Buffer.from(payload)
+  nonFinite.writeDoubleLE(Number.NaN, 24)
+  assert.throws(() => parseSpannedBackfillFrame(nonFinite), /Invalid quality span/)
 })
 
 test('maps higher squelch settings to stricter discriminator-noise thresholds', () => {

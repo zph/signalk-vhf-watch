@@ -11,10 +11,15 @@ export const WIDEBAND_SAMPLE_RATE = 2_400_000
 export const DSC_CHANNEL_HZ = 156_525_000
 export const CHANNEL_GUARD_HZ = 25_000
 
+export interface ReceiverQualitySpan {
+  bytes: number
+  discriminatorNoise: number
+}
+
 export interface ReceiverEvents {
   audio: [Buffer]
-  replayAudio: [Buffer, number, number?, number?]
-  slotBReplayAudio: [Buffer, number, number?, number?]
+  replayAudio: [Buffer, number, number?, number?, ReceiverQualitySpan[]?]
+  slotBReplayAudio: [Buffer, number, number?, number?, ReceiverQualitySpan[]?]
   dscAudio: [Buffer]
   error: [Error]
   metrics: [ReceiverMetrics]
@@ -100,6 +105,43 @@ export function parseSidecarFrames(buffer: Buffer): { frames: SidecarFrame[]; re
   return { frames, remaining: buffer.subarray(offset) }
 }
 
+export interface SpannedBackfillFrame {
+  capturedAt: number
+  frequencyHz: number
+  discriminatorNoise: number
+  qualitySpans: ReceiverQualitySpan[]
+  pcm: Buffer
+}
+
+export function parseSpannedBackfillFrame(payload: Buffer): SpannedBackfillFrame {
+  if (payload.length < 20) throw new Error('Truncated quality-spanned retrospective frame from VHF sidecar')
+  const capturedAt = Number(payload.readBigInt64LE(0))
+  const frequencyHz = Number(payload.readBigInt64LE(8))
+  const spanCount = payload.readUInt32LE(16)
+  if (!Number.isSafeInteger(capturedAt) || !Number.isSafeInteger(frequencyHz) || spanCount > Math.floor((payload.length - 20) / 12)) {
+    throw new Error('Invalid quality-spanned retrospective frame header from VHF sidecar')
+  }
+  const qualitySpans: ReceiverQualitySpan[] = []
+  const pcmOffset = 20 + spanCount * 12
+  let totalBytes = 0
+  let weightedNoise = 0
+  for (let index = 0; index < spanCount; index += 1) {
+    const offset = 20 + index * 12
+    const bytes = payload.readUInt32LE(offset)
+    const discriminatorNoise = payload.readDoubleLE(offset + 4)
+    if (bytes === 0 || bytes % 2 !== 0 || !Number.isFinite(discriminatorNoise) || totalBytes + bytes > payload.length - pcmOffset) {
+      throw new Error('Invalid quality span in retrospective frame from VHF sidecar')
+    }
+    qualitySpans.push({ bytes, discriminatorNoise })
+    totalBytes += bytes
+    weightedNoise += bytes * discriminatorNoise
+  }
+  if (totalBytes !== payload.length - pcmOffset || qualitySpans.length === 0) {
+    throw new Error('Quality spans do not match retrospective PCM from VHF sidecar')
+  }
+  return { capturedAt, frequencyHz, discriminatorNoise: weightedNoise / totalBytes, qualitySpans, pcm: payload.subarray(pcmOffset) }
+}
+
 export class NativeSidecarReceiver extends AudioReceiver {
   readonly #config: VhfWatchConfig
   #channel: VhfChannel
@@ -173,6 +215,14 @@ export class NativeSidecarReceiver extends AudioReceiver {
               this.emit('replayAudio', frame.payload.subarray(24), discriminatorNoise, capturedAt, frequencyHz)
             } else if (frame.kind === 6 && this.#slotB !== '70' && frequencyHz === this.#slotB.frequencyHz) {
               this.emit('slotBReplayAudio', frame.payload.subarray(24), discriminatorNoise, capturedAt, frequencyHz)
+            }
+          }
+          else if (frame.kind === 7 || frame.kind === 8) {
+            const backfill = parseSpannedBackfillFrame(frame.payload)
+            if (frame.kind === 7 && backfill.frequencyHz === this.#channel.frequencyHz) {
+              this.emit('replayAudio', backfill.pcm, backfill.discriminatorNoise, backfill.capturedAt, backfill.frequencyHz, backfill.qualitySpans)
+            } else if (frame.kind === 8 && this.#slotB !== '70' && backfill.frequencyHz === this.#slotB.frequencyHz) {
+              this.emit('slotBReplayAudio', backfill.pcm, backfill.discriminatorNoise, backfill.capturedAt, backfill.frequencyHz, backfill.qualitySpans)
             }
           }
           else if (frame.kind === 3) {

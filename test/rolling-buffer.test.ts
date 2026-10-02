@@ -77,6 +77,48 @@ test('joins recovered and live audio in one stable recording without duplicating
   assert.deepEqual(segment.qualitySpans.map((span) => span.bytes), [80_000, 16_000, 16_000])
 })
 
+test('trims recovered quality spans at the exact live overlap boundary', () => {
+  const replay = new RollingReplay(8_000, 60, 60, '68')
+  const now = Date.now()
+  const live = Buffer.alloc(16_000 * 2, 2)
+  replay.append(live, now, 0.1)
+  const backfill = Buffer.alloc(16_000 * 6, 1)
+  const recovered = replay.prepend(backfill, now - 5_000, 0.35, [
+    { bytes: 16_000 * 3, discriminatorNoise: 0.6 },
+    { bytes: 16_000 * 3, discriminatorNoise: 0.1 }
+  ])
+  assert.deepEqual(recovered, [])
+  const segment = replay.flush()!
+  assert.equal(segment.durationSeconds, 7)
+  assert.deepEqual(segment.wav.subarray(44), Buffer.concat([
+    Buffer.alloc(16_000 * 3, 1),
+    Buffer.alloc(16_000 * 2, 1),
+    live
+  ]))
+  assert.deepEqual(segment.qualitySpans, [
+    { bytes: 16_000 * 3, discriminatorNoise: 0.6 },
+    { bytes: 16_000 * 2, discriminatorNoise: 0.1 },
+    { bytes: live.length, discriminatorNoise: 0.1 }
+  ])
+})
+
+test('keeps recovered speech playable while gating a later noisy span', async () => {
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const pcm = Buffer.alloc(16_000 * 2)
+  pcm.fill(0x30, 0, 16_000)
+  pcm.fill(0x40, 16_000)
+  replay.append(pcm, Date.UTC(2026, 8, 29), 0.35, [
+    { bytes: 16_000, discriminatorNoise: 0.1 },
+    { bytes: 16_000, discriminatorNoise: 0.6 }
+  ])
+  const segment = replay.list(20)[0]!
+  assert.deepEqual(segment.activity?.slice(0, 24), Array(24).fill(1))
+  assert.deepEqual(segment.activity?.slice(24), Array(24).fill(0))
+  const wav = await replay.wavFor(segment.id, 20)
+  assert.equal(wav?.subarray(44, 44 + 16_000).every((byte) => byte === 0x30), true)
+  assert.equal(wav?.subarray(44 + 16_000, 44 + 32_000).every((byte) => byte === 0), true)
+})
+
 test('exposes a growing storage slice immediately with a stable playable id', async () => {
   const replay = new RollingReplay(8_000, 60, 120, 'WX4')
   replay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 8, 29), 0.10)
