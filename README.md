@@ -89,3 +89,7 @@ npm pack --dry-run
 
 The receiver, rolling buffer, HTTP API, and web UI are deliberately independent of Binnacle so this
 plugin can mature before a chart-client integration is added.
+
+The independent [Go audio sidecar prototype](go-sidecar/README.md) processes the deployed native
+receiver's voice frames with the same squelch and optional hiss filter. It is kept separate for a
+later merge into that receiver; the current plugin still uses its TypeScript worker.
