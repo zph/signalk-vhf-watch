@@ -3,6 +3,7 @@ import { channelById, channelPlan, type ChannelRegion, type VhfChannel } from '.
 import type { SlotBMode, VhfWatchConfig } from './config'
 import { DscAudioDecoder, type DscMessage } from './dsc'
 import type { DscMessageCache } from './dsc-cache'
+import { enrichDscMessages, findDscCallerIdentity } from './dsc-identity'
 import {
   canChannelize,
   DemoReceiver,
@@ -24,6 +25,7 @@ import { RnnoiseDenoiser } from './rnnoise'
 import { SpectrumActivityLog, type SpectrumActivityEvent, type SpectrumActivitySample } from './activity-log'
 
 const SPECTRUM_ACTIVITY_THRESHOLD = 2
+const DSC_IDENTITY_REFRESH_MS = 10 * 60 * 1000
 
 export class ScanRecoveryWindow {
   #cutoffAt = 0
@@ -250,8 +252,11 @@ export class VhfRuntime extends EventEmitter<{
   readonly #spectrumActivityLog: SpectrumActivityLog
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscCache?: DscMessageCache
+  readonly #getDscVessels?: () => unknown
   readonly #saveTuning?: (settings: TuningSettings) => void
   #dscMessages: DscMessage[] = []
+  #resolvedDscMessages: DscMessage[] = []
+  #dscIdentityRefreshTimer?: ReturnType<typeof setInterval>
 
   constructor(
     config: VhfWatchConfig,
@@ -260,7 +265,8 @@ export class VhfRuntime extends EventEmitter<{
     narration?: NarrationManager,
     saveTuning?: (settings: TuningSettings) => void,
     denoiser?: RnnoiseDenoiser,
-    replayOpusCommand?: string
+    replayOpusCommand?: string,
+    getDscVessels?: () => unknown
   ) {
     super()
     this.config = config
@@ -281,12 +287,14 @@ export class VhfRuntime extends EventEmitter<{
     }
     this.#slotBConfigured = this.#slotB
     this.#dscCache = dscCache
+    this.#getDscVessels = getDscVessels
     this.#saveTuning = saveTuning
     this.#spectrumActivityLog = new SpectrumActivityLog(config.replayMinutes)
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.narration = narration
     this.denoiser = denoiser
     this.#dscMessages = dscCache?.list() ?? []
+    this.#refreshDscIdentities()
     this.replay = new RollingReplay(
       config.sampleRate,
       config.segmentSeconds,
@@ -302,6 +310,11 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   start(): void {
+    this.#refreshDscIdentities()
+    if (this.#getDscVessels && !this.#dscIdentityRefreshTimer) {
+      this.#dscIdentityRefreshTimer = setInterval(() => this.#refreshDscIdentities(), DSC_IDENTITY_REFRESH_MS)
+      this.#dscIdentityRefreshTimer.unref?.()
+    }
     if (!this.config.enabled) {
       this.#receiverState = 'Disabled'
       this.#emitStatus()
@@ -313,6 +326,8 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   stop(): void {
+    if (this.#dscIdentityRefreshTimer) clearInterval(this.#dscIdentityRefreshTimer)
+    this.#dscIdentityRefreshTimer = undefined
     this.#stopReceiver()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
@@ -573,7 +588,8 @@ export class VhfRuntime extends EventEmitter<{
   clearReplay(): void { this.replay.clear(); this.replayB.clear() }
 
   dscMessages(): DscMessage[] {
-    return [...this.#dscMessages]
+    this.#refreshDscIdentities()
+    return this.#resolvedDscMessages.map((message) => ({ ...message, rawSymbols: [...message.rawSymbols] }))
   }
 
   activityEvents(): SpectrumActivityEvent[] {
@@ -688,6 +704,7 @@ export class VhfRuntime extends EventEmitter<{
           this.#dscMessages.unshift(...messages.reverse())
           this.#dscMessages.splice(100)
         }
+        this.#refreshDscIdentities()
         this.#emitStatus()
       }
     })
@@ -708,6 +725,19 @@ export class VhfRuntime extends EventEmitter<{
     receiver?.removeAllListeners()
     receiver?.stop()
     this.#dscContinuous = false
+  }
+
+  #refreshDscIdentities(): void {
+    if (!this.#getDscVessels) {
+      this.#resolvedDscMessages = this.#dscMessages
+      return
+    }
+    try {
+      const vessels = this.#getDscVessels()
+      this.#resolvedDscMessages = enrichDscMessages(this.#dscMessages, (mmsi) => findDscCallerIdentity(vessels, mmsi))
+    } catch {
+      this.#resolvedDscMessages = enrichDscMessages(this.#dscMessages, () => undefined)
+    }
   }
 
   #dscChannel(): ReceiverSlotChannel {

@@ -823,7 +823,10 @@
     time.dateTime = message.receivedAt
     time.textContent = new Date(message.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     const detail = document.createElement('p')
-    const source = message.selfMmsi ? `From MMSI ${message.selfMmsi}` : 'unknown station'
+    const callerIdentity = [message.callerName, message.callerCallsign].filter(Boolean).join(' · ')
+    const source = message.selfMmsi
+      ? `From ${callerIdentity ? `${callerIdentity} · ` : ''}MMSI ${message.selfMmsi}`
+      : 'unknown station'
     const target = message.targetMmsi ? ` · to MMSI ${message.targetMmsi}` : ''
     const distressTime = message.timeUtc ? ` · reported ${message.timeUtc} UTC` : ''
     const position = message.position ? ` · ${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}` : ''

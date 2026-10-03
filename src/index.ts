@@ -52,7 +52,8 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       transcription.attachNarrator(narration)
       runtime = new VhfRuntime(
         config, dscCache, transcription, narration,
-        (settings) => tuningSettings.save(settings), denoiser, '/usr/bin/ffmpeg'
+        (settings) => tuningSettings.save(settings), denoiser, '/usr/bin/ffmpeg',
+        () => app.getPath('vessels')
       )
       runtime.on('status', (status) => {
         const message = status.error

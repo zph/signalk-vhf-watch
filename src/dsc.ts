@@ -15,6 +15,9 @@ export interface DscMessage {
   format: string
   category: string
   selfMmsi?: string
+  /** Current Signal K AIS identity for the transmitting station; resolved at read time. */
+  callerName?: string
+  callerCallsign?: string
   targetMmsi?: string
   nature?: string
   position?: DscPosition
