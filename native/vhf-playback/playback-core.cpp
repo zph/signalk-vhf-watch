@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -58,9 +61,23 @@ float quantile(std::vector<float> values, float q) {
 }
 }  // namespace
 
-PlaybackCore::PlaybackCore(Denoiser &denoiser, Sink sink)
+float parseQuietingIntensity(const char *value) {
+  if (!value || !*value || std::isspace(static_cast<unsigned char>(*value)))
+    throw std::invalid_argument("invalid --quieting value");
+  char *end = nullptr;
+  errno = 0;
+  const float intensity = std::strtof(value, &end);
+  if (errno || !end || end == value || *end || !std::isfinite(intensity) || intensity < 0.0f || intensity > 100.0f)
+    throw std::invalid_argument("invalid --quieting value");
+  return intensity;
+}
+
+PlaybackCore::PlaybackCore(Denoiser &denoiser, Sink sink, float quietingIntensity)
     : denoiser_(denoiser), sink_(std::move(sink)) {
   if (!sink_) throw std::invalid_argument("PCM output sink is required");
+  if (!std::isfinite(quietingIntensity) || quietingIntensity < 0.0f || quietingIntensity > 100.0f)
+    throw std::invalid_argument("quieting intensity must be between 0 and 100");
+  quietingExponent_ = quietingIntensity / 100.0f;
 }
 
 float PlaybackCore::rawAt(uint64_t index) const {
@@ -282,7 +299,10 @@ void PlaybackCore::pump(bool eof) {
   const uint64_t count = std::min({safe > written_ ? safe - written_ : 0,
                                    generated_ > written_ ? generated_ - written_ : 0});
   for (uint64_t i = 0; i < count; ++i) {
-    const float sample = denoised_.front() * gain_.front() * kFixedGain;
+    const float envelope = quietingExponent_ == 1.0f
+        ? gain_.front()
+        : std::pow(gain_.front(), quietingExponent_);
+    const float sample = denoised_.front() * envelope * kFixedGain;
     denoised_.pop_front();
     gain_.pop_front();
     raw_.pop_front();

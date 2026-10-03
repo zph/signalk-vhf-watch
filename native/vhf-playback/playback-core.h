@@ -8,6 +8,8 @@
 
 namespace vhf {
 
+float parseQuietingIntensity(const char *value);
+
 class Denoiser {
  public:
   virtual ~Denoiser() = default;
@@ -19,7 +21,7 @@ class Denoiser {
 class PlaybackCore {
  public:
   using Sink = std::function<void(const int16_t *, size_t)>;
-  explicit PlaybackCore(Denoiser &denoiser, Sink sink);
+  explicit PlaybackCore(Denoiser &denoiser, Sink sink, float quietingIntensity = 100.0f);
   void accept(const int16_t *pcm, size_t n, float discriminatorNoise);
   void finish();
   uint64_t inputSamples() const { return received_; }
@@ -58,6 +60,7 @@ class PlaybackCore {
 
   Denoiser &denoiser_;
   Sink sink_;
+  float quietingExponent_ = 1.0f;
   uint64_t received_ = 0, generated_ = 0, written_ = 0;
   uint64_t rawBase_ = 0, gainBase_ = 0, nextFeature_ = 0, finalized_ = 0;
   uint64_t candidateRun_ = 0;

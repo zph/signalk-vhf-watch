@@ -37,6 +37,14 @@ interface CacheEntry { pcm: Buffer; expiresAt: number }
 export interface PlaybackQualitySpan { bytes: number; discriminatorNoise?: number }
 interface InFlightEntry { promise: Promise<Buffer>; controller: AbortController; consumers: number }
 
+function validatedQuietingIntensity(value: number | undefined): number {
+  const intensity = value ?? 100
+  if (!Number.isFinite(intensity) || intensity < 0 || intensity > 100) {
+    throw new ModifiedPlaybackError('Between-transmission quieting must be between 0 and 100%')
+  }
+  return intensity
+}
+
 /** Isolated GTCRN playback worker; it is deliberately separate from transcription. */
 export class ModifiedPlayback {
   readonly #helper: string
@@ -82,8 +90,9 @@ export class ModifiedPlayback {
   async processPcm(
     pcm: Buffer,
     sampleRate: number,
-    options: { discriminatorNoise?: number; qualitySpans?: PlaybackQualitySpan[]; cacheKey?: string; stillCurrent?: () => boolean; signal?: AbortSignal } = {}
+    options: { discriminatorNoise?: number; qualitySpans?: PlaybackQualitySpan[]; quietingIntensity?: number; cacheKey?: string; stillCurrent?: () => boolean; signal?: AbortSignal } = {}
   ): Promise<Buffer> {
+    const quietingIntensity = validatedQuietingIntensity(options.quietingIntensity)
     if (this.#closed) throw new ModifiedPlaybackError('Modified playback service is stopped; choose Raw')
     if (!this.available(sampleRate)) throw new ModifiedPlaybackError(
       sampleRate === SAMPLE_RATE
@@ -97,7 +106,7 @@ export class ModifiedPlayback {
     if (spans.reduce((sum, span) => sum + span.bytes, 0) !== pcm.length || spans.some((span) => span.bytes < 0 || span.bytes % 2)) {
       throw new ModifiedPlaybackError('Modified playback quality metadata does not match the PCM source')
     }
-    const keyHash = createHash('sha256').update(options.cacheKey ?? '').update(pcm)
+    const keyHash = createHash('sha256').update(options.cacheKey ?? '').update(`quieting:${quietingIntensity};`).update(pcm)
     for (const span of spans) keyHash.update(String(span.bytes)).update(':').update(String(span.discriminatorNoise ?? 'unknown')).update(';')
     const key = options.cacheKey ? keyHash.digest('hex') : undefined
     if (key) {
@@ -110,12 +119,12 @@ export class ModifiedPlayback {
     if (key) {
       const controller = new AbortController()
       const entry: InFlightEntry = { promise: Promise.resolve(Buffer.alloc(0)), controller, consumers: 0 }
-      entry.promise = this.#process(pcm, key, { ...options, qualitySpans: spans, signal: controller.signal })
+      entry.promise = this.#process(pcm, key, { ...options, quietingIntensity, qualitySpans: spans, signal: controller.signal })
       this.#inflight.set(key, entry)
       void entry.promise.finally(() => { if (this.#inflight.get(key) === entry) this.#inflight.delete(key) }).catch(() => {})
       return this.#join(entry, options.signal, options.stillCurrent)
     }
-    return this.#process(pcm, undefined, { ...options, qualitySpans: spans })
+    return this.#process(pcm, undefined, { ...options, quietingIntensity, qualitySpans: spans })
   }
 
   #join(entry: InFlightEntry, signal?: AbortSignal, stillCurrent?: () => boolean): Promise<Buffer> {
@@ -147,11 +156,11 @@ export class ModifiedPlayback {
   async #process(
     pcm: Buffer,
     key: string | undefined,
-    options: { qualitySpans: PlaybackQualitySpan[]; stillCurrent?: () => boolean; signal?: AbortSignal }
+    options: { qualitySpans: PlaybackQualitySpan[]; quietingIntensity: number; stillCurrent?: () => boolean; signal?: AbortSignal }
   ): Promise<Buffer> {
     const release = await this.#acquire(options.signal)
     try {
-      const child = await this.#start(options.signal)
+      const child = await this.#start(options.signal, options.quietingIntensity)
       const output: Buffer[] = []
       let outputBytes = 0
       let overflow = false
@@ -193,7 +202,8 @@ export class ModifiedPlayback {
     }
   }
 
-  async openStream(sampleRate: number, signal?: AbortSignal): Promise<ModifiedPlaybackStream> {
+  async openStream(sampleRate: number, signal?: AbortSignal, quietingIntensity = 100): Promise<ModifiedPlaybackStream> {
+    quietingIntensity = validatedQuietingIntensity(quietingIntensity)
     if (this.#closed) throw new ModifiedPlaybackError('Modified playback service is stopped; choose Raw')
     if (!this.available(sampleRate)) throw new ModifiedPlaybackError(
       sampleRate === SAMPLE_RATE
@@ -202,7 +212,7 @@ export class ModifiedPlayback {
     )
     const release = await this.#acquire(signal)
     let child: HelperProcess
-    try { child = await this.#start(signal) } catch (error) { release(); throw error }
+    try { child = await this.#start(signal, quietingIntensity) } catch (error) { release(); throw error }
     let closed = false
     const finish = (): void => {
       if (closed) return
@@ -238,9 +248,9 @@ export class ModifiedPlayback {
     }
   }
 
-  #spawn(): HelperProcess {
+  #spawn(quietingIntensity: number): HelperProcess {
     if (this.#closed) throw new ModifiedPlaybackError('Modified playback service is stopped; choose Raw')
-    const child = spawn(this.#helper, ['--model', this.#model, '--sample-rate', String(SAMPLE_RATE)], {
+    const child = spawn(this.#helper, ['--model', this.#model, '--sample-rate', String(SAMPLE_RATE), '--quieting', String(quietingIntensity)], {
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       env: { ...process.env, LD_LIBRARY_PATH: path.join(path.dirname(this.#helper), 'lib') }
     }) as HelperProcess
@@ -250,8 +260,8 @@ export class ModifiedPlayback {
     return child
   }
 
-  async #start(signal?: AbortSignal): Promise<HelperProcess> {
-    const child = this.#spawn()
+  async #start(signal?: AbortSignal, quietingIntensity = 100): Promise<HelperProcess> {
+    const child = this.#spawn(quietingIntensity)
     const ready = (child.stdio as unknown as Readable[])[3]!
     let stderr = ''
     child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8_192) })

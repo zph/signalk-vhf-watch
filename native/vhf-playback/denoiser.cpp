@@ -133,6 +133,7 @@ bool writePcm(const int16_t *samples, size_t n) {
 int run(int argc, char **argv) {
   const char *modelPath = nullptr;
   uint32_t sampleRate = 0;
+  float quieting = 100.0f;
   for (int i = 1; i < argc; ++i) {
     const std::string arg(argv[i]);
     if (arg == "--model" && i + 1 < argc) modelPath = argv[++i];
@@ -143,12 +144,14 @@ int run(int argc, char **argv) {
       if (errno || !end || *end || value > std::numeric_limits<uint32_t>::max())
         throw std::runtime_error("invalid --sample-rate value");
       sampleRate = static_cast<uint32_t>(value);
+    } else if (arg == "--quieting" && i + 1 < argc) {
+      quieting = vhf::parseQuietingIntensity(argv[++i]);
     } else {
-      throw std::runtime_error("usage: vhf-playback-denoiser --model PATH --sample-rate 16000");
+      throw std::runtime_error("usage: vhf-playback-denoiser --model PATH --sample-rate 16000 [--quieting 0..100]");
     }
   }
   if (!modelPath || !*modelPath || sampleRate != kRate)
-    throw std::runtime_error("usage: vhf-playback-denoiser --model PATH --sample-rate 16000");
+    throw std::runtime_error("usage: vhf-playback-denoiser --model PATH --sample-rate 16000 [--quieting 0..100]");
 
   setpriority(PRIO_PROCESS, 0, 10);
   SherpaDenoiser denoiser(modelPath);
@@ -161,7 +164,7 @@ int run(int argc, char **argv) {
 
   vhf::PlaybackCore core(denoiser, [](const int16_t *samples, size_t n) {
     if (!writePcm(samples, n)) throw std::runtime_error("could not write playback PCM");
-  });
+  }, quieting);
 
   while (true) {
     unsigned char lengthBytes[4];

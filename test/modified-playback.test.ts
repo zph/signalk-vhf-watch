@@ -10,6 +10,7 @@ const fs = require('node:fs')
 const model = process.argv[process.argv.indexOf('--model') + 1]
 const runFile = model + '.runs'
 fs.appendFileSync(runFile, 'run\\n')
+fs.appendFileSync(model + '.quieting', process.argv[process.argv.indexOf('--quieting') + 1] + '\\n')
 fs.writeSync(3, 'R')
 let pending = Buffer.alloc(0)
 let pcm = []
@@ -69,6 +70,18 @@ test('identical finite requests coalesce and cache without sharing mutable buffe
   const cached = await f.playback.processPcm(source, 16_000, options)
   assert.equal(cached[0], 7)
   assert.equal(readFileSync(`${f.model}.runs`, 'utf8').trim().split('\n').length, 1)
+})
+
+test('quieting intensity separates cached work and reaches finite and streaming helpers', async (t) => {
+  const f = fixture(t)
+  const source = Buffer.alloc(32, 7)
+  await f.playback.processPcm(source, 16_000, { cacheKey: 'archive:same', quietingIntensity: 100 })
+  await f.playback.processPcm(source, 16_000, { cacheKey: 'archive:same', quietingIntensity: 50 })
+  const stream = await f.playback.openStream(16_000, undefined, 0)
+  stream.end()
+  await stream.completion
+  assert.equal(readFileSync(`${f.model}.runs`, 'utf8').trim().split('\n').length, 3)
+  assert.equal(readFileSync(`${f.model}.quieting`, 'utf8'), '100\n50\n0\n')
 })
 
 test('cancelling one coalesced caller leaves the other caller alive', async (t) => {
@@ -135,6 +148,8 @@ test('unsupported rates and malformed quality spans fail before spawning', async
     qualitySpans: [{ bytes: 2 }, { bytes: 4 }]
   }), ModifiedPlaybackError)
   await assert.rejects(f.playback.processPcm(Buffer.alloc(3), 16_000), /complete PCM16/)
+  await assert.rejects(f.playback.processPcm(Buffer.alloc(4), 16_000, { quietingIntensity: Number.NaN }), /between 0 and 100%/)
+  await assert.rejects(f.playback.openStream(16_000, undefined, 101), /between 0 and 100%/)
   assert.equal(requireRuns(f.model), 0)
 })
 

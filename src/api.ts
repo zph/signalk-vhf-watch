@@ -11,7 +11,7 @@ import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 
-const UI_VERSION = 44
+const UI_VERSION = 46
 
 interface ByteRange {
   start: number
@@ -104,6 +104,12 @@ function runtimeOr503(getRuntime: () => VhfRuntime | undefined, response: Respon
 function archiveSquelch(request: Request): number {
   const requested = Number(request.query.squelch ?? 0)
   return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 0
+}
+
+export function parseQuietingIntensity(value: unknown): number {
+  if (typeof value !== 'string' || value.trim() === '') return 100
+  const requested = Number(value)
+  return Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 100
 }
 
 export function archivedPlaybackPcm(
@@ -224,6 +230,7 @@ export function registerRoutes(
         const playback = modifiedOr503(getPlayback, response)
         if (!playback) return
         const processed = await playback.processPcm(sourcePcm, record.sampleRate, {
+          quietingIntensity: parseQuietingIntensity(request.query.quieting),
           cacheKey: `archive:${id}:${activityOnly ? 'activity' : 'full'}:modified-v1`,
           stillCurrent: () => sameArchiveSource(runtime.transcription.archiveRecord(id), record),
           signal: responseAbortSignal(response)
@@ -283,6 +290,7 @@ export function registerRoutes(
       if (!playback) return
       try {
         const processed = await playback.processPcm(pcm, first.sampleRate, {
+          quietingIntensity: parseQuietingIntensity(request.query.quieting),
           cacheKey: `archive-session:${ids!.join(',')}:${activityOnly ? 'activity' : 'full'}:modified-v1`,
           stillCurrent: () => ids!.every((id, index) => sameArchiveSource(runtime.transcription.archiveRecord(id), resolved[index]!)),
           signal: responseAbortSignal(response)
@@ -365,6 +373,7 @@ export function registerRoutes(
         const rawPcm = wav.subarray(44)
         const qualityBytes = segment.qualitySpans.reduce((sum, span) => sum + span.bytes, 0)
         const pcm = await playback.processPcm(rawPcm, runtime.config.sampleRate, {
+          quietingIntensity: parseQuietingIntensity(request.query.quieting),
           ...(qualityBytes === rawPcm.length ? { qualitySpans: segment.qualitySpans } : {}),
           cacheKey: `replay:${id}:${segment.startedAt}:${segment.endedAt}:modified-v1`,
           stillCurrent: () => runtime.replayStillCurrent(id, segment.startedAt),
@@ -428,6 +437,7 @@ export function registerRoutes(
         : undefined
       try {
         const processed = await playback.processPcm(pcm, runtime.config.sampleRate, {
+          quietingIntensity: parseQuietingIntensity(request.query.quieting),
           ...(alignedQualitySpans ? { qualitySpans: alignedQualitySpans } : {}),
           cacheKey: `replay-session:${ids!.join(',')}:${first.slot}:${first.channel}:modified-v1`,
           stillCurrent: () => ids!.every((id, index) => runtime.replayStillCurrent(id, resolved[index]!.startedAt)),
@@ -472,7 +482,7 @@ export function registerRoutes(
       const abort = new AbortController()
       response.once('close', () => { if (!response.writableEnded) abort.abort() })
       let stream
-      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal) }
+      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal, parseQuietingIntensity(request.query.quieting)) }
       catch (error) { playbackFailure(response, error); return }
       if (response.destroyed) { stream.close(); return }
       const event = segment.slot === 'A' ? 'rawAudio' : 'rawSlotBAudio'
@@ -720,7 +730,7 @@ export function registerRoutes(
       const abort = new AbortController()
       response.once('close', () => { if (!response.writableEnded) abort.abort() })
       let stream
-      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal) }
+      try { stream = await playback.openStream(runtime.config.sampleRate, abort.signal, parseQuietingIntensity(request.query.quieting)) }
       catch (error) { playbackFailure(response, error); return }
       if (response.destroyed) { stream.close(); return }
       let inputEnded = false

@@ -86,12 +86,13 @@ std::vector<int16_t> makeSignal(size_t n) {
 std::vector<int16_t> process(const std::vector<int16_t> &input,
                              const std::vector<size_t> &partitions,
                              const std::vector<float> &noiseBySample,
-                             uint64_t *calls = nullptr) {
+                             uint64_t *calls = nullptr,
+                             float quieting = 100.0f) {
   IdentityDenoiser denoiser;
   std::vector<int16_t> output;
   vhf::PlaybackCore core(denoiser, [&output](const int16_t *samples, size_t n) {
     output.insert(output.end(), samples, samples + n);
-  });
+  }, quieting);
   size_t at = 0, part = 0;
   while (at < input.size()) {
     const size_t requested = partitions[part++ % partitions.size()];
@@ -221,6 +222,41 @@ void testGateAndLimiter() {
           "limiter failed across a chunk seam");
 }
 
+void testQuietingIntensity() {
+  constexpr size_t n = 16000 * 5;
+  const auto input = makeSignal(n);
+  std::vector<float> rf(n, 0.7f);
+  std::fill(rf.begin() + 2 * 16000, rf.end(), 0.0f);
+  const auto full = process(input, {1024, 79, 512}, rf, nullptr, 100.0f);
+  const auto gentle = process(input, {1024, 79, 512}, rf, nullptr, 50.0f);
+  const auto off = process(input, {1024, 79, 512}, rf, nullptr, 0.0f);
+  auto energy = [](const std::vector<int16_t> &samples, size_t start, size_t count) {
+    uint64_t sum = 0;
+    for (size_t i = start; i < start + count; ++i) sum += static_cast<uint64_t>(std::abs(static_cast<int>(samples[i])));
+    return sum;
+  };
+  const auto closedFull = energy(full, 16000, 3000);
+  const auto closedGentle = energy(gentle, 16000, 3000);
+  const auto closedOff = energy(off, 16000, 3000);
+  require(closedFull < closedGentle && closedGentle < closedOff,
+          "quieting intensity must monotonically attenuate the closed gate");
+  require(energy(full, 2 * 16000, 2400) == energy(gentle, 2 * 16000, 2400) &&
+              energy(gentle, 2 * 16000, 2400) == energy(off, 2 * 16000, 2400),
+          "quieting intensity must leave the open gate region unchanged");
+}
+
+void testQuietingValidation() {
+  for (const char *value : {"", "nan", "inf", "-1", "101", "50x"}) {
+    bool threw = false;
+    try { (void)vhf::parseQuietingIntensity(value); }
+    catch (const std::invalid_argument &) { threw = true; }
+    require(threw, "invalid quieting CLI value was accepted");
+  }
+  require(vhf::parseQuietingIntensity("0") == 0.0f && vhf::parseQuietingIntensity("50") == 50.0f &&
+              vhf::parseQuietingIntensity("100") == 100.0f,
+          "valid quieting CLI values were not parsed");
+}
+
 void testBoundedLongStream() {
   IdentityDenoiser denoiser;
   std::vector<int16_t> output;
@@ -250,6 +286,8 @@ int main() {
     testPartitionsAndEof();
     testBelowCapConstantGain();
     testGateAndLimiter();
+    testQuietingIntensity();
+    testQuietingValidation();
     testDenoiserCountFaults();
     testBoundedLongStream();
     std::cout << "native playback core tests passed\n";

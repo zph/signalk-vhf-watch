@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { archivedPlaybackPcm, parseByteRange } from '../src/api'
+import { archivedPlaybackPcm, parseByteRange, parseQuietingIntensity } from '../src/api'
 import { pcmToWav } from '../src/wav'
 
 test('parses browser byte ranges for seekable WAV playback', () => {
@@ -17,6 +17,17 @@ test('rejects malformed or unsatisfiable WAV byte ranges', () => {
   assert.equal(parseByteRange('bytes=0-1,10-11', 1_000), null)
   assert.equal(parseByteRange('items=0-10', 1_000), null)
   assert.equal(parseByteRange('bytes=-0', 1_000), null)
+})
+
+test('normalizes quieting query values with a safe default and bounds', () => {
+  for (const value of [undefined, '', ' ', 'invalid', 'NaN', 'Infinity', ['50']]) {
+    assert.equal(parseQuietingIntensity(value), 100)
+  }
+  assert.equal(parseQuietingIntensity('0'), 0)
+  assert.equal(parseQuietingIntensity('50'), 50)
+  assert.equal(parseQuietingIntensity('100'), 100)
+  assert.equal(parseQuietingIntensity('-1'), 0)
+  assert.equal(parseQuietingIntensity('101'), 100)
 })
 
 test('presents only the padded activity slice without changing archived WAV bytes', () => {

@@ -140,6 +140,9 @@ playback gain with transparent peak protection; it does not rewrite the saved re
 Whisper/TTS. Live and rolling replay use time-local receiver quality where available; archived clips,
 which do not retain per-frame receiver quality, use the raw-audio detector. The gate intentionally
 leaves uncertain or short regions open, and denoising is not proof that every weak word is preserved.
+The **Between-transmission quieting** slider controls how strongly that existing gate attenuates its
+closed regions: `0%` uses GTCRN without gate attenuation, `50%` applies a gentler envelope, and
+`100%` keeps the existing gate strength. It does not change speech detection or affect open regions.
 Modified currently requires 16 kHz audio; if its runtime is missing, busy, or the rate is unsupported,
 the player reports that condition and Raw remains available. Whisper always uses the unfiltered
 FIR-demodulated source. It receives a full one-minute context window with ten seconds of overlap, and
@@ -150,7 +153,7 @@ through the archive API.
 The playback runtime is optional and is not part of the npm plugin package. To build it from this
 repository on Debian arm64, run `packaging/build-vhf-playback-runtime-deb.sh /tmp/vhf-playback-deb`
 from the plugin checkout, then install the generated package with
-`sudo dpkg -i /tmp/vhf-playback-deb/vhf-playback-runtime_1.13.8-1_arm64.deb`. The builder verifies
+`sudo dpkg -i /tmp/vhf-playback-deb/vhf-playback-runtime_1.13.8-2_arm64.deb`. The builder verifies
 the pinned runtime, converted model, upstream GTCRN source file, and complete third-party notices
 before packaging. If the runtime is absent, Raw playback remains available.
 

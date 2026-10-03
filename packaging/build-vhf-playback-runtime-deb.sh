@@ -8,7 +8,7 @@ fi
 
 output_dir=$1
 architecture=$(dpkg --print-architecture)
-version=1.13.8-1
+version=1.13.8-2
 package=vhf-playback-runtime
 runtime_sha256=4e3734f82bc1379fd91f219f5869c7e9d03b7a4f7561907d8abca4849c51a789
 model_sha256=e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534

@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=32" />
+  <link rel="stylesheet" href="./styles.css?v=46" />
 </head>
 <body>
   <main class="app-shell">
@@ -97,6 +97,10 @@
               <option value="modified" selected>Modified</option>
             </select>
           </div>
+          <label id="timeline-quieting-control" class="quieting-control" for="timeline-quieting">
+            <span>Between-transmission quieting <output id="timeline-quieting-value">100%</output></span>
+            <input id="timeline-quieting" type="range" min="0" max="100" step="1" value="100" aria-label="Between-transmission quieting" />
+          </label>
         </section>
 
         <section class="panel recent-activity" aria-labelledby="archive-title">
@@ -201,6 +205,6 @@
 
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
-  <script src="./main.js?v=44"></script>
+  <script src="./main.js?v=46"></script>
 </body>
 </html>

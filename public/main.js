@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 44
+  const CLIENT_BUILD = 46
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -37,6 +37,9 @@
   const timelineLatest = $('#timeline-latest')
   const timelineDescription = $('#timeline-description')
   const timelineCleanup = $('#timeline-cleanup')
+  const timelineQuieting = $('#timeline-quieting')
+  const timelineQuietingControl = $('#timeline-quieting-control')
+  const timelineQuietingValue = $('#timeline-quieting-value')
   const frequencyMap = $('#frequency-map')
   const frequencyEmpty = $('#frequency-empty')
   const transcriptionEnabled = $('#transcription-enabled')
@@ -98,6 +101,10 @@
     replaySquelchTouched = true
   }
   timelineCleanup.value = playbackPreference('timeline-cleanup', timelineCleanup.value)
+  const storedTimelineQuieting = Number(storedPreference('timeline-quieting', '100'))
+  timelineQuieting.value = String(Number.isFinite(storedTimelineQuieting) ? Math.min(100, Math.max(0, storedTimelineQuieting)) : 100)
+  timelineQuietingValue.value = `${timelineQuieting.value}%`
+  timelineQuietingValue.textContent = `${timelineQuieting.value}%`
   settingsPanel.open = storedPreference('settings-open', 'false') === 'true'
 
   async function request(path, options) {
@@ -662,7 +669,7 @@
     timelineSegmentId = segment.id
     timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
-    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}`
+    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}&quieting=${encodeURIComponent(timelineQuieting.value)}`
     if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
     if (autoplay) void timelineAudio.play().catch(() => {})
     timelineLatest.textContent = timelineFollowingLive ? 'Following live' : 'Go live'
@@ -924,10 +931,10 @@
     }
   }
 
-  function setArchivePlayback(audio, download, cleanup, squelch) {
+  function setArchivePlayback(audio, download, cleanup, squelch, quieting) {
     const currentTime = audio.currentTime
     const wasPlaying = !audio.paused
-    const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}`
+    const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}&quieting=${encodeURIComponent(quieting)}`
     audio.src = source
     download.href = source
     audio.load()
@@ -991,7 +998,24 @@
     const preferredCleanup = playbackPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
-    controls.append(squelchLabel, cleanupLabel)
+    const quietingLabel = document.createElement('label')
+    quietingLabel.className = 'quieting-control'
+    const quietingTitle = document.createElement('span')
+    quietingTitle.textContent = 'Between-transmission quieting'
+    const quietingValue = document.createElement('output')
+    const quieting = document.createElement('input')
+    quieting.type = 'range'
+    quieting.min = '0'
+    quieting.max = '100'
+    quieting.step = '1'
+    quieting.setAttribute('aria-label', 'Between-transmission quieting')
+    const storedQuieting = Number(storedPreference(`${preferenceKey}:quieting`, timelineQuieting.value))
+    quieting.value = String(Number.isFinite(storedQuieting) ? Math.min(100, Math.max(0, storedQuieting)) : 100)
+    quietingValue.value = `${quieting.value}%`
+    quietingValue.textContent = `${quieting.value}%`
+    quietingTitle.append(' ', quietingValue)
+    quietingLabel.append(quietingTitle, quieting)
+    controls.append(squelchLabel, cleanupLabel, quietingLabel)
 
     const transcriptPlayback = document.createElement('div')
     transcriptPlayback.className = 'transcript-playback'
@@ -1097,8 +1121,15 @@
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
       squelch.disabled = cleanup.value === 'modified'
-      setArchivePlayback(audio, download, cleanup.value, squelch.value)
+      quieting.disabled = cleanup.value === 'raw'
+      setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
     }
+    quieting.addEventListener('input', () => {
+      quietingValue.value = `${quieting.value}%`
+      quietingValue.textContent = `${quieting.value}%`
+      savePreference(`${preferenceKey}:quieting`, quieting.value)
+    })
+    quieting.addEventListener('change', updatePlayback)
     cleanup.addEventListener('change', updatePlayback)
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
@@ -1298,10 +1329,23 @@
   timelineCleanup.addEventListener('change', () => {
     savePreference('timeline-cleanup', timelineCleanup.value)
     replaySquelch.disabled = timelineCleanup.value === 'modified'
+    timelineQuietingControl.hidden = timelineCleanup.value === 'raw'
+    timelineQuieting.disabled = timelineCleanup.value === 'raw'
+    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
+    if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
+  })
+  timelineQuieting.addEventListener('input', () => {
+    timelineQuietingValue.value = `${timelineQuieting.value}%`
+    timelineQuietingValue.textContent = `${timelineQuieting.value}%`
+    savePreference('timeline-quieting', timelineQuieting.value)
+  })
+  timelineQuieting.addEventListener('change', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
   })
   replaySquelch.disabled = timelineCleanup.value === 'modified'
+  timelineQuietingControl.hidden = timelineCleanup.value === 'raw'
+  timelineQuieting.disabled = timelineCleanup.value === 'raw'
   timelineAudio.addEventListener('ended', () => {
     const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
     if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)
