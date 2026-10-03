@@ -5,17 +5,29 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["bin", "dist", "models", "public", "scripts", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": [
+    "bin",
+    "dist",
+    "models",
+    "public",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true});require('node:fs').rmSync('.test-dist',{recursive:true,force:true})\"",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build:client-transcription",
     "build:test": "tsc -p tsconfig.test.json",
     "decode:dsc-wav": "node scripts/decode-dsc-wav.mjs",
+    "build:client-transcription": "node scripts/build-client-transcription.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run clean && npm run build && npm run build:test && node --test .test-dist/test/*.test.js",
     "prepack": "npm run build"
   },
-  "engines": { "node": ">=22.15" },
+  "engines": {
+    "node": ">=22.15"
+  },
   "keywords": [
     "signalk-node-server-plugin",
     "signalk-webapp",
@@ -30,9 +42,11 @@
     "appIcon": "./vhf-watch.svg"
   },
   "devDependencies": {
+    "@huggingface/transformers": "3.8.1",
     "@signalk/server-api": "^2.31.1",
     "@types/express": "^5.0.3",
     "@types/node": "^22.18.0",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.2"
   }
 }

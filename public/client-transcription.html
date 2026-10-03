@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="theme-color" content="#f5f6f7" />
+  <title>On-device transcript · VHF Watch</title>
+  <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./client-transcription.css" />
+  <script defer src="./client-transcription-lifecycle.js"></script>
+  <script defer src="./client-transcription.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <header>
+      <a class="back-link" href="./">← VHF Watch archive</a>
+      <h1>Enhance transcript on this device</h1>
+      <p class="intro">The onboard transcript stays as recorded. This separate result runs locally in this browser and is saved only here.</p>
+    </header>
+    <section class="panel" aria-labelledby="record-title">
+      <label id="record-title" for="record-select">Archived recording</label>
+      <select id="record-select" disabled><option>Loading archived recordings…</option></select>
+      <dl id="source-metadata" class="source-metadata"></dl>
+      <div class="transcript-columns">
+        <article><h2>Onboard transcript</h2><p id="baseline" class="transcript">Loading…</p></article>
+        <article><h2>On-device result</h2><p id="enhanced" class="transcript">Waiting to compare.</p></article>
+      </div>
+      <div class="original-audio">
+        <label for="source-audio">Original archived recording</label>
+        <audio id="source-audio" controls preload="none"></audio>
+        <a id="download-audio" download>Download original WAV</a>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite">Loading archive…</p>
+      <div class="actions">
+        <button id="compare" type="button" disabled>Compare now</button>
+        <button id="export-one" type="button" disabled>Export this result</button>
+        <button id="export-all" type="button" disabled>Export completed records</button>
+      </div>
+      <p class="note">Automatic comparison starts after this recording stays selected and visible for 5 seconds. The first run downloads about 1.5 GB of model files from Hugging Face. Audio remains on this device; this page does not send audio or transcript text to a service.</p>
+      <details><summary>Model and runtime details</summary><pre id="provenance"></pre></details>
+    </section>
+    <section class="panel results-panel" aria-labelledby="results-heading">
+      <h2 id="results-heading">Completed comparisons</h2>
+      <p>Completed results accumulate here. Select each recording to compare it; the page does not process the archive automatically.</p>
+      <ol id="completed-results"></ol>
+      <label for="evidence">Evidence JSON</label>
+      <textarea id="evidence" readonly rows="8" spellcheck="false" placeholder="Completed comparison evidence will appear here."></textarea>
+    </section>
+  </main>
+</body>
+</html>

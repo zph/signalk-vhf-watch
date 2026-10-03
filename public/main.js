@@ -1182,7 +1182,16 @@
       bindTranscriptMoment(stamp, details, entry, offsetSeconds, updatePlayback)
       const text = document.createElement('span')
       text.textContent = entry.transcript || '[no speech recognized]'
-      line.append(stamp, text)
+      const content = document.createElement('span')
+      content.className = 'archive-transcript-content'
+      const enhance = document.createElement('a')
+      enhance.className = 'archive-enhance-link'
+      enhance.href = `./client-transcription.html?id=${encodeURIComponent(entry.id)}`
+      enhance.target = '_blank'
+      enhance.rel = 'noopener'
+      enhance.textContent = 'Enhance on this device'
+      content.append(text, enhance)
+      line.append(stamp, content)
       log.append(line)
 
       const marker = document.createElement('a')

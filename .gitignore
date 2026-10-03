@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .test-dist/
+public/client-transcription.bundle.js
+public/client-transcription-assets/
 *.tgz
 *.deb
 .DS_Store

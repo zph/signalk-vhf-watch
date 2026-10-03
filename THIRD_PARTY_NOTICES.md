@@ -39,3 +39,13 @@ VHF Watch includes the `somnolent-hogwash` speech/recording-noise model from
 apart from its README and tools, the model work is not creative and is not subject to copyright.
 FFmpeg's `arnndn` filter executes the model; no RNNoise executable is bundled. The plugin mixes the
 denoised result equally with the original signal to preserve narrow-band radio speech detail.
+
+The optional browser-side transcript enhancement bundles Transformers.js 3.8.1 (Apache License 2.0;
+its license is copied to `public/client-transcription-assets/transformers-LICENSE.txt` when building)
+and ONNX Runtime Web 1.22.0-dev.20250409-89f8206ba4 (MIT License; the full license is copied to
+`public/client-transcription-assets/onnxruntime-web-LICENSE.txt` when building). The browser fetches
+the Whisper large-v3-turbo ONNX files from the Hugging Face
+[`onnx-community/whisper-large-v3-turbo` repository at pinned commit
+`2f3ff544dec10f61ab7bcc7ba538766300ab5f91`](https://huggingface.co/onnx-community/whisper-large-v3-turbo/commit/2f3ff544dec10f61ab7bcc7ba538766300ab5f91); the upstream
+[OpenAI Whisper model is MIT-licensed](https://huggingface.co/openai/whisper-large-v3-turbo). Model
+files are downloaded by the browser at first use and are not packaged with VHF Watch.
