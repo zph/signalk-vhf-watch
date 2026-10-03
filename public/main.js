@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 46
+  const CLIENT_BUILD = 47
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -168,17 +168,7 @@
     singleFrequencyActive = status.captureMode === 'single_frequency'
     const activeSlotAChannel = status.slots.A.currentChannel.id
     const hadActiveSlotAChannel = Boolean(timelineActiveSlotAChannel)
-    if (timelineActiveSlotAChannel && timelineActiveSlotAChannel !== activeSlotAChannel) {
-      timelineAwaitingChannel = activeSlotAChannel
-      timelineFollowingLive = true
-      timelineWaitingAtEdge = false
-      timelineSegmentId = undefined
-      timelineAudio.pause()
-      timelineAudio.removeAttribute('src')
-      timelineAudio.load()
-      timelineTime.textContent = `Waiting for ${channelDisplay(activeSlotAChannel)} audio…`
-      timelineOffset.textContent = channelFrequencyDisplay(activeSlotAChannel)
-    }
+    handleTimelineSlotARetune(activeSlotAChannel)
     timelineActiveSlotAChannel = activeSlotAChannel
     if (!hadActiveSlotAChannel && replayTimeline.length > 0) selectLatestActiveTimeline()
     if (!slotConfigurationPending) {
@@ -284,6 +274,20 @@
       archiveSummary.textContent = `${transcription.archive.records} records · ${(transcription.archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(transcription.archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${transcription.archive.retentionDays} days`
     }
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
+  }
+
+  function handleTimelineSlotARetune(activeSlotAChannel) {
+    if (!timelineFollowingLive || !timelineActiveSlotAChannel || timelineActiveSlotAChannel === activeSlotAChannel) return false
+    timelineAwaitingChannel = activeSlotAChannel
+    timelineFollowingLive = true
+    timelineWaitingAtEdge = false
+    timelineSegmentId = undefined
+    timelineAudio.pause()
+    timelineAudio.removeAttribute('src')
+    timelineAudio.load()
+    timelineTime.textContent = `Waiting for ${channelDisplay(activeSlotAChannel)} audio…`
+    timelineOffset.textContent = channelFrequencyDisplay(activeSlotAChannel)
+    return true
   }
 
   async function loadChannels() {
@@ -444,6 +448,14 @@
 
   function hasPlayingAudio(container) {
     return [...container.querySelectorAll('audio')].some((audio) => !audio.paused && !audio.ended)
+  }
+
+  function activateArchivePlayback(details, audio, updatePlayback) {
+    if (!details.open || audio.dataset.archivePlaybackActivated === 'true') return false
+    audio.dataset.archivePlaybackActivated = 'true'
+    audio.preload = 'metadata'
+    updatePlayback()
+    return true
   }
 
   function pauseOtherAudio(activeAudio) {
@@ -981,7 +993,7 @@
 
     const audio = document.createElement('audio')
     audio.controls = true
-    audio.preload = 'metadata'
+    audio.preload = 'none'
     audio.dataset.baseUrl = audioUrl
 
     const controls = document.createElement('div')
@@ -1125,7 +1137,7 @@
       savePreference(`${preferenceKey}:squelch`, squelch.value)
       squelch.disabled = cleanup.value === 'modified'
       quieting.disabled = cleanup.value === 'raw'
-      setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
+      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
     }
     quieting.addEventListener('input', () => {
       quietingValue.value = `${quieting.value}%`
@@ -1137,7 +1149,10 @@
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
     details.addEventListener('toggle', () => {
-      if (details.open) void renderArchiveWaveform(waveform, audioUrl)
+      if (details.open) {
+        activateArchivePlayback(details, audio, updatePlayback)
+        void renderArchiveWaveform(waveform, audioUrl)
+      }
     })
     body.append(waveform, audio, transcriptPlayback, controls, log, metadata, actions)
     details.append(summary, body)
