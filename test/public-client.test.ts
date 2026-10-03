@@ -142,6 +142,79 @@ test('playback exposes only Raw and default Modified and migrates legacy saved c
   assert.equal([...api.matchAll(/openStream\(runtime\.config\.sampleRate, abort\.signal, parseQuietingIntensity\(request\.query\.quieting\)\)/g)].length, 2)
 })
 
+test('client starts polling before initialization finishes and retries failed channel setup', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const root = path.resolve(__dirname, '../..')
+  const script = readFileSync(path.join(root, 'public/main.js'), 'utf8')
+  const channelsStart = script.indexOf('  async function loadChannels()')
+  const statusStart = script.indexOf('  async function updateStatus()', channelsStart)
+  const pollingStart = script.indexOf('  function startPolling()', statusStart)
+  const listenersStart = script.indexOf('  slotAMode.addEventListener', pollingStart)
+  const source = script.slice(channelsStart, statusStart) + script.slice(pollingStart, listenersStart)
+  assert.ok(channelsStart >= 0 && statusStart > channelsStart && pollingStart > statusStart && listenersStart > pollingStart)
+
+  const callbacks: Array<() => void | Promise<void>> = []
+  let attempts = 0
+  let statusUpdates = 0
+  let replayUpdates = 0
+  const element = () => ({ value: '', label: '', textContent: '', disabled: false, children: [] as unknown[],
+    append(...children: unknown[]) { this.children.push(...children) }, replaceChildren(...children: unknown[]) { this.children = children } })
+  const context: {
+    window: { setInterval: (callback: () => void) => number }
+    document: { createElement: (tag: string) => ReturnType<typeof element> }
+    channels: Array<Record<string, unknown>>
+    pollTimers: Set<number>
+    pollingStarted: boolean
+    channelsLoaded: boolean
+    channelsLoading: boolean
+    poll?: number
+    latestStatus: object
+    renderedChannelCount?: number
+    regionSelect: ReturnType<typeof element>
+    slotAChannel: ReturnType<typeof element>
+    slotBChannel: ReturnType<typeof element>
+    renderStatus: () => void
+    renderFrequencyMap: () => void
+    request: () => Promise<{ channels: Array<Record<string, unknown>>; region: string }>
+    loadChannels: () => Promise<void>
+    updateStatus: () => Promise<void>
+    updateReplay: () => Promise<void>
+    updateSpectrumActivity: () => Promise<void>
+    updateDsc: () => Promise<void>
+    updateArchive: () => Promise<void>
+    setConnection: () => void
+  } = {
+    window: { setInterval: (callback) => { callbacks.push(callback); return callbacks.length } },
+    document: { createElement: () => element() }, channels: [],
+    pollTimers: new Set(), pollingStarted: false, channelsLoaded: false, channelsLoading: false, poll: undefined,
+    latestStatus: {}, regionSelect: element(), slotAChannel: element(), slotBChannel: element(),
+    renderStatus: () => { context.renderedChannelCount = context.slotAChannel.children.length }, renderFrequencyMap: () => {},
+    request: async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('Signal K is starting')
+      return { region: 'US', channels: [{ id: '16', label: '16', countries: ['US'], purpose: 'Distress', weather: false,
+        requiresSingleFrequency: false, availableSlotA: true, availableSlotB: true }] }
+    },
+    loadChannels: async () => {},
+    updateStatus: async () => { statusUpdates += 1 },
+    updateReplay: async () => { replayUpdates += 1 },
+    updateSpectrumActivity: async () => {}, updateDsc: async () => {}, updateArchive: async () => {},
+    setConnection: () => {}
+  }
+  await runInNewContext(`(async () => { ${source}; await initialize() })()`, context)
+  assert.equal(callbacks.length, 6)
+  assert.equal(attempts, 1)
+  assert.equal(statusUpdates, 1)
+  assert.equal(replayUpdates, 1)
+  await callbacks[5]!()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(attempts, 2)
+  assert.ok(context.slotAChannel.children.length > 0)
+  assert.ok(context.renderedChannelCount! > 0)
+  assert.equal(context.pollTimers.size, 6)
+})
+
+
 test('each transcript line deep-links to audio and a waveform marker', () => {
   const root = path.resolve(__dirname, '../..')
   const script = readFileSync(path.join(root, 'public/main.js'), 'utf8')

@@ -77,6 +77,11 @@
   const SESSION_BREAK_SECONDS = 6
   let channels = []
   let poll
+  const pollTimers = new Set()
+  let pollingStarted = false
+  let channelsLoaded = false
+  let channelsLoading = false
+  let latestStatus
   let replaySquelchTouched = false
   let replayTimeline = []
   let spectrumTimeline = []
@@ -322,6 +327,19 @@
   }
 
   async function loadChannels() {
+    if (channelsLoading) return
+    channelsLoading = true
+    try {
+      await loadChannelsOnce()
+      channelsLoaded = true
+      if (latestStatus) renderStatus(latestStatus)
+      renderFrequencyMap()
+    } finally {
+      channelsLoading = false
+    }
+  }
+
+  async function loadChannelsOnce() {
     const response = await request('channels')
     channels = response.channels
     regionSelect.value = response.region
@@ -361,7 +379,8 @@
 
   async function updateStatus() {
     try {
-      renderStatus(await request('status'))
+      latestStatus = await request('status')
+      renderStatus(latestStatus)
     } catch (error) {
       setConnection('error', error.message)
     }
@@ -1723,18 +1742,24 @@
     }
   }
 
+  function startPolling() {
+    if (pollingStarted) return
+    pollingStarted = true
+    poll = window.setInterval(updateStatus, 1000)
+    pollTimers.add(poll)
+    pollTimers.add(window.setInterval(updateReplay, 5000))
+    pollTimers.add(window.setInterval(updateSpectrumActivity, 5000))
+    pollTimers.add(window.setInterval(updateDsc, 5000))
+    pollTimers.add(window.setInterval(updateArchive, 15_000))
+    pollTimers.add(window.setInterval(() => {
+      if (!channelsLoaded) void loadChannels().catch((error) => setConnection('error', error.message))
+    }, 5_000))
+  }
+
   async function initialize() {
-    try {
-      await loadChannels()
-      await Promise.all([updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
-      poll = window.setInterval(updateStatus, 1000)
-      window.setInterval(updateReplay, 5000)
-      window.setInterval(updateSpectrumActivity, 5000)
-      window.setInterval(updateDsc, 5000)
-      window.setInterval(updateArchive, 15_000)
-    } catch (error) {
-      setConnection('error', error.message)
-    }
+    startPolling()
+    const channelRequest = loadChannels().catch((error) => setConnection('error', error.message))
+    await Promise.all([channelRequest, updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
   }
 
   slotAMode.addEventListener('change', configureSlots)
@@ -1854,7 +1879,8 @@
   settingsPanel.addEventListener('toggle', () => savePreference('settings-open', settingsPanel.open))
   window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {
-    window.clearInterval(poll)
+    for (const timer of pollTimers) window.clearInterval(timer)
+    pollTimers.clear()
     stopConversation('Playback stopped.')
   })
   initialize()

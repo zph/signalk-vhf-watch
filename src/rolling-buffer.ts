@@ -112,6 +112,17 @@ export class RollingReplay {
     this.#pendingStartedAt = Date.now()
   }
 
+  restore(segments: ReplaySegment[]): void {
+    const restored = segments
+      .filter((segment) => segment.slot === this.#slot && Number.isSafeInteger(segment.id) && segment.id > 0 &&
+        (segment.wav.length >= 44 || Boolean(segment.opus)) && Array.isArray(segment.qualitySpans))
+      .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+      .map((segment) => ({ ...segment, qualitySpans: segment.qualitySpans.map((span) => ({ ...span })) }))
+    this.#segments = restored
+    if (restored.length > 0) this.#sequence = Math.max(this.#sequence, ...restored.map((segment) => segment.id))
+    this.#prune(Date.now())
+  }
+
   append(chunk: Buffer, receivedAt = Date.now(), discriminatorNoise?: number, qualitySpans?: ReplayQualitySpan[]): ReplaySegment[] {
     if (chunk.length === 0) return []
     this.#prune(receivedAt)

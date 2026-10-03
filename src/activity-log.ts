@@ -19,10 +19,13 @@ export class SpectrumActivityLog {
   readonly #open = new Map<number, SpectrumActivityEvent>()
   readonly #lastSeenAt = new Map<number, number>()
 
-  constructor(ttlMinutes = 1_440, maximumEvents = 5_000, closeDelayMs = 3_000) {
+  constructor(ttlMinutes = 1_440, maximumEvents = 5_000, closeDelayMs = 3_000, restored: SpectrumActivityEvent[] = []) {
     this.#ttlMs = ttlMinutes * 60_000
     this.#maximumEvents = maximumEvents
     this.#closeDelayMs = closeDelayMs
+    this.#events = restored.map((event) => ({ ...event }))
+    this.#nextId = Math.max(0, ...this.#events.map((event) => event.id)) + 1
+    this.#prune(Date.now())
   }
 
   update(samples: SpectrumActivitySample[], now = Date.now()): void {

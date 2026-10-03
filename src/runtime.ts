@@ -22,6 +22,7 @@ import { discriminatorThreshold } from './squelch'
 import type { TuningSettings } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
 import { SpectrumActivityLog, type SpectrumActivityEvent, type SpectrumActivitySample } from './activity-log'
+import { ReplayHistoryStore } from './replay-history-store'
 
 const SPECTRUM_ACTIVITY_THRESHOLD = 2
 const DSC_IDENTITY_REFRESH_MS = 10 * 60 * 1000
@@ -247,6 +248,8 @@ export class VhfRuntime extends EventEmitter<{
   #receiverMetrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
   readonly #spectrumActivityScores = new Map<string, number>()
   readonly #spectrumActivityLog: SpectrumActivityLog
+  readonly #historyStore?: ReplayHistoryStore
+  #historyTimer?: ReturnType<typeof setInterval>
   readonly #dscDecoder = new DscAudioDecoder()
   readonly #dscCache?: DscMessageCache
   readonly #getDscVessels?: () => unknown
@@ -262,7 +265,8 @@ export class VhfRuntime extends EventEmitter<{
     saveTuning?: (settings: TuningSettings) => void,
     denoiser?: RnnoiseDenoiser,
     replayOpusCommand?: string,
-    getDscVessels?: () => unknown
+    getDscVessels?: () => unknown,
+    historyStore?: ReplayHistoryStore
   ) {
     super()
     this.config = config
@@ -285,7 +289,9 @@ export class VhfRuntime extends EventEmitter<{
     this.#dscCache = dscCache
     this.#getDscVessels = getDscVessels
     this.#saveTuning = saveTuning
-    this.#spectrumActivityLog = new SpectrumActivityLog(config.replayMinutes)
+    this.#historyStore = historyStore
+    const history = historyStore?.load()
+    this.#spectrumActivityLog = new SpectrumActivityLog(config.replayMinutes, 5_000, 3_000, history?.activityEvents)
     this.transcription = transcription ?? new TranscriptionManager(`/tmp/signalk-vhf-watch-transcription-${process.pid}.json`)
     this.denoiser = denoiser
     this.#dscMessages = dscCache?.list() ?? []
@@ -302,9 +308,18 @@ export class VhfRuntime extends EventEmitter<{
       config.sampleRate, config.segmentSeconds, config.replayMinutes, this.#slotB.id,
       Math.ceil(config.maxBufferMiB / 2) * 1024 * 1024, 'B', 0, 2, config.squelch, replayOpusCommand
     )
+    if (history) {
+      this.replay.restore(history.segments)
+      this.replayB.restore(history.segments)
+    }
   }
 
   start(): void {
+    if (this.#historyStore && !this.#historyTimer) {
+      this.#historyTimer = setInterval(() => this.#scheduleHistorySnapshot(), 3_000)
+      this.#historyTimer.unref?.()
+      this.#scheduleHistorySnapshot()
+    }
     this.#refreshDscIdentities()
     if (this.#getDscVessels && !this.#dscIdentityRefreshTimer) {
       this.#dscIdentityRefreshTimer = setInterval(() => this.#refreshDscIdentities(), DSC_IDENTITY_REFRESH_MS)
@@ -320,7 +335,9 @@ export class VhfRuntime extends EventEmitter<{
     if (this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    if (this.#historyTimer) clearInterval(this.#historyTimer)
+    this.#historyTimer = undefined
     if (this.#dscIdentityRefreshTimer) clearInterval(this.#dscIdentityRefreshTimer)
     this.#dscIdentityRefreshTimer = undefined
     this.#stopReceiver()
@@ -332,6 +349,8 @@ export class VhfRuntime extends EventEmitter<{
     this.#receiverState = 'Stopped'
     this.#emitStatus()
     this.transcription.close()
+    this.#scheduleHistorySnapshot()
+    await this.#historyStore?.flush()
   }
 
   tune(channelId: string): RuntimeStatus {
@@ -574,8 +593,16 @@ export class VhfRuntime extends EventEmitter<{
     if (segment.slot === 'A') return segment.channel === this.#channel.id
     return !this.#singleFrequency && this.#slotB.id !== '70' && segment.channel === this.#slotB.id
   }
-  deleteReplay(id: number): boolean { return this.replay.delete(id) || this.replayB.delete(id) }
-  clearReplay(): void { this.replay.clear(); this.replayB.clear() }
+  deleteReplay(id: number): boolean {
+    const deleted = this.replay.delete(id) || this.replayB.delete(id)
+    if (deleted) this.#scheduleHistorySnapshot()
+    return deleted
+  }
+  clearReplay(): void {
+    this.replay.clear()
+    this.replayB.clear()
+    this.#scheduleHistorySnapshot()
+  }
 
   dscMessages(): DscMessage[] {
     this.#refreshDscIdentities()
@@ -584,6 +611,28 @@ export class VhfRuntime extends EventEmitter<{
 
   activityEvents(): SpectrumActivityEvent[] {
     return this.#spectrumActivityLog.list()
+  }
+
+  #scheduleHistorySnapshot(): void {
+    if (!this.#historyStore) return
+    const segments = [this.replay, this.replayB].flatMap((replay) =>
+      replay.list().flatMap(({ id }) => {
+        const segment = replay.get(id)
+        return segment ? [{
+          ...segment,
+          wav: segment.wav,
+          ...(segment.opus ? { opus: segment.opus } : {}),
+          qualitySpans: segment.qualitySpans.map((span) => ({ ...span })),
+          ...(segment.transcription ? { transcription: { ...segment.transcription } } : {})
+        }] : []
+      })
+    )
+    const checkpoint = new Date().toISOString()
+    const activityEvents = this.#spectrumActivityLog.list().map((event) => ({
+      ...event,
+      ...(event.endedAt ? {} : { endedAt: checkpoint })
+    }))
+    this.#historyStore.schedule({ segments, activityEvents })
   }
 
   clearDscMessages(): void {
