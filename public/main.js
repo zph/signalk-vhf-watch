@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 49
+  const CLIENT_BUILD = 50
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -481,6 +481,30 @@
     return [...container.querySelectorAll('audio')].some((audio) => !audio.paused && !audio.ended)
   }
 
+  function archiveTimeLabel(seconds) {
+    const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0))
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+  }
+
+  function seekArchiveAudio(audio, targetSeconds, fallbackDuration) {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : fallbackDuration
+    audio.currentTime = Math.max(0, Math.min(duration, targetSeconds))
+    return audio.currentTime
+  }
+
+  function showArchivePlaybackError(status, error) {
+    if (!status) return
+    status.textContent = error ? 'Playback could not start. Tap Play to try again.' : ''
+  }
+
+  function playArchiveAudio(audio, status) {
+    try {
+      void audio.play().catch((error) => showArchivePlaybackError(status, error))
+    } catch (error) {
+      showArchivePlaybackError(status, error)
+    }
+  }
+
   function activateArchivePlayback(details, audio, updatePlayback) {
     if (!details.open || audio.dataset.archivePlaybackActivated === 'true') return false
     audio.dataset.archivePlaybackActivated = 'true'
@@ -489,21 +513,61 @@
     return true
   }
 
-  function beginArchivePlayback(details, audio, updatePlayback, loadWaveform) {
+  function beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status) {
     if (audio.dataset.archivePlaybackActivated === 'true') return false
     if (!activateArchivePlayback(details, audio, updatePlayback)) return false
     loadWaveform()
-    void audio.play().catch(() => {})
+    playArchiveAudio(audio, status)
     return true
   }
 
-  function bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform) {
+  function bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform, status) {
     button.addEventListener('click', () => {
       if (audio.dataset.archivePlaybackActivated === 'true') {
-        void audio.play().catch(() => {})
+        if (audio.paused) playArchiveAudio(audio, status)
+        else audio.pause()
         return
       }
-      beginArchivePlayback(details, audio, updatePlayback, loadWaveform)
+      beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status)
+    })
+  }
+
+  function bindArchiveSkipButton(button, details, audio, updatePlayback, loadWaveform, durationSeconds) {
+    button.addEventListener('click', () => {
+      const seekForward = () => seekArchiveAudio(audio, audio.currentTime + 5, durationSeconds)
+      if (audio.dataset.archivePlaybackActivated === 'true') {
+        if (audio.readyState >= 1) seekForward()
+        else audio.addEventListener('loadedmetadata', seekForward, { once: true })
+        return
+      }
+      if (!details.open) return
+      audio.addEventListener('loadedmetadata', seekForward, { once: true })
+      if (!activateArchivePlayback(details, audio, updatePlayback)) return
+      loadWaveform()
+    })
+  }
+
+  function bindArchiveWaveformSeek(range, details, audio, updatePlayback, loadWaveform, durationSeconds) {
+    const seekWhenReady = () => {
+      const targetSeconds = Number(range.value)
+      if (audio.readyState >= 1) {
+        seekArchiveAudio(audio, targetSeconds, durationSeconds)
+        return
+      }
+      range.dataset.pendingSeekSeconds = String(targetSeconds)
+      if (range.dataset.seekPending === 'true') return
+      range.dataset.seekPending = 'true'
+      audio.addEventListener('loadedmetadata', () => {
+        range.dataset.seekPending = 'false'
+        seekArchiveAudio(audio, Number(range.dataset.pendingSeekSeconds), durationSeconds)
+      }, { once: true })
+    }
+    range.addEventListener('input', () => {
+      if (audio.dataset.archivePlaybackActivated !== 'true') {
+        if (!activateArchivePlayback(details, audio, updatePlayback)) return
+        loadWaveform()
+      }
+      seekWhenReady()
     })
   }
 
@@ -1082,18 +1146,82 @@
 
     const body = document.createElement('div')
     body.className = 'archive-body'
-    const audioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}&activity=1`
+    const originalAudioUrl = `${API}transcript-session.wav?ids=${encodeURIComponent(record.ids.join(','))}`
+    const audioUrl = `${originalAudioUrl}&activity=1`
     const waveform = document.createElement('div')
     waveform.className = 'archive-waveform'
+    const waveformTrack = document.createElement('div')
+    waveformTrack.className = 'archive-waveform-track'
     const loading = document.createElement('span')
     loading.className = 'waveform-loading'
     loading.textContent = 'Open to load waveform…'
-    waveform.append(loading)
+    waveformTrack.append(loading)
+    const progress = document.createElement('span')
+    progress.className = 'archive-waveform-progress'
+    progress.setAttribute('aria-hidden', 'true')
+    const playhead = document.createElement('span')
+    playhead.className = 'archive-waveform-playhead'
+    playhead.setAttribute('aria-hidden', 'true')
+    const seek = document.createElement('input')
+    seek.className = 'archive-waveform-seek'
+    seek.type = 'range'
+    seek.min = '0'
+    seek.max = String(Math.max(0.1, record.durationSeconds))
+    seek.step = '0.1'
+    seek.value = '0'
+    seek.setAttribute('aria-label', 'Seek within recording')
+    seek.setAttribute('aria-valuetext', `0:00 of ${archiveTimeLabel(record.durationSeconds)}`)
+    waveformTrack.append(progress, playhead, seek)
+    waveform.append(waveformTrack)
 
     const audio = document.createElement('audio')
-    audio.controls = true
+    audio.className = 'sr-only archive-audio-source'
+    audio.setAttribute('aria-hidden', 'true')
     audio.preload = 'none'
     audio.dataset.baseUrl = audioUrl
+
+    const transport = document.createElement('div')
+    transport.className = 'archive-waveform-transport'
+    const playButton = document.createElement('button')
+    playButton.className = 'archive-waveform-button archive-waveform-play'
+    playButton.type = 'button'
+    playButton.textContent = 'Play'
+    playButton.setAttribute('aria-label', 'Play recording')
+    const skipButton = document.createElement('button')
+    skipButton.className = 'archive-waveform-button archive-waveform-skip'
+    skipButton.type = 'button'
+    skipButton.textContent = '+5 sec'
+    skipButton.setAttribute('aria-label', 'Skip forward 5 seconds')
+    const playbackTime = document.createElement('output')
+    playbackTime.className = 'archive-waveform-time'
+    playbackTime.textContent = `0:00 / ${archiveTimeLabel(record.durationSeconds)}`
+    const playbackStatus = document.createElement('span')
+    playbackStatus.className = 'archive-waveform-status'
+    playbackStatus.setAttribute('role', 'status')
+    playbackStatus.setAttribute('aria-live', 'polite')
+    transport.append(playButton, skipButton, playbackTime, playbackStatus)
+    waveform.append(transport)
+
+    const renderWaveformPlayback = () => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : record.durationSeconds
+      const currentTime = Math.max(0, Math.min(duration, audio.currentTime || 0))
+      const percent = duration > 0 ? currentTime / duration * 100 : 0
+      seek.max = String(Math.max(0.1, duration))
+      waveformTrack.style.setProperty('--playhead', `${percent}%`)
+      seek.value = String(currentTime)
+      seek.setAttribute('aria-valuetext', `${archiveTimeLabel(currentTime)} of ${archiveTimeLabel(duration)}`)
+      playbackTime.textContent = `${archiveTimeLabel(currentTime)} / ${archiveTimeLabel(duration)}`
+      playButton.textContent = audio.paused ? 'Play' : 'Pause'
+      playButton.setAttribute('aria-label', `${audio.paused ? 'Play' : 'Pause'} recording`)
+    }
+    for (const event of ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended', 'seeked']) {
+      audio.addEventListener(event, renderWaveformPlayback)
+    }
+    audio.addEventListener('play', () => { playbackStatus.textContent = '' })
+    audio.addEventListener('error', () => {
+      playbackStatus.textContent = 'Recording playback is unavailable.'
+    })
+    seek.addEventListener('input', renderWaveformPlayback)
 
     const controls = document.createElement('div')
     controls.className = 'archive-controls'
@@ -1140,6 +1268,17 @@
       if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
     }
 
+    bindArchivePlaybackButton(playButton, details, audio, () => {
+      updatePlayback()
+      renderWaveformPlayback()
+    }, () => { void renderArchiveWaveform(waveformTrack, audioUrl) }, playbackStatus)
+    bindArchiveSkipButton(skipButton, details, audio, updatePlayback, () => {
+      void renderArchiveWaveform(waveformTrack, audioUrl)
+    }, record.durationSeconds)
+    bindArchiveWaveformSeek(seek, details, audio, updatePlayback, () => {
+      void renderArchiveWaveform(waveformTrack, audioUrl)
+    }, record.durationSeconds)
+
     const log = document.createElement('div')
     log.className = 'archive-log'
     log.setAttribute('aria-label', `Full transcript for ${time.textContent}`)
@@ -1172,7 +1311,7 @@
       markerLabel.textContent = activityStartedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       marker.append(markerLabel)
       bindTranscriptMoment(marker, details, entry, offsetSeconds, updatePlayback)
-      waveform.append(marker)
+      waveformTrack.append(marker)
     }
 
     const metadata = document.createElement('dl')
@@ -1202,7 +1341,7 @@
     download.textContent = 'Download current playback'
     const originalDownload = document.createElement('a')
     originalDownload.className = 'button-link'
-    originalDownload.href = `${audioUrl}&cleanup=raw&squelch=0`
+    originalDownload.href = `${originalAudioUrl}&cleanup=raw&squelch=0`
     originalDownload.download = `vhf-${record.channel}-${record.startedAt.replace(/[:.]/g, '-')}-original.wav`
     originalDownload.textContent = 'Original WAV'
     const copy = document.createElement('button')
@@ -1228,17 +1367,10 @@
     cleanup.addEventListener('change', updatePlayback)
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
-    const playButton = document.createElement('button')
-    playButton.className = 'archive-play button compact'
-    playButton.type = 'button'
-    playButton.textContent = 'Play recording'
-    bindArchivePlaybackButton(playButton, details, audio, updatePlayback, () => {
-      void renderArchiveWaveform(waveform, audioUrl)
-    })
     details.addEventListener('toggle', () => {
-      if (details.open) void renderArchiveWaveform(waveform, audioUrl)
+      if (details.open) void renderArchiveWaveform(waveformTrack, audioUrl)
     })
-    body.append(waveform, playButton, audio, controls, log, metadata, actions)
+    body.append(waveform, audio, controls, log, metadata, actions)
     details.append(summary, body)
     const header = document.createElement('div')
     header.className = 'archive-item-header'

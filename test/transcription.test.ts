@@ -281,7 +281,7 @@ test('archives overlap-only recognition when raw Whisper output contains speech'
   manager.close()
 })
 
-test('archives the full source and marks activity with five seconds of padding on each side', async () => {
+test('archives the full source and marks activity with one second of padding on each side', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-trim-'))
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
@@ -312,8 +312,8 @@ test('archives the full source and marks activity with five seconds of padding o
   assert.equal(record?.startedAt, new Date(startedAt).toISOString())
   assert.equal(record?.durationSeconds, 60)
   assert.equal(record?.audioBytes, 1_920_044)
-  assert.equal(record?.activityStartSeconds, 15)
-  assert.equal(record?.activityEndSeconds, 30)
+  assert.equal(record?.activityStartSeconds, 19)
+  assert.equal(record?.activityEndSeconds, 26)
   manager.close()
 })
 

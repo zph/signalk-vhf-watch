@@ -86,10 +86,17 @@ test('following live still waits for audio on the newly tuned channel', () => {
   assert.equal(audio.loads, 1)
 })
 
-test('expanding an archive leaves playback unrequested until its play button is clicked', () => {
+test('archive waveform owns playback controls while audio stays lazy until Play', () => {
   const archiveRow = declaration(main, 'archiveRow')
   assert.match(archiveRow, /audio\.preload = 'none'/)
-  assert.match(archiveRow, /bindArchivePlaybackButton\(playButton, details, audio, updatePlayback/)
+  assert.match(archiveRow, /bindArchivePlaybackButton\(playButton, details, audio, \(\) =>/)
+  assert.match(archiveRow, /bindArchiveSkipButton\(skipButton, details, audio, updatePlayback/)
+  assert.match(archiveRow, /bindArchiveWaveformSeek\(seek, details, audio, updatePlayback/)
+  assert.match(archiveRow, /body\.append\(waveform, audio, controls/)
+  assert.match(archiveRow, /seek\.type = 'range'/)
+  assert.doesNotMatch(archiveRow, /audio\.controls = true/)
+  assert.match(archiveRow, /originalDownload\.href = `\$\{originalAudioUrl\}&cleanup=raw&squelch=0`/)
+  assert.match(archiveRow, /const audioUrl = `\$\{originalAudioUrl\}&activity=1`/)
   assert.doesNotMatch(archiveRow, /audio\.src\s*=/)
 
   const listeners = new Map<string, () => void>()
@@ -97,9 +104,12 @@ test('expanding an archive leaves playback unrequested until its play button is 
     dataset: {} as Record<string, string>,
     preload: 'none',
     src: '',
+    paused: true,
     loads: 0,
     plays: 0,
-    play() { this.plays += 1; return Promise.resolve() },
+    pauses: 0,
+    play() { this.plays += 1; this.paused = false; return Promise.resolve() },
+    pause() { this.pauses += 1; this.paused = true },
     load() { this.loads += 1 }
   }
   const details = { open: false }
@@ -112,7 +122,7 @@ test('expanding an archive leaves playback unrequested until its play button is 
     audio.load()
   }
   const sandbox = { audio, details, button, updatePlayback, loadWaveform: () => { waveforms += 1 } }
-  vm.runInNewContext(`${declaration(main, 'activateArchivePlayback')}; ${declaration(main, 'beginArchivePlayback')}; ${declaration(main, 'bindArchivePlaybackButton')}; bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform)`, sandbox)
+  vm.runInNewContext(`${declaration(main, 'showArchivePlaybackError')}; ${declaration(main, 'playArchiveAudio')}; ${declaration(main, 'activateArchivePlayback')}; ${declaration(main, 'beginArchivePlayback')}; ${declaration(main, 'bindArchivePlaybackButton')}; bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform)`, sandbox)
   assert.equal(listeners.has('click'), true)
   assert.equal(audio.preload, 'none')
   assert.equal(audio.src, '')
@@ -132,9 +142,66 @@ test('expanding an archive leaves playback unrequested until its play button is 
   assert.equal(updates, 1)
   assert.equal(waveforms, 1)
   listeners.get('click')!()
-  assert.equal(audio.plays, 2)
+  assert.equal(audio.plays, 1)
+  assert.equal(audio.pauses, 1)
   assert.equal(updates, 1)
   assert.equal(waveforms, 1)
+})
+
+test('waveform skip advances five seconds and clamps at the end', () => {
+  const listeners = new Map<string, () => void>()
+  const button = { addEventListener(name: string, callback: () => void) { listeners.set(name, callback) } }
+  const audio = {
+    dataset: { archivePlaybackActivated: 'true' },
+    readyState: 1,
+    currentTime: 2,
+    duration: 9,
+    addEventListener() {}
+  }
+  const details = { open: true }
+  const calls = { updates: 0, waveforms: 0 }
+  vm.runInNewContext(`${declaration(main, 'seekArchiveAudio')}; ${declaration(main, 'bindArchiveSkipButton')}; bindArchiveSkipButton(button, details, audio, () => { calls.updates += 1 }, () => { calls.waveforms += 1 }, 9)`, {
+    button, details, audio, calls
+  })
+  listeners.get('click')!()
+  assert.equal(audio.currentTime, 7)
+  listeners.get('click')!()
+  assert.equal(audio.currentTime, 9)
+})
+
+test('waveform skip waits for lazy audio metadata before seeking', () => {
+  let click: (() => void) | undefined
+  let loaded: (() => void) | undefined
+  const audio = {
+    dataset: {} as Record<string, string>,
+    readyState: 0,
+    currentTime: 0,
+    duration: Number.NaN,
+    addEventListener(name: string, callback: () => void) { if (name === 'loadedmetadata') loaded = callback }
+  }
+  const details = { open: true }
+  const button = { addEventListener(_name: string, callback: () => void) { click = callback } }
+  const calls = { updates: 0, waveforms: 0 }
+  vm.runInNewContext(`${declaration(main, 'activateArchivePlayback')}; ${declaration(main, 'seekArchiveAudio')}; ${declaration(main, 'bindArchiveSkipButton')}; bindArchiveSkipButton(button, details, audio, () => { calls.updates += 1 }, () => { calls.waveforms += 1 }, 12)`, {
+    button, details, audio, calls
+  })
+  click!()
+  assert.equal(audio.dataset.archivePlaybackActivated, 'true')
+  assert.equal(calls.updates, 1)
+  assert.equal(calls.waveforms, 1)
+  audio.readyState = 1
+  audio.currentTime = 0
+  audio.duration = 12
+  loaded!()
+  assert.equal(audio.currentTime, 5)
+})
+
+test('waveform play reports playback errors to the user', async () => {
+  const status = { textContent: '' }
+  const audio = { play: () => Promise.reject(new Error('blocked')) }
+  vm.runInNewContext(`${declaration(main, 'showArchivePlaybackError')}; ${declaration(main, 'playArchiveAudio')}; playArchiveAudio(audio, status)`, { audio, status })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(status.textContent, 'Playback could not start. Tap Play to try again.')
 })
 
 test('a transcript link activates archive playback, then seeks and plays after metadata', () => {

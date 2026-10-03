@@ -146,9 +146,9 @@ closed regions: `0%` uses GTCRN without gate attenuation, `50%` applies a gentle
 Modified currently requires 16 kHz audio; if its runtime is missing, busy, or the rate is unsupported,
 the player reports that condition and Raw remains available. Whisper always uses the unfiltered
 FIR-demodulated source. It receives a full one-minute context window with ten seconds of overlap, and
-the durable archive keeps that complete source minute. The web player presents the measured
-carrier-active interval plus five seconds before and after, while the full recording remains available
-through the archive API.
+the durable archive keeps that complete source minute. New archive rows show the measured
+carrier-active interval plus one second before and after. Existing rows keep their saved activity
+window; the complete original recording remains available through **Original WAV**.
 
 The playback runtime is optional and is not part of the npm plugin package. To build it from this
 repository on Debian arm64, run `packaging/build-vhf-playback-runtime-deb.sh /tmp/vhf-playback-deb`

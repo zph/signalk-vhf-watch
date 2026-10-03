@@ -130,14 +130,27 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015e
 .archive-summary-row strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .archive-summary-row span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .archive-body { display: grid; gap: 13px; padding: 0 18px 18px 118px; }
-.archive-waveform { position: relative; display: flex; align-items: center; gap: 2px; height: 68px; overflow: hidden; padding: 15px 0 4px; background: var(--soft); border-radius: 9px; }
-.waveform-bars { position: absolute; inset: 15px 8px 4px; display: flex; align-items: center; gap: 2px; opacity: .8; }
+.archive-waveform { position: relative; height: 88px; overflow: hidden; background: var(--soft); border-radius: 9px; }
+.archive-waveform:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.archive-waveform-track { position: absolute; inset: 0; overflow: hidden; }
+.waveform-bars { position: absolute; z-index: 1; inset: 12px 8px 27px; display: flex; align-items: center; gap: 2px; opacity: .8; pointer-events: none; }
 .waveform-bar { flex: 1 1 0; min-width: 1px; height: max(2px, calc(var(--level) * 100%)); background: var(--green); border-radius: 2px; }
-.waveform-loading { margin: auto; color: var(--muted); font-size: 11px; }
-.transcript-marker { position: absolute; z-index: 2; top: 0; bottom: 0; left: var(--marker-left); width: 17px; color: var(--blue); transform: translateX(-8px); text-decoration: none; }
+.waveform-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 11px; }
+.archive-waveform-progress { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: var(--playhead, 0%); background: rgba(47, 125, 85, .1); pointer-events: none; }
+.archive-waveform-playhead { position: absolute; z-index: 3; top: 5px; bottom: 24px; left: var(--playhead, 0%); width: 2px; background: var(--blue); pointer-events: none; }
+.archive-waveform-seek { position: absolute; z-index: 4; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.transcript-marker { position: absolute; z-index: 5; top: 0; bottom: 24px; left: var(--marker-left); width: 17px; color: var(--blue); transform: translateX(-8px); text-decoration: none; }
 .transcript-marker::after { position: absolute; top: 0; bottom: 0; left: 8px; width: 1px; background: currentColor; content: ''; }
 .transcript-marker span { position: absolute; z-index: 1; top: 2px; left: 12px; padding: 1px 4px; color: var(--blue); background: rgba(255,255,255,.9); border-radius: 4px; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .transcript-marker:last-child span { right: 4px; left: auto; }
+.archive-waveform-transport { position: absolute; z-index: 6; right: 6px; bottom: 4px; left: 6px; display: flex; align-items: center; gap: 6px; min-height: 44px; }
+.archive-waveform-button { min-width: 44px; min-height: 44px; padding: 0 10px; color: var(--ink); background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; font-weight: 650; }
+.archive-waveform-play { min-width: 62px; }
+.archive-waveform-skip { min-width: 72px; }
+.archive-waveform-time { min-width: 84px; color: var(--ink); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.archive-waveform-status { position: absolute; z-index: 7; top: 2px; right: 6px; left: 6px; max-width: calc(100% - 12px); padding: 2px 4px; color: var(--red); background: rgba(255,255,255,.94); border-radius: 4px; font-size: 10px; text-align: right; }
+.archive-waveform-status:empty { display: none; }
+.archive-audio-source { position: absolute; }
 .archive-log { display: grid; overflow: auto; max-height: 340px; color: #2d3741; background: #f7f8f9; border-radius: 9px; font: 400 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .archive-log-line { display: grid; grid-template-columns: 178px 1fr; gap: 12px; padding: 10px 12px; scroll-margin-top: 16px; }
 .archive-log-line + .archive-log-line { border-top: 1px solid var(--line); }
@@ -171,7 +184,7 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015e
 .conversation-transcript { font-size: 12px; }
 .conversation-gap { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 29px; padding: 3px 12px; color: var(--muted); font-size: 10px; }
 .conversation-gap::before, .conversation-gap::after { width: min(15%, 80px); height: 1px; background: var(--line); content: ''; }
-.archive-body audio { width: 100%; height: 40px; }
+.archive-body audio:not(.archive-audio-source) { width: 100%; height: 40px; }
 .archive-metadata { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; color: var(--muted); font-size: 11px; }
 .archive-metadata dt { color: var(--ink); font-weight: 650; }
 .archive-metadata dd { margin: 0; }
@@ -266,6 +279,8 @@ footer { padding: 22px 0 0; color: var(--muted); font-size: 11px; text-align: ce
   .archive-details summary { grid-template-columns: 72px minmax(0, 1fr) auto; gap: 8px; padding: 0 12px; }
   .archive-summary-row span:last-of-type { display: none; }
   .archive-body { padding: 0 12px 14px; }
+  .archive-waveform-transport { gap: 4px; }
+  .archive-waveform-status { text-align: center; }
   .archive-log-line { grid-template-columns: 1fr; gap: 2px; }
   .archive-metadata { grid-template-columns: 1fr; }
   .archive-metadata dd { margin-bottom: 5px; }
