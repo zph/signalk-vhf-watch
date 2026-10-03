@@ -141,8 +141,6 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015e
 .archive-log { display: grid; overflow: auto; max-height: 340px; color: #2d3741; background: #f7f8f9; border-radius: 9px; font: 400 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .archive-log-line { display: grid; grid-template-columns: 178px 1fr; gap: 12px; padding: 10px 12px; scroll-margin-top: 16px; }
 .archive-log-line + .archive-log-line { border-top: 1px solid var(--line); }
-.archive-transcript-content { display: grid; gap: 5px; }
-.archive-enhance-link { width: fit-content; color: var(--blue); font: 600 12px/1.4 system-ui, sans-serif; }
 .archive-log-line:target, .archive-log-line.is-selected { background: #eaf0fd; }
 .transcript-time-link { color: var(--blue); font-variant-numeric: tabular-nums; text-decoration: none; white-space: nowrap; }
 .transcript-time-link:hover { text-decoration: underline; }

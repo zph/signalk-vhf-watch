@@ -150,8 +150,6 @@ test('each transcript line deep-links to audio and a waveform marker', () => {
   assert.match(script, /transcriptMomentId/)
   assert.match(script, /transcript-time-link/)
   assert.match(script, /transcript-marker/)
-  assert.match(script, /client-transcription\.html\?id=/)
-  assert.match(script, /Enhance on this device/)
   assert.match(script, /dataset\.audioOffset/)
   assert.match(script, /window\.history\.pushState/)
   assert.match(script, /openTranscriptFromHash/)
@@ -164,50 +162,6 @@ test('each transcript line deep-links to audio and a waveform marker', () => {
   assert.match(script, /wavSamples/)
   assert.match(css, /\.transcript-marker/)
   assert.match(css, /\.archive-log-line:target/)
-})
-
-test('client transcription waits for a continuous visible-selection dwell and cancels stale timers', () => {
-  const root = path.resolve(__dirname, '../..')
-  const lifecycle = require(path.join(root, 'public/client-transcription-lifecycle.js')) as {
-    DwellGate: new (delayMs: number, timers: { setTimeout: (callback: () => void, delay: number) => number; clearTimeout: (id: number) => void }) => {
-      reset: (key: string, callback: (key: string) => void) => void
-      cancel: () => void
-    }
-  }
-  let nextId = 0
-  const pending = new Map<number, { callback: () => void; delay: number }>()
-  const timers = {
-    setTimeout(callback: () => void, delay: number) { const id = ++nextId; pending.set(id, { callback, delay }); return id },
-    clearTimeout(id: number) { pending.delete(id) }
-  }
-  const gate = new lifecycle.DwellGate(5000, timers)
-  const started: string[] = []
-  gate.reset('record-a', (key) => started.push(key))
-  assert.equal([...pending.values()][0]?.delay, 5000)
-  gate.reset('record-b', (key) => started.push(key))
-  assert.equal(pending.size, 1)
-  assert.deepEqual(started, [])
-  const timer = [...pending.entries()][0]
-  pending.delete(timer[0])
-  timer[1].callback()
-  assert.deepEqual(started, ['record-b'])
-  let canceledTimerFired = false
-  gate.reset('record-c', () => { canceledTimerFired = true })
-  gate.cancel()
-  assert.equal(pending.size, 0)
-  assert.equal(canceledTimerFired, false)
-
-  const page = readFileSync(path.join(root, 'public/client-transcription.js'), 'utf8')
-  assert.match(page, /document\.visibilityState !== 'visible'/)
-  assert.match(page, /client-transcription\.bundle\.js/)
-  assert.match(page, /worker\?\.terminate\(\)/)
-  assert.match(page, /credentials: 'include'/)
-  assert.match(page, /new URL\('\.\.\/plugins\/signalk-vhf-watch\/api\//)
-  assert.match(page, /cleanup=raw&squelch=0/)
-  assert.match(page, /source-audio/)
-  assert.match(page, /localStorage/)
-  assert.match(page, /WebGPU/)
-  assert.doesNotMatch(page, /fetch\([^\n]*method:\s*['"]POST/)
 })
 
 test('each archived recording has independent non-destructive squelch and cleanup', () => {
