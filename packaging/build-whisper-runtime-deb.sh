@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-if test "$#" -lt 3; then
-  echo "usage: $0 /path/to/whisper-build/bin /output/directory /path/to/ggml-base.en-q5_1.bin [/path/to/ggml-other.bin ...]" >&2
+if test "$#" -lt 5; then
+  echo "usage: $0 /path/to/whisper-build/bin /output/directory /path/to/ggml-base.en-q5_1.bin [/path/to/ggml-other.bin ...] --whisper-license /path/to/whisper.cpp/LICENSE --vad-model /path/to/ggml-silero-v6.2.0.bin" >&2
   exit 2
 fi
 
@@ -10,8 +10,9 @@ binary_dir=$1
 output_dir=$2
 shift 2
 architecture=$(dpkg --print-architecture)
-version=1.9.4-4
+version=1.9.4-5
 package=vhf-whisper-runtime
+vad_model_sha256=2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 root=$work/root
@@ -21,31 +22,62 @@ case "$architecture" in
   *) echo "unsupported Debian architecture: $architecture" >&2; exit 2 ;;
 esac
 test -x "$binary_dir/whisper-cli"
-mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/lib/vhf-whisper" "$root/usr/share/vhf-whisper" \
+test -x "$binary_dir/whisper-vad-speech-segments"
+command -v sha256sum >/dev/null
+mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/lib/vhf-whisper" "$root/usr/share/vhf-whisper/vad" \
   "$root/usr/share/doc/vhf-whisper-runtime" "$output_dir"
 install -m 0755 "$binary_dir/whisper-cli" "$root/usr/lib/vhf-whisper/whisper-cli"
+install -m 0755 "$binary_dir/whisper-vad-speech-segments" "$root/usr/lib/vhf-whisper/whisper-vad-speech-segments"
 cp -a "$binary_dir"/lib*.so* "$root/usr/lib/vhf-whisper/"
 model_sources=''
 has_default=false
-for model do
-  test -f "$model"
-  filename=$(basename "$model")
-  case "$filename" in
-    ggml-*.bin) ;;
-    *) echo "unsupported model filename: $filename" >&2; exit 2 ;;
-  esac
-  install -m 0644 "$model" "$root/usr/share/vhf-whisper/$filename"
-  test "$filename" != ggml-base.en-q5_1.bin || has_default=true
-  model_sources="$model_sources
+vad_model=''
+whisper_license=''
+while test "$#" -gt 0; do
+  case "$1" in
+    --whisper-license)
+      test "$#" -ge 2 || { echo "--whisper-license requires a file path" >&2; exit 2; }
+      whisper_license=$2
+      shift 2
+      ;;
+    --vad-model)
+      test "$#" -ge 2 || { echo "--vad-model requires a model path" >&2; exit 2; }
+      vad_model=$2
+      shift 2
+      ;;
+    *)
+      model=$1
+      test -f "$model"
+      filename=$(basename "$model")
+      case "$filename" in
+        ggml-*.bin) ;;
+        *) echo "unsupported model filename: $filename" >&2; exit 2 ;;
+      esac
+      install -m 0644 "$model" "$root/usr/share/vhf-whisper/$filename"
+      test "$filename" != ggml-base.en-q5_1.bin || has_default=true
+      model_sources="$model_sources
 Model source: https://huggingface.co/ggerganov/whisper.cpp/blob/main/$filename"
+      shift
+      ;;
+  esac
 done
 test "$has_default" = true
-if test -f "$binary_dir/../../LICENSE"; then
-  install -m 0644 "$binary_dir/../../LICENSE" "$root/usr/share/doc/vhf-whisper-runtime/copyright"
-fi
+test -n "$vad_model"
+test -n "$whisper_license"
+test -f "$whisper_license"
+test -f "$vad_model"
+test "$(basename "$vad_model")" = ggml-silero-v6.2.0.bin
+printf '%s  %s\n' "$vad_model_sha256" "$vad_model" | sha256sum -c -
+install -m 0644 "$vad_model" "$root/usr/share/vhf-whisper/vad/ggml-silero-v6.2.0.bin"
+install -m 0644 "$whisper_license" "$root/usr/share/doc/vhf-whisper-runtime/copyright"
+install -m 0644 "$(dirname "$0")/licenses/silero-vad-LICENSE" "$root/usr/share/doc/vhf-whisper-runtime/silero-vad-LICENSE"
+vad_model_source=https://huggingface.co/ggml-org/whisper-vad/blob/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin
 printf '%s\n' \
   'whisper.cpp source: https://github.com/ggml-org/whisper.cpp/tree/v1.9.4' \
   "$model_sources" \
+  "Silero VAD model source: $vad_model_source" \
+  'Silero VAD license: MIT; see silero-vad-LICENSE' \
+  "Silero VAD model SHA-256: $vad_model_sha256" \
   > "$root/usr/share/doc/vhf-whisper-runtime/SOURCES"
 printf '%s\n' \
   '#!/bin/sh' \
@@ -61,6 +93,15 @@ printf '%s\n' \
   'exec /usr/lib/vhf-whisper/whisper-cli -m "$model_path" -l en -t "$threads" -np -f "$audio"' \
   > "$root/usr/bin/vhf-whisper"
 chmod 0755 "$root/usr/bin/vhf-whisper"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'set -eu' \
+  'audio=${1:?audio WAV path required}' \
+  'test -r "$audio" || { echo "audio input is not readable" >&2; exit 2; }' \
+  'export LD_LIBRARY_PATH=/usr/lib/vhf-whisper${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
+  'exec /usr/lib/vhf-whisper/whisper-vad-speech-segments --vad-model /usr/share/vhf-whisper/vad/ggml-silero-v6.2.0.bin --file "$audio" --threads 1 --vad-threshold 0.35 --vad-min-speech-duration-ms 80 --vad-min-silence-duration-ms 100 --vad-speech-pad-ms 200 --no-prints' \
+  > "$root/usr/bin/vhf-vad"
+chmod 0755 "$root/usr/bin/vhf-vad"
 installed_size=$(du -sk "$root" | awk '{print $1}')
 printf '%s\n' \
   "Package: $package" \

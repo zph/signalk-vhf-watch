@@ -9,6 +9,7 @@ import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchive
 import type { NarrationManager } from './narration'
 import type { RnnoiseDenoiser } from './rnnoise'
 import { pcmToWav } from './wav'
+import { WhisperVadProbe } from './whisper-vad'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
 export const DEFAULT_TRANSCRIPTION_MODELS_DIR = '/usr/share/vhf-whisper'
@@ -23,6 +24,8 @@ export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
 export const MINIMUM_TRANSCRIPTION_TIMEOUT_MS = 90_000
 export const TRANSCRIPTION_TIMEOUT_AUDIO_MULTIPLIER = 2
 
+class TranscriptionCancelledError extends Error {}
+
 export interface TranscriptionStatus {
   enabled: boolean
   available: boolean
@@ -33,6 +36,7 @@ export interface TranscriptionStatus {
   threads: number
   availableModels: TranscriptionModel[]
   command: string
+  speechGate: { mode: 'observe' | 'filter'; checked: number; wouldSkip: number; skipped: number; failOpen: number }
   archive?: TranscriptArchiveStatus
   error?: string
 }
@@ -64,6 +68,9 @@ interface TranscriptionOptions {
   archive?: TranscriptArchive
   modelsDir?: string
   denoiser?: RnnoiseDenoiser
+  vad?: WhisperVadProbe
+  /** Test-only behavior switch; production observes VAD but never drops a batch. */
+  vadMode?: 'observe' | 'filter'
 }
 
 interface TranscriptWord {
@@ -203,6 +210,8 @@ export class TranscriptionManager {
   readonly #archive?: TranscriptArchive
   readonly #modelsDir: string
   readonly #denoiser?: RnnoiseDenoiser
+  readonly #vad: WhisperVadProbe
+  readonly #vadMode: 'observe' | 'filter'
   #enabled: boolean
   #model: string
   #threads: number
@@ -214,6 +223,11 @@ export class TranscriptionManager {
   #pendingTimer?: ReturnType<typeof setTimeout>
   #running = false
   #child?: ChildProcess
+  #currentAbort?: AbortController
+  #vadChecked = 0
+  #vadWouldSkip = 0
+  #vadSkipped = 0
+  #vadFailOpen = 0
   #error?: string
   #closed = false
   #previousTranscript = new Map<string, string>()
@@ -228,6 +242,8 @@ export class TranscriptionManager {
     this.#archive = options.archive
     this.#modelsDir = options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
     this.#denoiser = options.denoiser
+    this.#vad = options.vad ?? new WhisperVadProbe()
+    this.#vadMode = options.vadMode ?? 'observe'
     const settings = this.#load()
     this.#enabled = settings.enabled
     this.#model = settings.model
@@ -247,6 +263,13 @@ export class TranscriptionManager {
       threads: this.#threads,
       availableModels: this.availableModels(),
       command: this.#command,
+      speechGate: {
+        mode: this.#vadMode,
+        checked: this.#vadChecked,
+        wouldSkip: this.#vadWouldSkip,
+        skipped: this.#vadSkipped,
+        failOpen: this.#vadFailOpen
+      },
       ...(this.#archive ? { archive: this.#archive.status() } : {}),
       ...(this.#error ? { error: this.#error } : {})
     }
@@ -306,6 +329,7 @@ export class TranscriptionManager {
     if (!enabled) {
       this.#queue = []
       this.#clearPending()
+      this.#currentAbort?.abort()
       this.#child?.kill('SIGTERM')
     }
     this.#save()
@@ -340,6 +364,7 @@ export class TranscriptionManager {
   stop(): void {
     this.#queue = []
     this.#clearPending()
+    this.#currentAbort?.abort()
     this.#child?.kill('SIGTERM')
   }
 
@@ -450,6 +475,10 @@ export class TranscriptionManager {
             this.#error = `Transcript archive: ${error instanceof Error ? error.message : String(error)}`
           }
         } catch (error) {
+          if (error instanceof TranscriptionCancelledError || !this.#enabled || this.#closed) {
+            for (const segment of outputSegments) segment.transcription = { status: 'skipped', text: '' }
+            continue
+          }
           const message = error instanceof Error ? error.message : String(error)
           for (const segment of outputSegments) segment.transcription = { status: 'error', text: '', error: message }
           this.#error = message
@@ -463,39 +492,67 @@ export class TranscriptionManager {
   }
 
   async #transcribe(batch: TranscriptionBatch): Promise<string> {
-    const lastSegment = batch.segments.at(-1)!
-    const wavPath = path.join(os.tmpdir(), `vhf-watch-${process.pid}-${lastSegment.id}.wav`)
-    const sampleRate = batch.segments[0]!.wav.readUInt32LE(24)
-    const overlapPcm = Buffer.concat(batch.segments.slice(0, batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44)))
-    const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
-    const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
-    const rawPcm = Buffer.concat([
-      retainedOverlap,
-      ...batch.segments.slice(batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44))
-    ])
-    const pcm = this.#denoiser?.available()
-      ? await this.#denoiser.processPcm(rawPcm, sampleRate)
-      : rawPcm
-    writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
-    return new Promise((resolve, reject) => {
-      const child = spawn(this.#command, [wavPath, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
-      this.#child = child
-      let stdout = ''
-      let stderr = ''
-      const timeout = setTimeout(() => child.kill('SIGKILL'), transcriptionTimeoutMs(batch.durationSeconds))
-      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-65_536) })
-      child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8_192) })
-      child.on('error', (error) => reject(error))
-      child.on('close', (code, signal) => {
-        clearTimeout(timeout)
-        try { unlinkSync(wavPath) } catch { /* already removed */ }
-        if (code !== 0) {
-          reject(new Error(signal === 'SIGKILL' ? 'Transcription timed out' : stderr.trim() || `Whisper exited ${code}`))
-          return
+    const controller = new AbortController()
+    this.#currentAbort = controller
+    let wavPath: string | undefined
+    try {
+      const lastSegment = batch.segments.at(-1)!
+      wavPath = path.join(os.tmpdir(), `vhf-watch-${process.pid}-${lastSegment.id}.wav`)
+      const sampleRate = batch.segments[0]!.wav.readUInt32LE(24)
+      const newSegments = batch.segments.slice(batch.overlapSegmentCount)
+      const newPcm = Buffer.concat(newSegments.map((segment) => segment.wav.subarray(44)))
+      const overlapPcm = Buffer.concat(batch.segments.slice(0, batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44)))
+      const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
+      const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
+      const rawPcm = Buffer.concat([retainedOverlap, ...newSegments.map((segment) => segment.wav.subarray(44))])
+
+      const vad = await this.#vad.detect(newPcm, sampleRate, controller.signal, (child) => { this.#child = child })
+      if (vad.outcome === 'aborted' || controller.signal.aborted || !this.#enabled || this.#closed) {
+        throw new TranscriptionCancelledError()
+      }
+      if (vad.outcome === 'speech' || vad.outcome === 'no-speech') this.#vadChecked += 1
+      else this.#vadFailOpen += 1
+      if (vad.outcome === 'no-speech') {
+        this.#vadWouldSkip += 1
+        if (this.#vadMode === 'filter') {
+          this.#vadSkipped += 1
+          return ''
         }
-        resolve(cleanWhisperOutput(stdout))
+      }
+
+      const pcm = this.#denoiser?.available()
+        ? await this.#denoiser.processPcm(rawPcm, sampleRate)
+        : rawPcm
+      if (controller.signal.aborted || !this.#enabled || this.#closed) throw new TranscriptionCancelledError()
+      writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
+      return await new Promise((resolve, reject) => {
+        const child = spawn(this.#command, [wavPath!, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
+        this.#child = child
+        let stdout = ''
+        let stderr = ''
+        const timeout = setTimeout(() => child.kill('SIGKILL'), transcriptionTimeoutMs(batch.durationSeconds))
+        const abort = (): void => { child.kill('SIGTERM') }
+        controller.signal.addEventListener('abort', abort, { once: true })
+        if (controller.signal.aborted) abort()
+        child.stdout?.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-65_536) })
+        child.stderr?.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8_192) })
+        child.on('error', (error) => reject(error))
+        child.on('close', (code, signal) => {
+          clearTimeout(timeout)
+          controller.signal.removeEventListener('abort', abort)
+          if (controller.signal.aborted) { reject(new TranscriptionCancelledError()); return }
+          if (code !== 0) {
+            reject(new Error(signal === 'SIGKILL' ? 'Transcription timed out' : stderr.trim() || `Whisper exited ${code}`))
+            return
+          }
+          resolve(cleanWhisperOutput(stdout))
+        })
       })
-    })
+    } finally {
+      if (wavPath) try { unlinkSync(wavPath) } catch { /* already removed */ }
+      if (this.#currentAbort === controller) this.#currentAbort = undefined
+      this.#child = undefined
+    }
   }
 
   #archiveBatch(batch: TranscriptionBatch, transcript: string, rawTranscript: string): void {

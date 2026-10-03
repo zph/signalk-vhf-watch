@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -7,6 +7,7 @@ import { RollingReplay } from '../src/rolling-buffer'
 import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionActiveSeconds, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
 import { RnnoiseDenoiser } from '../src/rnnoise'
+import { WhisperVadProbe } from '../src/whisper-vad'
 
 test('reconciles fuzzy text repeated by overlapping transcription windows', () => {
   const previous = 'Conditions improve Wednesday night with locally hazardous conditions across the northern outer waters likely to continue.'

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 47
+  const CLIENT_BUILD = 48
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -489,6 +489,24 @@
     return true
   }
 
+  function beginArchivePlayback(details, audio, updatePlayback, loadWaveform) {
+    if (audio.dataset.archivePlaybackActivated === 'true') return false
+    if (!activateArchivePlayback(details, audio, updatePlayback)) return false
+    loadWaveform()
+    void audio.play().catch(() => {})
+    return true
+  }
+
+  function bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform) {
+    button.addEventListener('click', () => {
+      if (audio.dataset.archivePlaybackActivated === 'true') {
+        void audio.play().catch(() => {})
+        return
+      }
+      beginArchivePlayback(details, audio, updatePlayback, loadWaveform)
+    })
+  }
+
   function pauseOtherAudio(activeAudio) {
     for (const audio of document.querySelectorAll('audio')) {
       if (audio !== activeAudio && !audio.paused) audio.pause()
@@ -967,11 +985,12 @@
     else audio.addEventListener('loadedmetadata', seek, { once: true })
   }
 
-  function bindTranscriptMoment(link, details, entry, offsetSeconds) {
+  function bindTranscriptMoment(link, details, entry, offsetSeconds, updatePlayback) {
     link.addEventListener('click', (event) => {
       event.preventDefault()
       details.open = true
       window.history.pushState(null, '', link.hash)
+      activateArchivePlayback(details, details.querySelector('audio'), updatePlayback)
       selectTranscriptMoment(details, entry.id, offsetSeconds, true)
       document.getElementById(transcriptMomentId(entry))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     })
@@ -1134,6 +1153,15 @@
     if (narrationReady) transcriptAudio.src = `${API}transcript-session.opus?ids=${encodeURIComponent(record.ids.join(','))}`
     transcriptPlayback.append(transcriptPlaybackTitle, transcriptAudio)
 
+    const updatePlayback = () => {
+      savePreference(`${preferenceKey}:cleanup`, cleanup.value)
+      savePreference(`${preferenceKey}:squelch`, squelch.value)
+      squelch.disabled = cleanup.value === 'modified'
+      quieting.disabled = cleanup.value === 'raw'
+      download.href = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup.value)}&squelch=${encodeURIComponent(squelch.value)}&quieting=${encodeURIComponent(quieting.value)}`
+      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
+    }
+
     const log = document.createElement('div')
     log.className = 'archive-log'
     log.setAttribute('aria-label', `Full transcript for ${time.textContent}`)
@@ -1151,7 +1179,7 @@
         month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
       })
       stamp.setAttribute('aria-label', `Play transcript from ${stamp.textContent}`)
-      bindTranscriptMoment(stamp, details, entry, offsetSeconds)
+      bindTranscriptMoment(stamp, details, entry, offsetSeconds, updatePlayback)
       const text = document.createElement('span')
       text.textContent = entry.transcript || '[no speech recognized]'
       line.append(stamp, text)
@@ -1165,7 +1193,7 @@
       const markerLabel = document.createElement('span')
       markerLabel.textContent = activityStartedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       marker.append(markerLabel)
-      bindTranscriptMoment(marker, details, entry, offsetSeconds)
+      bindTranscriptMoment(marker, details, entry, offsetSeconds, updatePlayback)
       waveform.append(marker)
     }
 
@@ -1213,13 +1241,6 @@
       }
     })
     actions.append(download, originalDownload, copy)
-    const updatePlayback = () => {
-      savePreference(`${preferenceKey}:cleanup`, cleanup.value)
-      savePreference(`${preferenceKey}:squelch`, squelch.value)
-      squelch.disabled = cleanup.value === 'modified'
-      quieting.disabled = cleanup.value === 'raw'
-      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
-    }
     quieting.addEventListener('input', () => {
       quietingValue.value = `${quieting.value}%`
       quietingValue.textContent = `${quieting.value}%`
@@ -1229,13 +1250,17 @@
     cleanup.addEventListener('change', updatePlayback)
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
-    details.addEventListener('toggle', () => {
-      if (details.open) {
-        activateArchivePlayback(details, audio, updatePlayback)
-        void renderArchiveWaveform(waveform, audioUrl)
-      }
+    const playButton = document.createElement('button')
+    playButton.className = 'archive-play button compact'
+    playButton.type = 'button'
+    playButton.textContent = 'Play recording'
+    bindArchivePlaybackButton(playButton, details, audio, updatePlayback, () => {
+      void renderArchiveWaveform(waveform, audioUrl)
     })
-    body.append(waveform, audio, transcriptPlayback, controls, log, metadata, actions)
+    details.addEventListener('toggle', () => {
+      if (details.open) void renderArchiveWaveform(waveform, audioUrl)
+    })
+    body.append(waveform, playButton, audio, transcriptPlayback, controls, log, metadata, actions)
     details.append(summary, body)
     const header = document.createElement('div')
     header.className = 'archive-item-header'

@@ -8,9 +8,11 @@ TypeScript and retains this notice as required by that license.
 
 The optional `vhf-whisper-runtime` Debian package is built from
 [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp), copyright its contributors and licensed
-under the MIT License, and converted Whisper models such as `base.en-q5_1` and `small.en-q5_1`. The package builder installs
-the upstream license and records the exact source and model URLs in the package documentation. No
-Whisper binary or model is included in the VHF Watch npm package itself.
+under the MIT License, converted Whisper models such as `base.en-q5_1` and `small.en-q5_1`, and the
+Silero VAD model. The Silero model is licensed under the MIT License, copyright (c) 2020-present
+Silero Team; its complete license is installed in the runtime package. The package records exact
+source revisions and model hashes in its documentation. No Whisper or VAD binary or model is
+included in the VHF Watch npm package itself.
 
 The optional `vhf-tts-runtime` Debian package is built from
 [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx), licensed under the Apache License 2.0, and

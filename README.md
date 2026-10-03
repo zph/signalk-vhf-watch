@@ -180,12 +180,22 @@ seconds. The decode watchdog is at least 90 seconds and scales to twice the audi
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
 processed one at a time; audio is not uploaded.
 
+Before Base runs, the optional runtime's one-thread Silero VAD checks only audio newer than the
+retained transcription overlap. It is currently in observation mode: a valid no-speech result is
+counted as a would-skip candidate, but every window still reaches Base with its full original audio
+and context. Detected speech, uncertain output, and helper errors also pass through unchanged. A
+small Pi trial found that the proposed 0.35 threshold returned no segments on several previously
+transcribed radio records, while a lower threshold also fired on synthetic noise and hum. Those
+records were not independently labeled, so VAD filtering remains off until recall can be validated.
+The observer accepts speech segments as short as 80 ms and adds 200 ms of padding for measurement.
+It never trims or rewrites replay or archived recordings.
+
 Completed batches with recognized words are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
 compressed WAV. Empty results and known non-speech Whisper annotations are omitted from this durable
-archive. The receiver has no independent speech detector, so this is a transcript filter rather than
-verified voice detection; speech that Whisper misses remains available in the bounded rolling replay
-buffer until that replay expires. The Transcript archive section combines adjacent records on the same channel into
+archive. VAD results are only measurements; they do not currently control whether Base runs. Speech
+that Base misses remains available in the bounded rolling replay buffer until that replay expires.
+The Transcript archive section combines adjacent records on the same channel into
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing
@@ -205,8 +215,15 @@ on the target Debian architecture, then install the resulting file with
 ```sh
 packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin /tmp \
   /path/to/whisper.cpp/models/ggml-base.en-q5_1.bin \
-  /path/to/whisper.cpp/models/ggml-small.en-q5_1.bin
+  /path/to/whisper.cpp/models/ggml-small.en-q5_1.bin \
+  --whisper-license /path/to/whisper.cpp/LICENSE \
+  --vad-model /path/to/whisper.cpp/models/ggml-silero-v6.2.0.bin
 ```
+
+The runtime package includes the matching `whisper-vad-speech-segments` helper and pinned Silero VAD
+model. The build checks the VAD model's SHA-256 and includes its MIT license; the model is installed
+under a separate `vad/` directory and does not appear as a selectable transcription model. The
+observer currently uses the 0.35 threshold for measurement, not to suppress Base transcription.
 
 Build the optional Kokoro reader on the target Debian architecture from the official sherpa-onnx
 binary bundle and `kokoro-en-v0_19` model, then install it with `apt install ./vhf-tts-runtime_*.deb`:
