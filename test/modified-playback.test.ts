@@ -3,7 +3,10 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { Writable } from 'node:stream'
 import { ModifiedPlayback, ModifiedPlaybackError } from '../src/modified-playback'
+
+const childProcess = require('node:child_process') as typeof import('node:child_process')
 
 const helperSource = `#!/usr/bin/env node
 const fs = require('node:fs')
@@ -82,6 +85,52 @@ test('quieting intensity separates cached work and reaches finite and streaming 
   await stream.completion
   assert.equal(readFileSync(`${f.model}.runs`, 'utf8').trim().split('\n').length, 3)
   assert.equal(readFileSync(`${f.model}.quieting`, 'utf8'), '100\n50\n0\n')
+})
+
+test('openStream preserves Writable backpressure and drain semantics', async (t) => {
+  const f = fixture(t)
+  const originalSpawn = childProcess.spawn
+  let child: import('node:child_process').ChildProcessWithoutNullStreams | undefined
+  t.mock.method(childProcess, 'spawn', (...args: Parameters<typeof childProcess.spawn>) => {
+    const spawned = originalSpawn(...args)
+    child = spawned as import('node:child_process').ChildProcessWithoutNullStreams
+    return spawned
+  })
+  const stream = await f.playback.openStream(16_000)
+  let releaseFirstWrite: (() => void) | undefined
+  let writes = 0
+  const controlledInput = new Writable({
+    highWaterMark: 65_536,
+    write(_chunk, _encoding, callback) {
+      writes += 1
+      if (writes === 1) releaseFirstWrite = callback
+      else callback()
+    }
+  })
+  const runningChild = child!
+  runningChild.stdin = controlledInput
+
+  // The first framed 2-second PCM packet is 64,008 bytes. Node's pipe HWM is
+  // 65,536, so write() returns true and does not promise a later drain event.
+  assert.equal(stream.write(Buffer.alloc(64_000)), true)
+  assert.equal(stream.bufferedBytes, 64_008)
+
+  const drained = new Promise<void>((resolve) => stream.onDrain(resolve))
+  assert.equal(stream.write(Buffer.alloc(64_000)), false)
+  releaseFirstWrite!()
+  let drainTimeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      drained,
+      new Promise<never>((_, reject) => { drainTimeout = setTimeout(() => reject(new Error('stream never drained')), 2_000) })
+    ])
+  } finally {
+    if (drainTimeout) clearTimeout(drainTimeout)
+  }
+  assert.equal(writes, 2)
+
+  stream.close()
+  await stream.completion
 })
 
 test('cancelling one coalesced caller leaves the other caller alive', async (t) => {

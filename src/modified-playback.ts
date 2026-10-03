@@ -240,7 +240,10 @@ export class ModifiedPlayback {
         }
         const packet = this.#record(pcm, discriminatorNoise)
         const writable = child.stdin.write(packet)
-        return writable && child.stdin.writableLength <= SAMPLE_RATE * 2 * 2
+        // Only Writable.write()'s result guarantees whether a later `drain`
+        // event will fire. A separate byte threshold can wait for an event
+        // that Node will never emit when the stream is still below its HWM.
+        return writable
       },
       onDrain: (callback) => child.stdin.once('drain', callback),
       end: () => child.stdin.end(),
