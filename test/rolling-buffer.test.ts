@@ -217,6 +217,77 @@ test('caps retention by memory as well as time', () => {
   assert.equal(replay.list().length, 1)
 })
 
+test('copies append blocks into bounded segments and keeps snapshots independent', () => {
+  const replay = new RollingReplay(8_000, 1, 1_440, '16')
+  const startedAt = Date.UTC(2026, 9, 3)
+  const blockBytes = 4_000
+  const blocks = Array.from({ length: 13 }, (_, index) => Buffer.alloc(blockBytes, index + 1))
+  const source = Buffer.concat(blocks)
+  const spans = blocks.map((block, index) => ({ bytes: block.length, discriminatorNoise: index / 20 }))
+  const created = replay.append(source, startedAt, undefined, spans)
+
+  assert.equal(created.length, 3)
+  assert.deepEqual(created.map((segment) => segment.durationSeconds), [1, 1, 1])
+  assert.deepEqual(created.map((segment) => Date.parse(segment.startedAt)), [startedAt, startedAt + 1_000, startedAt + 2_000])
+  assert.deepEqual(created.map((segment) => segment.qualitySpans.map((span) => span.bytes)), [
+    [4_000, 4_000, 4_000, 4_000],
+    [4_000, 4_000, 4_000, 4_000],
+    [4_000, 4_000, 4_000, 4_000]
+  ])
+  const snapshot = replay.snapshotFrom(created[0]!.id)!
+  const pending = replay.list().find((segment) => segment.durationSeconds === 0.25)!
+
+  source.fill(0xff)
+  assert.deepEqual(snapshot[0]!.wav.subarray(44, 44 + blockBytes), Buffer.alloc(blockBytes, 1))
+  assert.deepEqual(snapshot[2]!.wav.subarray(44, 44 + blockBytes), Buffer.alloc(blockBytes, 9))
+  assert.deepEqual(snapshot[3]!.wav.subarray(44), Buffer.alloc(blockBytes, 13))
+  assert.deepEqual(replay.get(pending.id)!.wav.subarray(44), Buffer.alloc(blockBytes, 13))
+
+  // Completing the partial segment reuses the internal buffer without mutating prior snapshots.
+  replay.append(Buffer.alloc(12_000, 14), startedAt + 3_250)
+  assert.deepEqual(snapshot[0]!.wav.subarray(44, 44 + blockBytes), Buffer.alloc(blockBytes, 1))
+  assert.deepEqual(snapshot[3]!.wav.subarray(44), Buffer.alloc(blockBytes, 13))
+  const appended = replay.get(created[2]!.id + 1)!
+  assert.deepEqual(appended.wav.subarray(44, 44 + blockBytes), Buffer.alloc(blockBytes, 13))
+  assert.deepEqual(appended.wav.subarray(44 + blockBytes), Buffer.alloc(12_000, 14))
+})
+
+test('prepends across multiple segment boundaries while preserving recovered and live data', () => {
+  const replay = new RollingReplay(8_000, 1, 60, '68')
+  const startedAt = Date.UTC(2026, 9, 3)
+  replay.append(Buffer.alloc(8_000, 3), startedAt + 500, 0.1)
+  const recovered = Buffer.concat([
+    Buffer.alloc(16_000, 1),
+    Buffer.alloc(16_000, 2),
+    Buffer.alloc(8_000, 4)
+  ])
+  const created = replay.prepend(recovered, startedAt - 1_500, 0.2)
+
+  assert.equal(created.length, 2)
+  assert.deepEqual(created.map((segment) => segment.wav.subarray(44).readUInt8(0)), [1, 2])
+  assert.deepEqual(created.map((segment) => Date.parse(segment.startedAt)), [startedAt - 1_500, startedAt - 500])
+  assert.equal(replay.list().find((segment) => segment.durationSeconds === 0.5)?.channel, '68')
+  const final = replay.flush()!
+  assert.equal(final.durationSeconds, 0.5)
+  assert.equal(final.wav.subarray(44).readUInt8(0), 3)
+})
+
+test('keeps a bounded replay within a full-day retention and byte window', () => {
+  const segmentBytes = 3_600 * 2
+  const maximumBytes = (segmentBytes + 44) * 24
+  const replay = new RollingReplay(1, 3_600, 1_440, '16', maximumBytes)
+  const startedAt = Date.UTC(2026, 8, 1)
+  const hour = Buffer.alloc(segmentBytes, 1)
+  for (let index = 0; index < 26; index += 1) {
+    replay.append(hour, startedAt + index * 3_600_000)
+  }
+
+  const retained = replay.list()
+  assert.equal(retained.length, 24)
+  assert.equal(Date.parse(retained[0]!.startedAt) - Date.parse(retained.at(-1)!.startedAt), 23 * 3_600_000)
+  assert.ok(retained.reduce((sum, segment) => sum + segment.bytes, 0) <= maximumBytes)
+})
+
 test('compacts completed replay to Opus and decodes it for playback', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-replay-opus-'))
   const command = path.join(directory, 'fake-ffmpeg')

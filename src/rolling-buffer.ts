@@ -68,6 +68,7 @@ export class RollingReplay {
   readonly #maxBytes: number
   #channel: string
   #pending = Buffer.alloc(0)
+  #pendingLength = 0
   #pendingQuality: ReplayQualitySpan[] = []
   #pendingStartedAt = Date.now()
   #sequence = 0
@@ -120,18 +121,9 @@ export class RollingReplay {
     if (appendedQuality.reduce((sum, span) => sum + span.bytes, 0) !== chunk.length) {
       throw new Error('Replay quality spans must cover the supplied PCM exactly')
     }
-    if (this.#pending.length === 0) this.#pendingStartedAt = receivedAt
-    this.#pending = Buffer.concat([this.#pending, chunk])
-    this.#pendingQuality.push(...appendedQuality)
-    this.#recordBreakState(appendedQuality)
+    if (this.#pendingLength === 0) this.#pendingStartedAt = receivedAt
     const created: ReplaySegment[] = []
-    while (this.#pending.length >= this.#segmentBytes) {
-      const pcm = this.#pending.subarray(0, this.#segmentBytes)
-      this.#pending = Buffer.from(this.#pending.subarray(this.#segmentBytes))
-      created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(pcm.length)))
-      this.#pendingStartedAt += (pcm.length / 2 / this.#sampleRate) * 1000
-      this.#recomputeBreakState()
-    }
+    this.#copyPending(chunk, appendedQuality, created)
     if (this.#pendingHasSignal && this.#pendingQuietBytes >= this.#breakQuietBytes) {
       const segment = this.flush()
       if (segment) created.push(segment)
@@ -156,7 +148,7 @@ export class RollingReplay {
 
   prepend(chunk: Buffer, startedAt: number, discriminatorNoise?: number, qualitySpans?: ReplayQualitySpan[]): ReplaySegment[] {
     if (chunk.length < 2) return []
-    if (this.#pending.length === 0) {
+    if (this.#pendingLength === 0) {
       return this.append(chunk, startedAt, discriminatorNoise, qualitySpans)
     }
     // Keep the live samples at the handoff and trim any duplicated recovered
@@ -170,24 +162,24 @@ export class RollingReplay {
     if (prefixQuality.reduce((sum, span) => sum + span.bytes, 0) !== prefixBytes) {
       throw new Error('Replay quality spans must cover the supplied PCM exactly')
     }
-    this.#pending = Buffer.concat([chunk.subarray(0, prefixBytes), this.#pending])
-    this.#pendingQuality.unshift(...prefixQuality)
+    const previousPending = Buffer.from(this.#pending.subarray(0, this.#pendingLength))
+    const previousQuality = this.#pendingQuality.map((span) => ({ ...span }))
+    this.#pendingLength = 0
+    this.#pendingQuality = []
     this.#pendingStartedAt = startedAt
     const created: ReplaySegment[] = []
-    while (this.#pending.length >= this.#segmentBytes) {
-      const pcm = this.#pending.subarray(0, this.#segmentBytes)
-      this.#pending = Buffer.from(this.#pending.subarray(this.#segmentBytes))
-      created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(pcm.length)))
-      this.#pendingStartedAt += pcm.length / 2 / this.#sampleRate * 1000
-    }
+    this.#copyPending(chunk.subarray(0, prefixBytes), prefixQuality, created)
+    this.#copyPending(previousPending, previousQuality, created)
     this.#recomputeBreakState()
     return created
   }
 
   flush(): ReplaySegment | undefined {
-    if (this.#pending.length < 2) return undefined
-    const segment = this.#store(this.#pending, this.#pendingStartedAt, this.#takeQuality(this.#pending.length))
-    this.#pending = Buffer.alloc(0)
+    if (this.#pendingLength < 2) return undefined
+    const segment = this.#store(
+      this.#pending.subarray(0, this.#pendingLength), this.#pendingStartedAt, this.#takeQuality(this.#pendingLength)
+    )
+    this.#pendingLength = 0
     this.#pendingStartedAt = Date.now()
     this.#pendingHasSignal = false
     this.#pendingQuietBytes = 0
@@ -213,7 +205,7 @@ export class RollingReplay {
 
   get(id: number): ReplaySegment | undefined {
     return this.#segments.find((segment) => segment.id === id) ??
-      (this.#pending.length >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
+      (this.#pendingLength >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
   }
 
   /** Capture an immutable raw snapshot synchronously before a replay-to-live handoff. */
@@ -287,7 +279,7 @@ export class RollingReplay {
       const nextCursor = { ...cursor, consumedBytes: end }
       const qualitySpans = this.#sliceQuality(payload.qualitySpans, cursor.consumedBytes, end)
       let after: Extract<ReplayPlaybackRead, { kind: 'chunk' }>['after']
-      const pending = this.#pending.length >= 2 && cursor.id === this.#sequence + this.#sequenceStep
+      const pending = this.#pendingLength >= 2 && cursor.id === this.#sequence + this.#sequenceStep
       if (!pending && end === segmentBytes && end === payload.pcm.length) {
         const next = this.#nextAfter(cursor.id)
         after = next
@@ -302,7 +294,7 @@ export class RollingReplay {
         ...(after ? { after } : {})
       }
     }
-    if (this.#pending.length >= 2 && cursor.id === this.#sequence + this.#sequenceStep) {
+    if (this.#pendingLength >= 2 && cursor.id === this.#sequence + this.#sequenceStep) {
       return { kind: 'edge', cursor }
     }
     const next = this.#nextAfter(cursor.id)
@@ -370,8 +362,8 @@ export class RollingReplay {
   delete(id: number): boolean {
     const index = this.#segments.findIndex((segment) => segment.id === id)
     if (index < 0) {
-      if (this.#pending.length < 2 || id !== this.#sequence + this.#sequenceStep) return false
-      this.#pending = Buffer.alloc(0)
+      if (this.#pendingLength < 2 || id !== this.#sequence + this.#sequenceStep) return false
+      this.#pendingLength = 0
       this.#pendingQuality = []
       this.#pendingStartedAt = Date.now()
       this.#pendingHasSignal = false
@@ -386,6 +378,7 @@ export class RollingReplay {
   clear(): void {
     this.#segments = []
     this.#pending = Buffer.alloc(0)
+    this.#pendingLength = 0
     this.#pendingQuality = []
     this.#pendingHasSignal = false
     this.#pendingQuietBytes = 0
@@ -394,15 +387,57 @@ export class RollingReplay {
   #takeQuality(byteLength: number): ReplayQualitySpan[] {
     const taken: ReplayQualitySpan[] = []
     let remaining = byteLength
-    while (remaining > 0 && this.#pendingQuality.length > 0) {
-      const span = this.#pendingQuality[0]!
+    let consumed = 0
+    while (remaining > 0 && consumed < this.#pendingQuality.length) {
+      const span = this.#pendingQuality[consumed]!
       const bytes = Math.min(remaining, span.bytes)
       taken.push({ bytes, ...(span.discriminatorNoise === undefined ? {} : { discriminatorNoise: span.discriminatorNoise }) })
       span.bytes -= bytes
       remaining -= bytes
-      if (span.bytes === 0) this.#pendingQuality.shift()
+      if (span.bytes === 0) consumed += 1
+      else break
     }
+    if (consumed > 0) this.#pendingQuality.splice(0, consumed)
     return taken
+  }
+
+  /** Copy incoming PCM once into a bounded segment buffer, materializing only completed segments. */
+  #copyPending(chunk: Buffer, quality: ReplayQualitySpan[], created: ReplaySegment[]): void {
+    let offset = 0
+    let qualityIndex = 0
+    let qualityOffset = 0
+    while (offset < chunk.length) {
+      if (this.#pending.length === 0) this.#pending = Buffer.alloc(this.#segmentBytes)
+      const bytes = Math.min(this.#segmentBytes - this.#pendingLength, chunk.length - offset)
+      const end = offset + bytes
+      this.#pending.set(chunk.subarray(offset, end), this.#pendingLength)
+      const appendedQuality: ReplayQualitySpan[] = []
+      while (offset < end) {
+        const span = quality[qualityIndex]
+        if (!span) throw new Error('Replay quality spans must cover the supplied PCM exactly')
+        const copied = Math.min(end - offset, span.bytes - qualityOffset)
+        appendedQuality.push({
+          bytes: copied,
+          ...(span.discriminatorNoise === undefined ? {} : { discriminatorNoise: span.discriminatorNoise })
+        })
+        offset += copied
+        qualityOffset += copied
+        if (qualityOffset === span.bytes) {
+          qualityIndex += 1
+          qualityOffset = 0
+        }
+      }
+      this.#pendingQuality.push(...appendedQuality)
+      this.#recordBreakState(appendedQuality)
+      this.#pendingLength += bytes
+      if (this.#pendingLength === this.#segmentBytes) {
+        const pcm = this.#pending.subarray(0, this.#pendingLength)
+        created.push(this.#store(pcm, this.#pendingStartedAt, this.#takeQuality(this.#pendingLength)))
+        this.#pendingLength = 0
+        this.#pendingStartedAt += (pcm.length / 2 / this.#sampleRate) * 1000
+        this.#recomputeBreakState()
+      }
+    }
   }
 
   #sliceQuality(spans: ReplayQualitySpan[], start: number, end: number): ReplayQualitySpan[] {
@@ -511,10 +546,10 @@ export class RollingReplay {
   }
 
   #pendingSegment(): ReplaySegment | undefined {
-    if (this.#pending.length < 2) return undefined
+    if (this.#pendingLength < 2) return undefined
     return this.#createSegment(
       this.#sequence + this.#sequenceStep,
-      this.#pending,
+      this.#pending.subarray(0, this.#pendingLength),
       this.#pendingStartedAt,
       this.#pendingQuality.map((span) => ({ ...span }))
     )

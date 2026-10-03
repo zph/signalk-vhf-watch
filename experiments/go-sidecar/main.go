@@ -21,17 +21,17 @@ import (
 )
 
 const (
-	frameVoice          byte = 1
-	frameDSC            byte = 2
-	frameState          byte = 3
-	frameVoiceB         byte = 4
-	frameVoiceBackfill  byte = 5
-	frameVoiceBBackfill byte = 6
+	frameVoice               byte = 1
+	frameDSC                 byte = 2
+	frameState               byte = 3
+	frameVoiceB              byte = 4
+	frameVoiceBackfill       byte = 5
+	frameVoiceBBackfill      byte = 6
 	frameVoiceSpansBackfill  byte = 7
 	frameVoiceBSpansBackfill byte = 8
-	channelRate              = 96_000
-	spectrumFFTSize          = 4096
-	spectrumStride           = 32768
+	channelRate                   = 96_000
+	spectrumFFTSize               = 4096
+	spectrumStride                = 32768
 )
 
 var frameWriteMutex sync.Mutex
@@ -112,6 +112,8 @@ type channelizer struct {
 
 type complexFIRDecimator struct {
 	coefficients []float64
+	pairs        []float64
+	center       int
 	historyI     []float64
 	historyQ     []float64
 	writeIndex   int
@@ -241,7 +243,6 @@ func lowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
 	coefficients := make([]float64, taps)
 	middle := float64(taps-1) / 2
 	normalizedCutoff := float64(cutoffHz) / float64(sampleRate)
-	var sum float64
 	for index := range coefficients {
 		distance := float64(index) - middle
 		value := 2 * normalizedCutoff
@@ -253,7 +254,17 @@ func lowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
 		window := 0.42 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(taps-1)) +
 			0.08*math.Cos(4*math.Pi*float64(index)/float64(taps-1))
 		coefficients[index] = value * window
-		sum += coefficients[index]
+	}
+	// The sampled Blackman-windowed sinc is symmetric. Average each reflected pair before
+	// normalization so the optimized convolution can use one multiply per pair without
+	// retaining tiny asymmetries from evaluating sin/cos at reflected floating-point inputs.
+	for left, right := 0, taps-1; left < right; left, right = left+1, right-1 {
+		coefficient := (coefficients[left] + coefficients[right]) * 0.5
+		coefficients[left], coefficients[right] = coefficient, coefficient
+	}
+	var sum float64
+	for _, coefficient := range coefficients {
+		sum += coefficient
 	}
 	for index := range coefficients {
 		coefficients[index] /= sum
@@ -263,11 +274,17 @@ func lowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
 
 func newComplexFIRDecimator(sampleRate, cutoffHz, taps, decimation int) *complexFIRDecimator {
 	coefficients := lowpassCoefficients(sampleRate, cutoffHz, taps)
-	return &complexFIRDecimator{
+	filter := &complexFIRDecimator{
 		coefficients: coefficients,
 		historyI:     make([]float64, taps), historyQ: make([]float64, taps),
 		decimation: decimation,
+		center:     taps / 2,
+		pairs:      make([]float64, taps/2),
 	}
+	for offset := range filter.pairs {
+		filter.pairs[offset] = coefficients[offset]
+	}
+	return filter
 }
 
 func (f *complexFIRDecimator) reset() {
@@ -291,14 +308,27 @@ func (f *complexFIRDecimator) push(inputI, inputQ float64) (outputI, outputQ flo
 	if historyIndex < 0 {
 		historyIndex = len(f.coefficients) - 1
 	}
-	for _, coefficient := range f.coefficients {
-		outputI += coefficient * f.historyI[historyIndex]
-		outputQ += coefficient * f.historyQ[historyIndex]
+	taps := len(f.coefficients)
+	oldestIndex := historyIndex + 1
+	if oldestIndex == taps {
+		oldestIndex = 0
+	}
+	for _, coefficient := range f.pairs {
+		inputI := f.historyI[historyIndex] + f.historyI[oldestIndex]
+		inputQ := f.historyQ[historyIndex] + f.historyQ[oldestIndex]
+		outputI += coefficient * inputI
+		outputQ += coefficient * inputQ
 		historyIndex--
 		if historyIndex < 0 {
-			historyIndex = len(f.coefficients) - 1
+			historyIndex = taps - 1
+		}
+		oldestIndex++
+		if oldestIndex == taps {
+			oldestIndex = 0
 		}
 	}
+	outputI += f.coefficients[f.center] * f.historyI[historyIndex]
+	outputQ += f.coefficients[f.center] * f.historyQ[historyIndex]
 	return outputI, outputQ, true
 }
 

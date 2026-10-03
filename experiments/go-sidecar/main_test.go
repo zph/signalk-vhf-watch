@@ -8,6 +8,207 @@ import (
 	"testing"
 )
 
+type directFIRDecimator struct {
+	coefficients []float64
+	historyI     []float64
+	historyQ     []float64
+	writeIndex   int
+	decimation   int
+	count        int
+}
+
+func newDirectFIRDecimator(coefficients []float64, decimation int) *directFIRDecimator {
+	return &directFIRDecimator{
+		coefficients: coefficients,
+		historyI:     make([]float64, len(coefficients)),
+		historyQ:     make([]float64, len(coefficients)),
+		decimation:   decimation,
+	}
+}
+
+// originalLowpassCoefficients retains the original per-tap coefficient evaluation and
+// normalization for comparisons against the pre-optimization direct convolution.
+func originalLowpassCoefficients(sampleRate, cutoffHz, taps int) []float64 {
+	coefficients := make([]float64, taps)
+	middle := float64(taps-1) / 2
+	normalizedCutoff := float64(cutoffHz) / float64(sampleRate)
+	var sum float64
+	for index := range coefficients {
+		distance := float64(index) - middle
+		value := 2 * normalizedCutoff
+		if distance != 0 {
+			value = math.Sin(2*math.Pi*normalizedCutoff*distance) / (math.Pi * distance)
+		}
+		window := 0.42 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(taps-1)) +
+			0.08*math.Cos(4*math.Pi*float64(index)/float64(taps-1))
+		coefficients[index] = value * window
+		sum += coefficients[index]
+	}
+	for index := range coefficients {
+		coefficients[index] /= sum
+	}
+	return coefficients
+}
+
+func (f *directFIRDecimator) reset() {
+	clear(f.historyI)
+	clear(f.historyQ)
+	f.writeIndex, f.count = 0, 0
+}
+
+// push preserves the original newest-to-oldest direct convolution as a numerical reference.
+func (f *directFIRDecimator) push(inputI, inputQ float64) (outputI, outputQ float64, ready bool) {
+	f.historyI[f.writeIndex], f.historyQ[f.writeIndex] = inputI, inputQ
+	f.writeIndex++
+	if f.writeIndex == len(f.coefficients) {
+		f.writeIndex = 0
+	}
+	f.count++
+	if f.count < f.decimation {
+		return 0, 0, false
+	}
+	f.count = 0
+	historyIndex := f.writeIndex - 1
+	if historyIndex < 0 {
+		historyIndex = len(f.coefficients) - 1
+	}
+	for _, coefficient := range f.coefficients {
+		outputI += coefficient * f.historyI[historyIndex]
+		outputQ += coefficient * f.historyQ[historyIndex]
+		historyIndex--
+		if historyIndex < 0 {
+			historyIndex = len(f.coefficients) - 1
+		}
+	}
+	return outputI, outputQ, true
+}
+
+func processWithDirectFIR(c *channelizer, firstRF, channelRF *directFIRDecimator, iq []byte) []int16 {
+	output := make([]int16, 0, len(iq)/2/(c.inputRate/channelRate)/c.audioDecimation+1)
+	deAlpha := 1 - math.Exp(-1/(float64(c.outputRate)*75e-6))
+	for index := 0; index+1 < len(iq); index += 2 {
+		sourceI, sourceQ := normalizedIQ[iq[index]], normalizedIQ[iq[index+1]]
+		oscillatorI, oscillatorQ := c.oscillatorI[c.oscillatorIndex], c.oscillatorQ[c.oscillatorIndex]
+		mixedI := sourceI*oscillatorI - sourceQ*oscillatorQ
+		mixedQ := sourceI*oscillatorQ + sourceQ*oscillatorI
+		c.oscillatorIndex++
+		if c.oscillatorIndex == len(c.oscillatorI) {
+			c.oscillatorIndex = 0
+		}
+		firstI, firstQ, ready := firstRF.push(mixedI, mixedQ)
+		if !ready {
+			continue
+		}
+		filteredI, filteredQ, ready := channelRF.push(firstI, firstQ)
+		if !ready {
+			continue
+		}
+		demodulated := c.discriminate(filteredI, filteredQ)
+		c.level = c.level*0.995 + math.Abs(demodulated)*0.005
+		c.audioSum += demodulated
+		c.audioCount++
+		if c.audioCount < int64(c.audioDecimation) {
+			continue
+		}
+		sample := c.audioSum / float64(c.audioCount)
+		c.audioSum, c.audioCount = 0, 0
+		c.deemphasis += deAlpha * (sample - c.deemphasis)
+		c.checksum += c.deemphasis
+		c.outputSamples++
+		output = append(output, softLimitAudio(c.deemphasis))
+	}
+	return output
+}
+
+func TestSymmetricFIRMatchesDirectConvolutionAcrossWrapsAndResets(t *testing.T) {
+	for _, config := range []struct {
+		taps, decimation int
+	}{{3, 1}, {63, 1}, {63, 7}, {511, 5}, {511, 64}} {
+		filter := newComplexFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+		direct := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, config.taps), config.decimation)
+		for left, right := 0, len(filter.coefficients)-1; left < right; left, right = left+1, right-1 {
+			if filter.coefficients[left] != filter.coefficients[right] {
+				t.Fatalf("%d-tap coefficients %d and %d are not symmetric", config.taps, left, right)
+			}
+		}
+		seed := uint32(0x5eed)
+		for sample := 0; sample < 20_000; sample++ {
+			if sample == 7_777 {
+				filter.reset()
+				direct.reset()
+			}
+			seed = seed*1664525 + 1013904223
+			inputI := (float64(seed>>8)/float64(1<<24))*2 - 1
+			seed = seed*1664525 + 1013904223
+			inputQ := (float64(seed>>8)/float64(1<<24))*2 - 1
+			gotI, gotQ, gotReady := filter.push(inputI, inputQ)
+			wantI, wantQ, wantReady := direct.push(inputI, inputQ)
+			if gotReady != wantReady {
+				t.Fatalf("%d-tap decimator readiness at sample %d = %v, want %v", config.taps, sample, gotReady, wantReady)
+			}
+			if gotReady && (math.Abs(gotI-wantI) > 2e-14 || math.Abs(gotQ-wantQ) > 2e-14) {
+				t.Fatalf("%d-tap output at sample %d differs: got (%0.17g, %0.17g), direct (%0.17g, %0.17g)", config.taps, sample, gotI, gotQ, wantI, wantQ)
+			}
+		}
+	}
+}
+
+func TestChannelizerPcmMatchesDirectFIRWithinOneLsb(t *testing.T) {
+	const inputRate, inputSamples = 2_400_000, 96_000
+	optimized, err := newChannelizer(inputRate, 16_000, 50_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := *optimized
+	firstRF := newDirectFIRDecimator(originalLowpassCoefficients(inputRate, 120_000, 63), optimized.firstRF.decimation)
+	channelRF := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, 511), optimized.channelRF.decimation)
+	iq := make([]byte, inputSamples*2)
+	var phase float64
+	for sample := 0; sample < inputSamples; sample++ {
+		modulation := 1_500 * math.Sin(2*math.Pi*1_000*float64(sample)/inputRate)
+		phase += 2 * math.Pi * (50_000 + modulation) / inputRate
+		iq[2*sample] = byte(math.Round(127.5 + 64*math.Cos(phase)))
+		iq[2*sample+1] = byte(math.Round(127.5 + 64*math.Sin(phase)))
+	}
+	got := optimized.process(iq)
+	want := processWithDirectFIR(&reference, firstRF, channelRF, iq)
+	if len(got) != len(want) {
+		t.Fatalf("PCM length = %d, direct convolution length = %d", len(got), len(want))
+	}
+	for index := range got {
+		difference := int(got[index]) - int(want[index])
+		if difference < -1 || difference > 1 {
+			t.Fatalf("PCM sample %d = %d, direct convolution = %d (difference %d LSB)", index, got[index], want[index], difference)
+		}
+	}
+}
+
+func BenchmarkComplexFIRDecimator(b *testing.B) {
+	const taps, decimation, samples = 511, 5, 4096
+	optimized := newComplexFIRDecimator(480_000, 9_000, taps, decimation)
+	direct := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, taps), decimation)
+	inputsI, inputsQ := make([]float64, samples), make([]float64, samples)
+	seed := uint32(42)
+	for index := range inputsI {
+		seed = seed*1664525 + 1013904223
+		inputsI[index] = float64(int32(seed)) / math.MaxInt32
+		seed = seed*1664525 + 1013904223
+		inputsQ[index] = float64(int32(seed)) / math.MaxInt32
+	}
+	b.Run("paired", func(b *testing.B) {
+		b.ReportAllocs()
+		for index := 0; index < b.N; index++ {
+			optimized.push(inputsI[index%samples], inputsQ[index%samples])
+		}
+	})
+	b.Run("direct", func(b *testing.B) {
+		b.ReportAllocs()
+		for index := 0; index < b.N; index++ {
+			direct.push(inputsI[index%samples], inputsQ[index%samples])
+		}
+	})
+}
+
 func TestChannelizersProduceExpectedAudioRates(t *testing.T) {
 	const inputRate = 2_400_000
 	const durationSamples = inputRate / 10
