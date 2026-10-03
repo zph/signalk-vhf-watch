@@ -15,7 +15,6 @@ test('persists receiver channel choices atomically for the next page or plugin s
     normalizeConfig({ enabled: false, receiverMode: 'rtl_sdr' }),
     undefined,
     undefined,
-    undefined,
     (settings) => store.save(settings)
   )
 

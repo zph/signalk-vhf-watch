@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 48
+  const CLIENT_BUILD = 49
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -519,8 +519,7 @@
       durationSeconds: session.durationSeconds,
       ...(includeTranscript ? {
         transcript: session.transcript,
-        transcription: session.transcription,
-        narration: session.records.map((record) => [record.narrationBytes, record.narrationVoice, record.narrationError])
+        transcription: session.transcription
       } : {})
     })))
   }
@@ -1132,27 +1131,6 @@
     quietingLabel.append(quietingTitle, quieting)
     controls.append(squelchLabel, cleanupLabel, quietingLabel)
 
-    const transcriptPlayback = document.createElement('div')
-    transcriptPlayback.className = 'transcript-playback'
-    const transcriptPlaybackTitle = document.createElement('div')
-    const transcriptPlaybackHeading = document.createElement('strong')
-    transcriptPlaybackHeading.textContent = 'Transcript reader'
-    const transcriptPlaybackNote = document.createElement('span')
-    const narrationReady = record.records.every((entry) => entry.narrationBytes > 0)
-    const narrationError = record.records.find((entry) => entry.narrationError)?.narrationError
-    transcriptPlaybackNote.textContent = narrationReady
-      ? 'Sarah · cached Opus · separate from the original recording'
-      : narrationError
-        ? `Sarah unavailable · ${narrationError}`
-        : 'Sarah · preparing when the Pi is idle; Whisper takes priority'
-    transcriptPlaybackTitle.append(transcriptPlaybackHeading, transcriptPlaybackNote)
-    const transcriptAudio = document.createElement('audio')
-    transcriptAudio.controls = true
-    transcriptAudio.preload = 'metadata'
-    transcriptAudio.setAttribute('aria-label', 'Transcript reader using the Sarah voice')
-    if (narrationReady) transcriptAudio.src = `${API}transcript-session.opus?ids=${encodeURIComponent(record.ids.join(','))}`
-    transcriptPlayback.append(transcriptPlaybackTitle, transcriptAudio)
-
     const updatePlayback = () => {
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
@@ -1269,7 +1247,7 @@
     details.addEventListener('toggle', () => {
       if (details.open) void renderArchiveWaveform(waveform, audioUrl)
     })
-    body.append(waveform, playButton, audio, transcriptPlayback, controls, log, metadata, actions)
+    body.append(waveform, playButton, audio, controls, log, metadata, actions)
     details.append(summary, body)
     const header = document.createElement('div')
     header.className = 'archive-item-header'
@@ -1755,7 +1733,6 @@
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
     stopConversation('Playback stopped.')
-    stopNarration()
   })
   initialize()
 })()

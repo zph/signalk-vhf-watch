@@ -137,7 +137,7 @@ disabled while Modified is selected; Modified uses its own conservative hiss det
 timeline and transcript controls offer only **Raw** and **Modified**. Modified applies the pinned
 streaming GTCRN speech enhancer followed by a gradual, raw-audio-driven soft gate. It uses a fixed
 playback gain with transparent peak protection; it does not rewrite the saved recording or affect
-Whisper/TTS. Live and rolling replay use time-local receiver quality where available; archived clips,
+Whisper. Live and rolling replay use time-local receiver quality where available; archived clips,
 which do not retain per-frame receiver quality, use the raw-audio detector. The gate intentionally
 leaves uncertain or short regions open, and denoising is not proof that every weak word is preserved.
 The **Between-transmission quieting** slider controls how strongly that existing gate attenuates its
@@ -199,13 +199,7 @@ The Transcript archive section combines adjacent records on the same channel int
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing
-directory are created with service-account-only permissions. A separate **Transcript reader** uses
-the optional offline `vhf-tts-runtime` and Kokoro `af_sarah` voice. After Whisper finishes, narration
-is generated with two low-priority CPU threads only while the Pi has spare capacity. Incoming Whisper
-work pre-empts Kokoro and returns the interrupted item to its queue. Each finished reading is stored
-as 24 kbit/s Opus in the same database row as its source recording, so it survives restarts and is
-deleted by the same age and size pruning. Synthesized speech is a parallel player: it never rewrites
-the radio recording or sends text to a speech service. This archive requires Node.js 22.15 or
+directory are created with service-account-only permissions. This archive requires Node.js 22.15 or
 newer for the built-in SQLite and Zstandard implementations.
 
 For an ARM64 or AMD64 package built from the matching `whisper.cpp` release, run the packaging helper
@@ -224,14 +218,6 @@ The runtime package includes the matching `whisper-vad-speech-segments` helper a
 model. The build checks the VAD model's SHA-256 and includes its MIT license; the model is installed
 under a separate `vad/` directory and does not appear as a selectable transcription model. The
 observer currently uses the 0.35 threshold for measurement, not to suppress Base transcription.
-
-Build the optional Kokoro reader on the target Debian architecture from the official sherpa-onnx
-binary bundle and `kokoro-en-v0_19` model, then install it with `apt install ./vhf-tts-runtime_*.deb`:
-
-```sh
-packaging/build-tts-runtime-deb.sh /path/to/sherpa-onnx/bin \
-  /path/to/kokoro-en-v0_19 /tmp
-```
 
 The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in
 [`docs/WHISPER_BENCHMARK.md`](docs/WHISPER_BENCHMARK.md).

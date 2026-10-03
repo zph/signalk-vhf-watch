@@ -6,7 +6,6 @@ import path from 'node:path'
 import type { ReplaySegment } from './rolling-buffer'
 import { discriminatorThreshold } from './squelch'
 import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchiveStatus } from './transcript-archive'
-import type { NarrationManager } from './narration'
 import type { RnnoiseDenoiser } from './rnnoise'
 import { pcmToWav } from './wav'
 import { WhisperVadProbe } from './whisper-vad'
@@ -231,7 +230,6 @@ export class TranscriptionManager {
   #error?: string
   #closed = false
   #previousTranscript = new Map<string, string>()
-  #narrator?: NarrationManager
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
@@ -344,7 +342,6 @@ export class TranscriptionManager {
       this.#flushPending()
       return
     }
-    this.#narrator?.yield()
     const previous = this.#pending.at(-1)
     if (previous && (
       previous.channel !== segment.channel ||
@@ -373,11 +370,6 @@ export class TranscriptionManager {
     this.stop()
     this.#archive?.close()
     this.#closed = true
-  }
-
-  attachNarrator(narrator: NarrationManager): void {
-    this.#narrator = narrator
-    narrator.resume()
   }
 
   busy(): boolean {
@@ -487,7 +479,6 @@ export class TranscriptionManager {
     } finally {
       this.#running = false
       this.#child = undefined
-      this.#narrator?.resume()
     }
   }
 
@@ -588,7 +579,7 @@ export class TranscriptionManager {
     const trimEnd = hasMeasuredActivity ? Math.floor(Math.min(pcm.length, activeEnd + paddingBytes) / 2) * 2 : pcm.length
     const activityStartSeconds = trimStart / bytesPerSecond
     const activityEndSeconds = trimEnd / bytesPerSecond
-    const record = this.#archive.add({
+    this.#archive.add({
       startedAt: first.startedAt,
       endedAt: archivedSegments.at(-1)!.endedAt,
       channel: first.channel,
@@ -599,7 +590,6 @@ export class TranscriptionManager {
       transcript,
       wav: pcmToWav(pcm, sampleRate)
     })
-    if (record) this.#narrator?.enqueue(record.id)
   }
 
   #repairArchivedTranscriptOverlap(): void {

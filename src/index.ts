@@ -1,5 +1,4 @@
 import path from 'node:path'
-import os from 'node:os'
 import type { Plugin, PluginConstructor, ServerAPI } from '@signalk/server-api'
 import { openApi, registerRoutes } from './api'
 import { normalizeConfig, pluginSchema } from './config'
@@ -7,7 +6,6 @@ import { DscMessageCache } from './dsc-cache'
 import { VhfRuntime } from './runtime'
 import { TranscriptionManager } from './transcription'
 import { TranscriptArchive } from './transcript-archive'
-import { NarrationManager } from './narration'
 import { TuningSettingsStore } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
 import { ModifiedPlayback } from './modified-playback'
@@ -46,12 +44,8 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         undefined,
         { archive }
       )
-      const narration = new NarrationManager(archive, undefined, {
-        canRun: () => !transcription.busy() && os.loadavg()[0] <= Math.max(1, os.cpus().length * 0.4)
-      })
-      transcription.attachNarrator(narration)
       runtime = new VhfRuntime(
-        config, dscCache, transcription, narration,
+        config, dscCache, transcription,
         (settings) => tuningSettings.save(settings), denoiser, '/usr/bin/ffmpeg',
         () => app.getPath('vessels')
       )

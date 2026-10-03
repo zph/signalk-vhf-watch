@@ -56,7 +56,6 @@ test('refreshes identity for calls loaded from the persistent DSC cache', () => 
     undefined,
     undefined,
     undefined,
-    undefined,
     () => {
       if (unavailable) throw new Error('Signal K data tree unavailable')
       return vessels
@@ -86,7 +85,6 @@ test('refreshes retained identities every ten minutes and clears the timer on st
   let lookups = 0
   const runtime = new VhfRuntime(
     normalizeConfig({ enabled: false }),
-    undefined,
     undefined,
     undefined,
     undefined,

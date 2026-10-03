@@ -11,7 +11,7 @@ import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 
-const UI_VERSION = 48
+const UI_VERSION = 49
 
 interface ByteRange {
   start: number
@@ -61,30 +61,6 @@ function sendSeekableWav(
     'Content-Length': String(range.end - range.start + 1),
     'Content-Range': `bytes ${range.start}-${range.end}/${wav.length}`
   }).send(wav.subarray(range.start, range.end + 1))
-}
-
-function sendSeekableOpus(request: Request, response: Response, opus: Buffer, filename: string): void {
-  const range = parseByteRange(request.headers.range, opus.length)
-  const commonHeaders = {
-    'Accept-Ranges': 'bytes',
-    'Content-Type': 'audio/ogg; codecs=opus',
-    'Cache-Control': 'private, max-age=3600',
-    'Content-Disposition': `inline; filename="${filename}"`,
-    'X-Content-Type-Options': 'nosniff'
-  }
-  if (range === null) {
-    response.status(416).set({ ...commonHeaders, 'Content-Range': `bytes */${opus.length}` }).end()
-    return
-  }
-  if (range === undefined) {
-    response.status(200).set({ ...commonHeaders, 'Content-Length': String(opus.length) }).send(opus)
-    return
-  }
-  response.status(206).set({
-    ...commonHeaders,
-    'Content-Length': String(range.end - range.start + 1),
-    'Content-Range': `bytes ${range.start}-${range.end}/${opus.length}`
-  }).send(opus.subarray(range.start, range.end + 1))
 }
 
 function requestedIds(value: unknown, maximum: number): number[] | undefined {
@@ -316,40 +292,6 @@ export function registerRoutes(
       )
     } catch (error) {
       response.status(503).json({ error: error instanceof Error ? error.message : String(error) })
-    }
-  })
-  read.get('/api/transcript-session.opus', async (request: Request, response: Response) => {
-    const runtime = runtimeOr503(getRuntime, response)
-    if (!runtime) return
-    const ids = requestedIds(request.query.ids, 500)
-    const records = ids?.map((id) => runtime.transcription.archiveRecord(id))
-    if (!ids || !records || records.some((record) => !record)) {
-      response.status(404).json({ error: 'Transcript session not found' })
-      return
-    }
-    const resolved = records as NonNullable<(typeof records)[number]>[]
-    const first = resolved[0]!
-    const valid = resolved.every((record, index) =>
-      record.channel === first.channel &&
-      (index === 0 || Date.parse(record.startedAt) >= Date.parse(resolved[index - 1]!.startedAt))
-    )
-    if (!valid) {
-      response.status(400).json({ error: 'Transcript session is not a continuous channel recording' })
-      return
-    }
-    if (!runtime.narration?.available()) {
-      response.status(503).json({ error: 'Install vhf-tts-runtime to enable the transcript reader' })
-      return
-    }
-    try {
-      const opus = await runtime.narration.sessionOpus(ids)
-      if (!opus) {
-        response.status(409).json({ error: 'Transcript narration is still being prepared' })
-        return
-      }
-      sendSeekableOpus(request, response, opus, `vhf-transcript-${first.channel}-reader.opus`)
-    } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : String(error) })
     }
   })
   read.get('/api/replay/:id.wav', async (request: Request, response: Response) => {
@@ -959,7 +901,6 @@ export function openApi(): object {
       '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
       '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
       '/api/transcript-session.wav': { get: { summary: 'Play one stitched archived transcript session', responses: { '200': { description: 'WAV audio' } } } },
-      '/api/transcript-session.opus': { get: { summary: 'Play cached Kokoro transcript narration', responses: { '200': { description: 'Ogg Opus audio' }, '409': { description: 'Narration is still being prepared' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/dsc': {
         get: { summary: 'List decoded DSC Channel 70 calls', responses: { '200': { description: 'DSC calls' } } },

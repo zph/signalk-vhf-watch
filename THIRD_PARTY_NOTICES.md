@@ -14,13 +14,6 @@ Silero Team; its complete license is installed in the runtime package. The packa
 source revisions and model hashes in its documentation. No Whisper or VAD binary or model is
 included in the VHF Watch npm package itself.
 
-The optional `vhf-tts-runtime` Debian package is built from
-[`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx), licensed under the Apache License 2.0, and
-the English Kokoro model and `af_sarah` voice distributed by its official model release. The package
-installs the upstream model license and exact source URLs. FFmpeg, supplied by the host operating
-system, encodes generated PCM as Ogg Opus. No TTS binary or model is included in the VHF Watch npm
-package itself.
-
 The optional `vhf-playback-runtime` Debian package uses the Sherpa-ONNX 1.13.8 C API and its Linux
 aarch64 shared CPU runtime (Apache License 2.0), plus ONNX Runtime (MIT License; the package installs
 its full license and third-party notices). The GTCRN source implementation and committed streaming
