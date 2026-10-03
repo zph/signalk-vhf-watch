@@ -47,6 +47,21 @@
   const transcriptionThreads = $('#transcription-threads')
   const transcriptionStatus = $('#transcription-status')
   const archiveList = $('#archive-list')
+  const archiveAllView = $('#archive-all-view')
+  const archiveViewAll = $('#archive-view-all')
+  const archiveViewConversation = $('#archive-view-conversation')
+  const conversationView = $('#conversation-view')
+  const conversationChannel = $('#conversation-channel')
+  const conversationRange = $('#conversation-range')
+  const conversationPlay = $('#conversation-play')
+  const conversationTimeline = $('#conversation-timeline')
+  const conversationScaleStart = $('#conversation-scale-start')
+  const conversationScaleEnd = $('#conversation-scale-end')
+  const conversationEmpty = $('#conversation-empty')
+  const conversationStatus = $('#conversation-status')
+  const conversationAudio = $('#conversation-audio')
+  const conversationClips = $('#conversation-clips')
+  const conversationLimit = $('#conversation-limit')
   const archiveEmpty = $('#archive-empty')
   const archiveSummary = $('#archive-summary')
   const voiceEventCount = $('#voice-event-count')
@@ -74,8 +89,24 @@
   let timelineActiveSlotAChannel
   let timelineAwaitingChannel
   let archiveRenderSignature = ''
+  let conversationRecords = []
+  let conversationSelectedId
+  let conversationSignature = ''
+  let conversationChannelSignature = ''
+  let conversationLastRenderMinute = -1
+  let archiveView = 'all'
+  let conversationPlayer
   let singleFrequencyActive = false
   let slotConfigurationPending = false
+
+  conversationPlayer = new window.VHFConversation.ConversationPlayer(conversationAudio, {
+    sourceFor: (record) => `${API}transcripts/${record.id}.wav?activity=1&cleanup=${encodeURIComponent(timelineCleanup.value)}&squelch=${encodeURIComponent(replaySquelch.value)}&quieting=${encodeURIComponent(timelineQuieting.value)}`,
+    onCurrent: (record) => {
+      conversationSelectedId = record?.id
+      markConversationClip()
+    },
+    onStatus: (message) => { conversationStatus.textContent = message }
+  })
 
   function storedPreference(key, fallback) {
     try { return window.localStorage.getItem(`vhf-watch:${key}`) ?? fallback } catch { return fallback }
@@ -830,20 +861,67 @@
 
   function dscRow(message) {
     const item = document.createElement('li')
-    item.className = `dsc-item dsc-${message.category}`
+    const category = ['distress', 'urgency', 'safety', 'routine'].includes(message.category)
+      ? message.category
+      : 'unknown'
+    item.className = `dsc-item dsc-${category}`
     const time = document.createElement('time')
     time.dateTime = message.receivedAt
     time.textContent = new Date(message.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    const detail = document.createElement('p')
-    const callerIdentity = [message.callerName, message.callerCallsign].filter(Boolean).join(' · ')
-    const source = message.selfMmsi
-      ? `From ${callerIdentity ? `${callerIdentity} · ` : ''}MMSI ${message.selfMmsi}`
-      : 'unknown station'
-    const target = message.targetMmsi ? ` · to MMSI ${message.targetMmsi}` : ''
-    const distressTime = message.timeUtc ? ` · reported ${message.timeUtc} UTC` : ''
-    const position = message.position ? ` · ${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}` : ''
-    detail.textContent = `${message.category.toUpperCase()} · ${message.format} · ${source}${target}${message.nature ? ` · ${message.nature}` : ''}${distressTime}${position}${message.validCharacters ? '' : ' · CHECK DECODE'}`
-    item.append(time, detail)
+    const summary = document.createElement('div')
+    summary.className = 'dsc-summary'
+    const identity = document.createElement('div')
+    identity.className = 'dsc-identity'
+    const name = document.createElement('strong')
+    name.className = 'dsc-caller-name'
+    name.textContent = message.callerName || 'Unknown station'
+    const identifiers = document.createElement('span')
+    identifiers.className = 'dsc-caller-identifiers'
+    identifiers.textContent = [message.callerCallsign, message.selfMmsi ? `MMSI ${message.selfMmsi}` : ''].filter(Boolean).join(' · ')
+    identity.append(name)
+    if (identifiers.textContent) identity.append(identifiers)
+
+    const classification = document.createElement('div')
+    classification.className = 'dsc-classification'
+    const categoryLabel = document.createElement('span')
+    categoryLabel.className = 'dsc-category'
+    categoryLabel.textContent = category.toUpperCase()
+    const formatLabel = document.createElement('span')
+    formatLabel.className = 'dsc-format'
+    formatLabel.textContent = message.format || 'unknown format'
+    classification.append(categoryLabel, formatLabel)
+    if (!message.validCharacters) {
+      const decodeWarning = document.createElement('span')
+      decodeWarning.className = 'dsc-decode-warning'
+      decodeWarning.textContent = 'Check decode'
+      classification.append(decodeWarning)
+    }
+    summary.append(identity, classification)
+
+    const details = document.createElement('dl')
+    details.className = 'dsc-details'
+    const addDetail = (label, value, className = '') => {
+      if (value === undefined || value === null || value === '') return
+      const row = document.createElement('div')
+      if (className) row.className = className
+      const term = document.createElement('dt')
+      term.textContent = label
+      const description = document.createElement('dd')
+      description.textContent = value
+      row.append(term, description)
+      details.append(row)
+    }
+    addDetail('Destination', message.targetMmsi ? `MMSI ${message.targetMmsi}` : '')
+    addDetail('Nature', message.nature, 'dsc-nature')
+    addDetail('Position', message.position
+      && Number.isFinite(message.position.latitude)
+      && Number.isFinite(message.position.longitude)
+      ? `${message.position.latitude.toFixed(4)}, ${message.position.longitude.toFixed(4)}`
+      : '', 'dsc-position')
+    addDetail('Reported', message.timeUtc ? `${message.timeUtc} UTC` : '')
+
+    item.append(time, summary)
+    if (details.childElementCount) item.append(details)
     return item
   }
 
@@ -1156,8 +1234,210 @@
     })
     body.append(waveform, audio, transcriptPlayback, controls, log, metadata, actions)
     details.append(summary, body)
-    item.append(details)
+    const header = document.createElement('div')
+    header.className = 'archive-item-header'
+    const hop = document.createElement('button')
+    hop.className = 'archive-hop button compact'
+    hop.type = 'button'
+    hop.textContent = 'View channel conversation'
+    hop.setAttribute('aria-label', `View ${channelDisplay(record.channel)} channel conversation`)
+    hop.addEventListener('click', () => switchConversation(record.channel, record.records[0]))
+    header.append(details, hop)
+    item.append(header)
     return item
+  }
+
+  function conversationDate(timestamp) {
+    return new Date(timestamp).toLocaleString([], {
+      month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+    })
+  }
+
+  function markConversationClip() {
+    for (const clip of conversationView.querySelectorAll('[data-conversation-id]')) {
+      clip.classList.toggle('is-selected', clip.dataset.conversationId === String(conversationSelectedId))
+    }
+  }
+
+  function updateConversationChannels() {
+    const ids = [...new Set(conversationRecords.map((record) => String(record.channel)))].sort((left, right) => {
+      const leftNumber = Number(left)
+      const rightNumber = Number(right)
+      return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) ? leftNumber - rightNumber : left.localeCompare(right)
+    })
+    const signature = ids.join(',')
+    if (signature === conversationChannelSignature) return
+    conversationChannelSignature = signature
+    const previous = conversationChannel.value
+    conversationChannel.replaceChildren(...ids.map((id) => {
+      const option = document.createElement('option')
+      option.value = id
+      option.textContent = channelDisplay(id)
+      return option
+    }))
+    if (ids.includes(previous)) conversationChannel.value = previous
+    else if (ids.includes('16')) conversationChannel.value = '16'
+    else conversationChannel.value = ids[0] || ''
+    conversationChannel.disabled = ids.length === 0
+  }
+
+  function renderConversation() {
+    const channel = conversationChannel.value
+    const { window: timeWindow, clips } = window.VHFConversation.selectConversation(
+      conversationRecords, channel, conversationRange.value, Date.now()
+    )
+    const span = Math.max(1, timeWindow.end - timeWindow.start)
+    conversationScaleStart.textContent = conversationDate(timeWindow.start)
+    conversationScaleEnd.textContent = conversationDate(timeWindow.end)
+    conversationTimeline.replaceChildren(...clips.map((clip) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'conversation-mark'
+      button.dataset.conversationId = String(clip.record.id)
+      const visibleStart = Math.max(clip.start, timeWindow.start)
+      const visibleEnd = Math.min(clip.end, timeWindow.end)
+      button.style.setProperty('--clip-left', `${Math.max(0, Math.min(100, (visibleStart - timeWindow.start) / span * 100))}%`)
+      button.style.setProperty('--clip-width', `${Math.max(.05, Math.min(100, (visibleEnd - visibleStart) / span * 100))}%`)
+      button.title = `${conversationDate(clip.start)} · ${clip.record.transcript || 'No transcript'}`
+      button.setAttribute('aria-label', `Play ${channelDisplay(channel)} clip at ${conversationDate(clip.start)}: ${clip.record.transcript || 'No transcript'}`)
+      button.addEventListener('click', () => playConversationFrom(clip.record.id))
+      return button
+    }))
+
+    const rows = []
+    let furthestPreviousEnd = Number.NEGATIVE_INFINITY
+    clips.forEach((clip, index) => {
+      if (index > 0) {
+        const gapSeconds = Math.max(0, (clip.start - furthestPreviousEnd) / 1_000)
+        if (gapSeconds > 0) {
+          const gap = document.createElement('li')
+          gap.className = 'conversation-gap'
+          gap.textContent = `Quiet gap · ${formatGap(gapSeconds)}`
+          gap.setAttribute('aria-label', `${formatGap(gapSeconds)} gap between transmissions`)
+          rows.push(gap)
+        }
+      }
+      const item = document.createElement('li')
+      item.className = 'conversation-clip-row'
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'conversation-clip'
+      button.dataset.conversationId = String(clip.record.id)
+      const time = document.createElement('time')
+      time.dateTime = new Date(clip.start).toISOString()
+      time.textContent = conversationDate(clip.start)
+      const duration = document.createElement('span')
+      duration.className = 'conversation-duration'
+      duration.textContent = `${Math.max(0, (clip.end - clip.start) / 1_000).toFixed(1)} sec`
+      const transcript = document.createElement('span')
+      transcript.className = 'conversation-transcript'
+      transcript.textContent = clip.record.transcript || '[No speech recognized]'
+      button.append(time, duration, transcript)
+      button.setAttribute('aria-label', `Play ${channelDisplay(channel)} clip at ${time.textContent}: ${transcript.textContent}`)
+      button.addEventListener('click', () => playConversationFrom(clip.record.id))
+      item.append(button)
+      rows.push(item)
+      furthestPreviousEnd = Math.max(furthestPreviousEnd, clip.end)
+    })
+    conversationClips.replaceChildren(...rows)
+    conversationEmpty.hidden = clips.length > 0
+    conversationTimeline.hidden = clips.length === 0
+    conversationPlay.disabled = clips.length === 0
+    if (conversationSelectedId && !clips.some((clip) => String(clip.record.id) === String(conversationSelectedId))) {
+      conversationSelectedId = undefined
+    }
+    markConversationClip()
+    conversationLastRenderMinute = Math.floor(Date.now() / 60_000)
+  }
+
+  function formatGap(seconds) {
+    if (seconds < 1) return `${seconds.toFixed(1)} sec`
+    if (seconds < 60) return `${Math.round(seconds)} sec`
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = Math.round(seconds % 60)
+    if (minutes < 60) return remainingSeconds ? `${minutes} min ${remainingSeconds} sec` : `${minutes} min`
+    const hours = Math.floor(minutes / 60)
+    const remainingMinutes = minutes % 60
+    return remainingMinutes ? `${hours} hr ${remainingMinutes} min` : `${hours} hr`
+  }
+
+  function stopConversation(message = 'Choose a clip or play the conversation.') {
+    conversationPlayer.stop()
+    conversationSelectedId = undefined
+    if (message) conversationStatus.textContent = message
+    markConversationClip()
+  }
+
+  function playConversationFrom(id) {
+    const { clips } = window.VHFConversation.selectConversation(conversationRecords, conversationChannel.value, conversationRange.value, Date.now())
+    const started = conversationPlayer.playFrom(clips.map((clip) => clip.record), id, true)
+    if (!started) {
+      stopConversation('That clip is no longer available in this time range.')
+    }
+  }
+
+  function switchConversation(channel, record) {
+    conversationPlayer.stop()
+    archiveView = 'conversation'
+    archiveAllView.hidden = true
+    conversationView.hidden = false
+    archiveViewAll.classList.remove('is-active')
+    archiveViewAll.setAttribute('aria-pressed', 'false')
+    archiveViewConversation.classList.add('is-active')
+    archiveViewConversation.setAttribute('aria-pressed', 'true')
+    updateConversationChannels()
+    if ([...conversationChannel.options].some((option) => option.value === String(channel))) conversationChannel.value = String(channel)
+    conversationSelectedId = undefined
+    if (record) {
+      const bounds = window.VHFConversation.clipBounds(record)
+      const channelRecords = conversationRecords.filter((entry) => String(entry.channel) === String(channel))
+      conversationRange.value = window.VHFConversation.rangeForSelection(channelRecords, conversationRange.value, record, Date.now())
+      conversationSelectedId = record.id
+      conversationStatus.textContent = `Selected ${conversationDate(bounds.start)}. Choose Play to start.`
+    }
+    renderConversation()
+    conversationView.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    conversationChannel.focus({ preventScroll: true })
+  }
+
+  function showAllChannels() {
+    stopConversation()
+    archiveView = 'all'
+    archiveAllView.hidden = false
+    conversationView.hidden = true
+    archiveViewAll.classList.add('is-active')
+    archiveViewAll.setAttribute('aria-pressed', 'true')
+    archiveViewConversation.classList.remove('is-active')
+    archiveViewConversation.setAttribute('aria-pressed', 'false')
+  }
+
+  function refreshConversation(records, archive) {
+    const signature = JSON.stringify(records.map((record) => [record.id, record.channel, record.startedAt, record.durationSeconds, record.activityStartSeconds, record.activityEndSeconds, record.transcript]))
+    const previousIds = new Set(conversationRecords.map((record) => String(record.id)))
+    conversationRecords = records
+    conversationPlayer.updateRecords(records)
+    updateConversationChannels()
+    const currentId = conversationSelectedId
+    if (currentId && previousIds.has(String(currentId)) && !records.some((record) => String(record.id) === String(currentId))) {
+      stopConversation('The selected clip is no longer available.')
+    }
+    conversationLimit.textContent = archive?.records > 500
+      ? `Showing the latest 500 of ${archive.records} archived records across all channels.`
+      : `Showing ${records.length} of ${archive?.records ?? records.length} archived records across all channels.`
+    const signatureChanged = signature !== conversationSignature
+    if (signatureChanged) conversationSignature = signature
+    const minuteChanged = conversationRange.value !== 'all' && Math.floor(Date.now() / 60_000) !== conversationLastRenderMinute
+    if (signatureChanged || (archiveView === 'conversation' && minuteChanged)) {
+      const focusedClipId = conversationView.contains(document.activeElement)
+        ? document.activeElement?.getAttribute('data-conversation-id')
+        : null
+      renderConversation()
+      if (focusedClipId) {
+        const focusTarget = [...conversationView.querySelectorAll('[data-conversation-id]')]
+          .find((element) => element.getAttribute('data-conversation-id') === focusedClipId)
+        focusTarget?.focus({ preventScroll: true })
+      }
+    }
   }
 
   function openTranscriptFromHash() {
@@ -1175,6 +1455,7 @@
   async function updateArchive() {
     try {
       const { records, archive } = await request('transcripts?limit=500')
+      refreshConversation(records, archive)
       const sessions = groupArchiveSessions(records)
       const signature = sessionRenderSignature(sessions, true)
       if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
@@ -1327,6 +1608,24 @@
   presetSlotB70.addEventListener('click', () => applyChannelPreset('B'))
   regionSelect.addEventListener('change', changeRegion)
   $('#clear').addEventListener('click', () => clearReplayDialog.showModal())
+  archiveViewAll.addEventListener('click', showAllChannels)
+  archiveViewConversation.addEventListener('click', () => switchConversation(conversationChannel.value))
+  conversationChannel.addEventListener('change', () => {
+    stopConversation()
+    renderConversation()
+  })
+  conversationRange.addEventListener('change', () => {
+    stopConversation()
+    renderConversation()
+  })
+  conversationPlay.addEventListener('click', () => {
+    const { clips } = window.VHFConversation.selectConversation(conversationRecords, conversationChannel.value, conversationRange.value, Date.now())
+    if (!clips.length) return
+    const startId = clips.some((clip) => String(clip.record.id) === String(conversationSelectedId))
+      ? conversationSelectedId
+      : clips[0].record.id
+    playConversationFrom(startId)
+  })
   clearReplayDialog.addEventListener('close', () => {
     if (clearReplayDialog.returnValue === 'delete') void clearReplay()
   })
@@ -1418,6 +1717,7 @@
   window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {
     window.clearInterval(poll)
+    stopConversation('Playback stopped.')
     stopNarration()
   })
   initialize()

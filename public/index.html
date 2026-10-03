@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=46" />
+  <link rel="stylesheet" href="./styles.css?v=47" />
 </head>
 <body>
   <main class="app-shell">
@@ -111,8 +111,40 @@
             </div>
             <span class="count"><strong id="voice-event-count">0</strong> saved events</span>
           </div>
-          <div id="archive-empty" class="empty">No archived transcripts yet.</div>
-          <ol id="archive-list" class="archive-list" aria-live="polite"></ol>
+          <div class="archive-view-toggle" role="group" aria-label="Recent activity view">
+            <button id="archive-view-all" class="button compact is-active" type="button" aria-pressed="true">All channels</button>
+            <button id="archive-view-conversation" class="button compact" type="button" aria-pressed="false">Channel conversation</button>
+          </div>
+          <div id="archive-all-view">
+            <div id="archive-empty" class="empty">No archived transcripts yet.</div>
+            <ol id="archive-list" class="archive-list" aria-live="polite"></ol>
+          </div>
+          <section id="conversation-view" class="conversation-view" aria-labelledby="conversation-title" hidden>
+            <h3 id="conversation-title" class="sr-only">Channel conversation</h3>
+            <div class="conversation-controls">
+              <label for="conversation-channel">Channel
+              <select id="conversation-channel" aria-label="Channel for conversation" disabled></select>
+              </label>
+              <label for="conversation-range">Time range
+                <select id="conversation-range" aria-label="Conversation time range">
+                  <option value="hour">Past hour</option>
+                  <option value="day">Past 24 hours</option>
+                  <option value="all">All loaded</option>
+                </select>
+              </label>
+              <button id="conversation-play" class="button preset-primary" type="button" disabled>Play conversation</button>
+            </div>
+            <p id="conversation-limit" class="conversation-note">Showing the latest 500 archived records across all channels.</p>
+            <p class="conversation-playback-note">Gaps are shown in real time; conversation playback skips silence. Playback uses the current sound cleanup and squelch settings.</p>
+            <div class="conversation-timeline-wrap">
+              <div id="conversation-timeline" class="conversation-timeline" role="group" aria-label="Channel clips by time"></div>
+              <div class="conversation-scale" aria-hidden="true"><span id="conversation-scale-start"></span><span id="conversation-scale-end"></span></div>
+            </div>
+            <p id="conversation-empty" class="empty" hidden>No archived clips for this channel and time range.</p>
+            <p id="conversation-status" class="conversation-status" role="status" aria-live="polite">Choose a clip or play the conversation.</p>
+            <audio id="conversation-audio" controls preload="none" aria-label="Channel conversation playback"></audio>
+            <ol id="conversation-clips" class="conversation-clips" aria-label="Channel clips in chronological order"></ol>
+          </section>
           <details id="processing-panel" class="processing-panel" hidden>
             <summary><strong>Processing</strong> <span id="processing-count">0</span></summary>
             <p>Recordings waiting for transcription or needing attention.</p>
@@ -205,6 +237,7 @@
 
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
+  <script src="./conversation.js?v=47"></script>
   <script src="./main.js?v=47"></script>
 </body>
 </html>
