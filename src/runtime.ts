@@ -463,7 +463,6 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   status(): RuntimeStatus {
-    const segments = this.segments()
     return {
       enabled: this.config.enabled,
       mode: this.config.receiverMode,
@@ -493,7 +492,7 @@ export class VhfRuntime extends EventEmitter<{
       squelch: this.config.squelch,
       replayMinutes: this.config.replayMinutes,
       maxBufferMiB: this.config.maxBufferMiB,
-      replaySegments: segments.length,
+      replaySegments: this.replay.segmentCount + this.replayB.segmentCount,
       liveListeners: this.#liveListeners,
       receiverMetrics: { ...this.#receiverMetrics },
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),

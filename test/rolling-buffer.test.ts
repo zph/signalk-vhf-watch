@@ -5,6 +5,18 @@ import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
 
+test('segmentCount includes pending and retained records without changing replay state', () => {
+  const replay = new RollingReplay(8_000, 1, 1, '16')
+  assert.equal(replay.segmentCount, 0)
+  replay.append(Buffer.alloc(8_000))
+  assert.equal(replay.segmentCount, 1)
+  assert.equal(replay.segmentCount, replay.list().length)
+  replay.append(Buffer.alloc(16_000))
+  assert.equal(replay.segmentCount, 2)
+  replay.flush()
+  assert.equal(replay.segmentCount, 2)
+})
+
 test('creates playable WAV segments and retains only the configured window', () => {
   const replay = new RollingReplay(8_000, 2, 0.05, '16')
   const pcm = Buffer.alloc(8_000 * 2 * 2)

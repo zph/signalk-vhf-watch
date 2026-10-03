@@ -14,6 +14,12 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o vhf
 The plugin starts stream mode itself. Its stdin accepts `tune <frequency-hz>` commands, allowing an
 in-band voice channel change without interrupting Channel 70 or retuning the hardware.
 
+## CPU optimization status
+
+The DSP precomputes its Hann weights and uses bounded phase wrapping; tests compare these paths with
+the prior formula and discriminator. VAD remains in observation mode, and persisted Base model and
+thread settings are unchanged. Raspberry Pi measurements of this build are still pending.
+
 During an intentional AIS interruption, a bounded 20-second trial is:
 
 ```sh

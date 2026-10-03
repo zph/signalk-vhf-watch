@@ -148,6 +148,24 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
     threads: 4
   })
   assert.deepEqual(manager.status().availableModels.map((model) => model.id), ['base.en-q5_1', 'small.en-q5_1'])
+  const exposedModels = manager.availableModels()
+  exposedModels[0]!.bytes = -1
+  assert.ok(manager.status().availableModels.every((model) => model.bytes > 0), 'callers cannot mutate cached inventory')
+  writeFileSync(path.join(directory, 'ggml-tiny.en-q5_1.bin'), 'tiny model')
+  assert.equal(manager.status().availableModels.some((model) => model.id === 'tiny.en-q5_1'), false,
+    'periodic status uses cached inventory')
+  await manager.configure('tiny.en-q5_1', 1)
+  assert.equal(manager.status().availableModels.some((model) => model.id === 'tiny.en-q5_1'), true,
+    'explicit configuration refresh detects an externally installed model')
+  writeFileSync(path.join(directory, 'ggml-external.en-q5_1.bin'), 'external model')
+  const realNow = Date.now
+  try {
+    Date.now = () => realNow() + 30_001
+    assert.equal(manager.status().availableModels.some((model) => model.id === 'external.en-q5_1'), true,
+      'periodic inventory refresh detects models installed outside the app')
+  } finally {
+    Date.now = realNow
+  }
   assert.equal(new TranscriptionManager(settings, command, { modelsDir: directory }).status().enabled, true)
 
   const brief = new RollingReplay(8_000, 2, 1, '16')

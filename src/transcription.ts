@@ -22,6 +22,7 @@ export const TRANSCRIPTION_ARCHIVE_PADDING_SECONDS = 5
 export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
 export const MINIMUM_TRANSCRIPTION_TIMEOUT_MS = 90_000
 export const TRANSCRIPTION_TIMEOUT_AUDIO_MULTIPLIER = 2
+const MODEL_INVENTORY_CACHE_MS = 30_000
 
 class TranscriptionCancelledError extends Error {}
 
@@ -230,6 +231,7 @@ export class TranscriptionManager {
   #error?: string
   #closed = false
   #previousTranscript = new Map<string, string>()
+  #modelsCache?: { checkedAt: number; models: TranscriptionModel[] }
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
@@ -250,7 +252,8 @@ export class TranscriptionManager {
   }
 
   status(): TranscriptionStatus {
-    const available = this.available()
+    const availableModels = this.availableModels()
+    const available = this.#commandAvailable() && availableModels.some((candidate) => candidate.id === this.#model)
     return {
       enabled: this.#enabled,
       available,
@@ -259,7 +262,7 @@ export class TranscriptionManager {
       engine: `whisper.cpp ${this.#model}${this.#denoiser?.available() ? ' · RNNoise 50%' : ''}`,
       model: this.#model,
       threads: this.#threads,
-      availableModels: this.availableModels(),
+      availableModels,
       command: this.#command,
       speechGate: {
         mode: this.#vadMode,
@@ -274,17 +277,21 @@ export class TranscriptionManager {
   }
 
   available(): boolean {
-    try {
-      accessSync(this.#command, constants.X_OK)
-      return this.availableModels().some((candidate) => candidate.id === this.#model)
-    } catch {
-      return false
-    }
+    return this.#commandAvailable() && this.availableModels().some((candidate) => candidate.id === this.#model)
   }
 
-  availableModels(): TranscriptionModel[] {
+  #commandAvailable(): boolean {
+    try { accessSync(this.#command, constants.X_OK); return true } catch { return false }
+  }
+
+  availableModels(forceRefresh = false): TranscriptionModel[] {
+    const now = Date.now()
+    if (!forceRefresh && this.#modelsCache && now - this.#modelsCache.checkedAt < MODEL_INVENTORY_CACHE_MS) {
+      return this.#modelsCache.models.map((model) => ({ ...model }))
+    }
+    let models: TranscriptionModel[]
     try {
-      return readdirSync(this.#modelsDir)
+      models = readdirSync(this.#modelsDir)
         .flatMap((filename) => {
           const match = /^ggml-([a-z0-9._-]+)\.bin$/i.exec(filename)
           if (!match) return []
@@ -293,12 +300,14 @@ export class TranscriptionManager {
         })
         .sort((left, right) => left.bytes - right.bytes || left.id.localeCompare(right.id))
     } catch {
-      return []
+      models = []
     }
+    this.#modelsCache = { checkedAt: now, models }
+    return models.map((model) => ({ ...model }))
   }
 
   async configure(model: string, threads: number): Promise<TranscriptionStatus> {
-    if (!this.availableModels().some((candidate) => candidate.id === model)) {
+    if (!this.availableModels(true).some((candidate) => candidate.id === model)) {
       throw new Error(`Whisper model ${model} is not installed`)
     }
     if (!Number.isSafeInteger(threads) || threads < 1 || threads > MAXIMUM_TRANSCRIPTION_THREADS) {
@@ -318,7 +327,7 @@ export class TranscriptionManager {
       } catch {
         throw new Error('Install the vhf-whisper-runtime package before enabling transcription')
       }
-      if (!this.availableModels().some((candidate) => candidate.id === this.#model)) {
+      if (!this.availableModels(true).some((candidate) => candidate.id === this.#model)) {
         throw new Error(`Install or select the Whisper model ${this.#model} before enabling transcription`)
       }
     }

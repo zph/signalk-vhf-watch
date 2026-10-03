@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+var benchmarkSink float64
+
 type directFIRDecimator struct {
 	coefficients []float64
 	historyI     []float64
@@ -103,7 +105,7 @@ func processWithDirectFIR(c *channelizer, firstRF, channelRF *directFIRDecimator
 		if !ready {
 			continue
 		}
-		demodulated := c.discriminate(filteredI, filteredQ)
+		demodulated := originalDiscriminate(c, filteredI, filteredQ)
 		c.level = c.level*0.995 + math.Abs(demodulated)*0.005
 		c.audioSum += demodulated
 		c.audioCount++
@@ -118,6 +120,25 @@ func processWithDirectFIR(c *channelizer, firstRF, channelRF *directFIRDecimator
 		output = append(output, softLimitAudio(c.deemphasis))
 	}
 	return output
+}
+
+// Keep the original trig-based discriminator in the direct-convolution reference
+// so the PCM comparison covers the optimized phase path too.
+func originalDiscriminate(c *channelizer, filteredI, filteredQ float64) float64 {
+	magnitudeSquared := filteredI*filteredI + filteredQ*filteredQ
+	rawPhase := 0.0
+	if magnitudeSquared >= 1e-18 {
+		if c.previousValid {
+			cross := c.previousI*filteredQ - c.previousQ*filteredI
+			dot := c.previousI*filteredI + c.previousQ*filteredQ
+			rawPhase = math.Atan2(cross, dot)
+		}
+		c.previousI, c.previousQ, c.previousValid = filteredI, filteredQ, true
+	}
+	carrierError := math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
+	c.carrierBias += c.carrierAlpha * carrierError
+	c.carrierBias = math.Max(-c.maximumCarrierBias, math.Min(c.maximumCarrierBias, c.carrierBias))
+	return math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
 }
 
 func TestSymmetricFIRMatchesDirectConvolutionAcrossWrapsAndResets(t *testing.T) {
@@ -417,6 +438,83 @@ func TestPolarDiscriminatorIsAmplitudeInvariantAndTracksCarrierOffset(t *testing
 	if offset := fixed.carrierOffsetHz(); offset < 290 || offset > 301 {
 		t.Fatalf("tracked carrier offset = %.3f Hz, want approximately 300 Hz", offset)
 	}
+}
+
+func TestWrapPhaseMatchesTrigReferenceAndPreservesPiEndpoints(t *testing.T) {
+	for _, angle := range []float64{-math.Pi, math.Pi, -math.Pi - 0.1, math.Pi + 0.1, -3.24, 3.24, -1e-15, 0, 1e-15} {
+		got := wrapPhase(angle)
+		want := math.Atan2(math.Sin(angle), math.Cos(angle))
+		if math.Abs(got-want) > 2e-15 {
+			t.Fatalf("wrapPhase(%.17g) = %.17g, trig reference %.17g", angle, got, want)
+		}
+	}
+	if got := wrapPhase(math.Pi); math.Signbit(got) || got != math.Pi {
+		t.Fatalf("wrapPhase(+Pi) = %.17g, want +Pi", got)
+	}
+	if got := wrapPhase(-math.Pi); !math.Signbit(got) || got != -math.Pi {
+		t.Fatalf("wrapPhase(-Pi) = %.17g, want -Pi", got)
+	}
+	if got := wrapPhase(math.Copysign(0, -1)); !math.Signbit(got) {
+		t.Fatalf("wrapPhase(-0) lost its sign: %.17g", got)
+	}
+	for index := 0; index <= 100_000; index++ {
+		angle := -math.Pi - 0.11 + float64(index)*(2*math.Pi+0.22)/100_000
+		if difference := math.Abs(wrapPhase(angle) - math.Atan2(math.Sin(angle), math.Cos(angle))); difference > 2e-14 {
+			t.Fatalf("phase mismatch at %.17g: %.3g", angle, difference)
+		}
+	}
+}
+
+func TestSpectrumHannWindowMatchesOriginalFormula(t *testing.T) {
+	for index, got := range spectrumHannWindow {
+		want := 0.5 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(spectrumFFTSize-1))
+		if got != want {
+			t.Fatalf("Hann[%d] = %.17g, original formula %.17g", index, got, want)
+		}
+	}
+}
+
+func BenchmarkPhaseWrap(b *testing.B) {
+	angles := make([]float64, 4096)
+	for index := range angles {
+		angles[index] = -math.Pi + 2*math.Pi*float64(index)/float64(len(angles)-1)
+	}
+	b.Run("bounded-branch", func(b *testing.B) {
+		var sum float64
+		for index := 0; index < b.N; index++ {
+			sum += wrapPhase(angles[index&4095] - 0.08)
+		}
+		benchmarkSink = sum
+	})
+	b.Run("trig-reference", func(b *testing.B) {
+		var sum float64
+		for index := 0; index < b.N; index++ {
+			angle := angles[index&4095] - 0.08
+			sum += math.Atan2(math.Sin(angle), math.Cos(angle))
+		}
+		benchmarkSink = sum
+	})
+}
+
+func BenchmarkSpectrumHannWeights(b *testing.B) {
+	var sum float64
+	b.Run("cached", func(b *testing.B) {
+		for index := 0; index < b.N; index++ {
+			for sample := range spectrumHannWindow {
+				sum += spectrumHannWindow[sample]
+			}
+		}
+		benchmarkSink = sum
+	})
+	b.Run("cos-per-sample-reference", func(b *testing.B) {
+		sum = 0
+		for index := 0; index < b.N; index++ {
+			for sample := 0; sample < spectrumFFTSize; sample++ {
+				sum += 0.5 - 0.5*math.Cos(2*math.Pi*float64(sample)/float64(spectrumFFTSize-1))
+			}
+		}
+		benchmarkSink = sum
+	})
 }
 
 func TestCountsPotentialIQClippingAtConverterEdges(t *testing.T) {

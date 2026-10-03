@@ -96,6 +96,14 @@ var normalizedIQ = func() [256]float64 {
 	return values
 }()
 
+var spectrumHannWindow = func() [spectrumFFTSize]float64 {
+	var weights [spectrumFFTSize]float64
+	for index := range weights {
+		weights[index] = 0.5 - 0.5*math.Cos(2*math.Pi*float64(index)/float64(spectrumFFTSize-1))
+	}
+	return weights
+}()
+
 type channelizer struct {
 	inputRate, outputRate, audioDecimation      int
 	oscillatorI, oscillatorQ                    []float64
@@ -150,7 +158,7 @@ func (s *spectrumScanner) process(iq []byte) {
 			s.skip--
 			continue
 		}
-		weight := 0.5 - 0.5*math.Cos(2*math.Pi*float64(s.fill)/float64(spectrumFFTSize-1))
+		weight := spectrumHannWindow[s.fill]
 		s.window[s.fill] = complex(normalizedIQ[iq[index]]*weight, normalizedIQ[iq[index+1]]*weight)
 		s.fill++
 		if s.fill == spectrumFFTSize {
@@ -431,10 +439,23 @@ func (c *channelizer) discriminate(filteredI, filteredQ float64) float64 {
 		}
 		c.previousI, c.previousQ, c.previousValid = filteredI, filteredQ, true
 	}
-	carrierError := math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
+	carrierError := wrapPhase(rawPhase - c.carrierBias)
 	c.carrierBias += c.carrierAlpha * carrierError
 	c.carrierBias = math.Max(-c.maximumCarrierBias, math.Min(c.maximumCarrierBias, c.carrierBias))
-	return math.Atan2(math.Sin(rawPhase-c.carrierBias), math.Cos(rawPhase-c.carrierBias))
+	return wrapPhase(rawPhase - c.carrierBias)
+}
+
+// wrapPhase is equivalent to atan2(sin(angle), cos(angle)) over the bounded
+// discriminator range: rawPhase is within [-Pi, Pi], and carrierBias is capped
+// well inside one turn. Strict comparisons retain both signed Pi endpoints.
+func wrapPhase(angle float64) float64 {
+	if angle > math.Pi {
+		return angle - 2*math.Pi
+	}
+	if angle < -math.Pi {
+		return angle + 2*math.Pi
+	}
+	return angle
 }
 
 func (c *channelizer) carrierOffsetHz() float64 {

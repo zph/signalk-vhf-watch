@@ -208,6 +208,11 @@ export class RollingReplay {
       (this.#pendingLength >= 2 && id === this.#sequence + this.#sequenceStep ? this.#pendingSegment() : undefined)
   }
 
+  /** Number of retained records, including live pending audio, without materializing it. */
+  get segmentCount(): number {
+    return this.#segments.length + (this.#pendingLength >= 2 ? 1 : 0)
+  }
+
   /** Capture an immutable raw snapshot synchronously before a replay-to-live handoff. */
   snapshotFrom(id: number): ReplaySegment[] | undefined {
     const pending = this.#pendingSegment()
