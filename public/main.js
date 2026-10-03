@@ -874,10 +874,13 @@
     identity.className = 'dsc-identity'
     const name = document.createElement('strong')
     name.className = 'dsc-caller-name'
-    name.textContent = message.callerName || 'Unknown station'
+    name.textContent = message.callerName || message.callerCallsign || (message.selfMmsi ? `MMSI ${message.selfMmsi}` : 'Unknown station')
     const identifiers = document.createElement('span')
     identifiers.className = 'dsc-caller-identifiers'
-    identifiers.textContent = [message.callerCallsign, message.selfMmsi ? `MMSI ${message.selfMmsi}` : ''].filter(Boolean).join(' · ')
+    identifiers.textContent = [
+      message.callerName && message.callerCallsign,
+      (message.callerName || message.callerCallsign) && message.selfMmsi ? `MMSI ${message.selfMmsi}` : ''
+    ].filter(Boolean).join(' · ')
     identity.append(name)
     if (identifiers.textContent) identity.append(identifiers)
 
@@ -911,7 +914,7 @@
       row.append(term, description)
       details.append(row)
     }
-    addDetail('Destination', message.targetMmsi ? `MMSI ${message.targetMmsi}` : '')
+    addDetail('Destination', message.targetMmsi ? `MMSI ${message.targetMmsi}` : '', 'dsc-destination')
     addDetail('Nature', message.nature, 'dsc-nature')
     addDetail('Position', message.position
       && Number.isFinite(message.position.latitude)
