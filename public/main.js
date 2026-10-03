@@ -879,7 +879,7 @@
     identifiers.className = 'dsc-caller-identifiers'
     identifiers.textContent = [
       message.callerName && message.callerCallsign,
-      (message.callerName || message.callerCallsign) && message.selfMmsi ? `MMSI ${message.selfMmsi}` : ''
+      (message.callerName || message.callerCallsign) && message.selfMmsi ? `[MMSI ${message.selfMmsi}]` : ''
     ].filter(Boolean).join(' · ')
     identity.append(name)
     if (identifiers.textContent) identity.append(identifiers)
