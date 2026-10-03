@@ -180,9 +180,12 @@ seconds. The decode watchdog is at least 90 seconds and scales to twice the audi
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
 processed one at a time; audio is not uploaded.
 
-Completed batches are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
+Completed batches with recognized words are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
-compressed WAV. The Transcript archive section combines adjacent records on the same channel into
+compressed WAV. Empty results and known non-speech Whisper annotations are omitted from this durable
+archive. The receiver has no independent speech detector, so this is a transcript filter rather than
+verified voice detection; speech that Whisper misses remains available in the bounded rolling replay
+buffer until that replay expires. The Transcript archive section combines adjacent records on the same channel into
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
 whichever happens first; the oldest records are removed first. The database and its containing

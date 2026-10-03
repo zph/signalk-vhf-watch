@@ -85,6 +85,47 @@ test('removes Whisper timestamps without discarding decoded speech', () => {
   ].join('\n')), 'miles per hour becoming southwest mostly sunny in the morning')
 })
 
+test('cleans exact non-speech annotations while preserving recognized and bracketed words', () => {
+  assert.equal(cleanWhisperOutput('(machine whirring) ♩ ♪ ♫ ♬'), '')
+  assert.equal(cleanWhisperOutput('[MUSIC] [ static ] [NOISE] [SILENCE]'), '')
+  assert.equal(cleanWhisperOutput('(machine whirring) Coast Guard, channel one six. ♫'), 'Coast Guard, channel one six.')
+  assert.equal(cleanWhisperOutput('[Coast Guard] says no, no, no.'), '[Coast Guard] says no, no, no.')
+  assert.equal(cleanWhisperOutput('(motor running) Proceed north.'), 'Proceed north.')
+})
+
+test('does not archive successful empty or annotation-only Whisper output', async () => {
+  const whisperScripts = [
+    '#!/bin/sh\nprintf ""\n',
+    '#!/bin/sh\nprintf "[BLANK_AUDIO]\\n"\n',
+    '#!/bin/sh\nprintf "(machine whirring)\\n♪ ♪ ♪ ♪\\n"\n'
+  ]
+  for (const [index, script] of whisperScripts.entries()) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), `vhf-transcription-noise-${index}-`))
+    const command = path.join(directory, 'fake-whisper')
+    writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+    writeFileSync(command, script)
+    chmodSync(command, 0o755)
+    const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+    const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+      archive,
+      batchSeconds: 2,
+      idleMs: 10,
+      modelsDir: directory
+    })
+    await manager.setEnabled(true)
+    const replay = new RollingReplay(8_000, 2, 1, '16')
+    const [segment] = replay.append(Buffer.alloc(32_000, 1), Date.UTC(2026, 8, 29), 0.1)
+    manager.enqueue(segment!, 20)
+    for (let attempt = 0; attempt < 100 && segment!.transcription?.status !== 'complete'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.deepEqual(segment!.transcription, { status: 'complete', text: '' })
+    assert.equal(archive.status().records, 0)
+    assert.equal((await replay.wavFor(segment!.id, 20))?.length, 32_044)
+    manager.close()
+  }
+})
+
 test('transcription defaults off, requires its runtime, and persists explicit activation', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-'))
   const settings = path.join(directory, 'settings.json')
@@ -184,6 +225,40 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   assert.equal(archive.list()[0]?.transcript, '96044')
   assert.equal(archive.list()[0]?.channel, '16')
   assert.equal(archive.wav(archive.list()[0]!.id)?.length, 96_044)
+  manager.close()
+})
+
+test('archives overlap-only recognition when raw Whisper output contains speech', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-overlap-only-'))
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(command, '#!/bin/sh\nprintf "alpha bravo charlie delta\\n"\n')
+  chmodSync(command, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    archive,
+    batchSeconds: 4,
+    overlapSeconds: 1,
+    idleMs: 10,
+    modelsDir: directory
+  })
+  await manager.setEnabled(true)
+  const replay = new RollingReplay(8_000, 2, 1, '16')
+  const segments = [0, 1, 2, 3].map((index) => replay.append(
+    Buffer.alloc(32_000, index + 1),
+    Date.UTC(2026, 8, 29, 0, 0, index * 2),
+    0.1
+  )[0]!)
+  for (const segment of segments) manager.enqueue(segment, 20)
+  for (let attempt = 0; attempt < 100 && segments[3]!.transcription?.status !== 'complete'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(segments[3]!.transcription?.text, '')
+  assert.equal(archive.status().records, 2)
+  assert.deepEqual(archive.list().slice().reverse().map((record) => record.transcript), [
+    'alpha bravo charlie delta',
+    ''
+  ])
   manager.close()
 })
 

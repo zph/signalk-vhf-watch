@@ -180,12 +180,18 @@ export function transcriptionActiveSeconds(segment: ReplaySegment, squelch: numb
 export function cleanWhisperOutput(output: string): string {
   return output
     .replace(/\x1b\[[0-9;]*m/g, '')
-    .replace(/\[BLANK_AUDIO\]/gi, '')
+    .replace(/\[\s*(?:BLANK_AUDIO|MUSIC|STATIC|NOISE|SILENCE)\s*\]/gi, ' ')
+    .replace(/\((?:machine whirring|motor running)\)/gi, ' ')
+    .replace(/[♩♪♫♬]/g, ' ')
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, ''))
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function hasLexicalSpeech(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text)
 }
 
 export class TranscriptionManager {
@@ -439,7 +445,7 @@ export class TranscriptionManager {
           this.#previousTranscript.set(batch.channel, rawText)
           this.#error = undefined
           try {
-            this.#archiveBatch(batch, text)
+            this.#archiveBatch(batch, text, rawText)
           } catch (error) {
             this.#error = `Transcript archive: ${error instanceof Error ? error.message : String(error)}`
           }
@@ -492,8 +498,8 @@ export class TranscriptionManager {
     })
   }
 
-  #archiveBatch(batch: TranscriptionBatch, transcript: string): void {
-    if (!this.#archive) return
+  #archiveBatch(batch: TranscriptionBatch, transcript: string, rawTranscript: string): void {
+    if (!this.#archive || !hasLexicalSpeech(rawTranscript)) return
     const archivedSegments = batch.segments.slice(batch.overlapSegmentCount)
     const first = archivedSegments[0]!
     const measuredNoise = archivedSegments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
