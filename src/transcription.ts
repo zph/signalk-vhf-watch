@@ -57,6 +57,7 @@ export interface TranscriptionModel {
 
 interface TranscriptionBatch {
   segments: ReplaySegment[]
+  wavs: Buffer[]
   durationSeconds: number
   overlapSegmentCount: number
   channel: string
@@ -219,6 +220,7 @@ export class TranscriptionManager {
   #threads: number
   #queue: TranscriptionBatch[] = []
   #pending: ReplaySegment[] = []
+  #pendingWavs: Buffer[] = []
   #pendingSeconds = 0
   #pendingOverlapCount = 0
   #pendingSquelch?: number
@@ -382,6 +384,8 @@ export class TranscriptionManager {
     if (this.#pending.length === 0) this.#pendingSquelch = squelch
     segment.transcription = { status: 'queued', text: '' }
     this.#pending.push(segment)
+    // Replay compaction may replace segment.wav before a later overlapping batch uses it.
+    this.#pendingWavs.push(segment.wav)
     this.#pendingSeconds += segment.durationSeconds
     if (this.#pendingSeconds >= this.#batchSeconds) this.#flushPending(true)
     else this.#schedulePending()
@@ -435,22 +439,27 @@ export class TranscriptionManager {
       return
     }
     const segments = this.#pending
+    const wavs = this.#pendingWavs
     this.#queue.push({
       segments,
+      wavs,
       durationSeconds: this.#pendingSeconds,
       overlapSegmentCount: this.#pendingOverlapCount,
       channel: segments.at(-1)!.channel,
       squelch: this.#pendingSquelch ?? 0
     })
     const retained: ReplaySegment[] = []
+    const retainedWavs: Buffer[] = []
     let retainedSeconds = 0
     if (retainOverlap && this.#overlapSeconds > 0) {
       for (let index = segments.length - 1; index >= 0 && retainedSeconds < this.#overlapSeconds; index -= 1) {
         retained.unshift(segments[index]!)
+        retainedWavs.unshift(wavs[index]!)
         retainedSeconds += segments[index]!.durationSeconds
       }
     }
     this.#pending = retained
+    this.#pendingWavs = retainedWavs
     this.#pendingSeconds = Math.min(retainedSeconds, this.#overlapSeconds)
     this.#pendingOverlapCount = retained.length
     if (retained.length === 0) this.#pendingSquelch = undefined
@@ -467,6 +476,7 @@ export class TranscriptionManager {
     if (this.#pendingTimer) clearTimeout(this.#pendingTimer)
     this.#pendingTimer = undefined
     this.#pending = []
+    this.#pendingWavs = []
     this.#pendingSeconds = 0
     this.#pendingOverlapCount = 0
     this.#pendingSquelch = undefined
@@ -522,13 +532,15 @@ export class TranscriptionManager {
     try {
       const lastSegment = batch.segments.at(-1)!
       wavPath = path.join(os.tmpdir(), `vhf-watch-${process.pid}-${lastSegment.id}.wav`)
-      const sampleRate = batch.segments[0]!.wav.readUInt32LE(24)
-      const newSegments = batch.segments.slice(batch.overlapSegmentCount)
-      const newPcm = Buffer.concat(newSegments.map((segment) => segment.wav.subarray(44)))
-      const overlapPcm = Buffer.concat(batch.segments.slice(0, batch.overlapSegmentCount).map((segment) => segment.wav.subarray(44)))
+      const sampleRate = batch.wavs[0]!.readUInt32LE(24)
+      const newPcm = Buffer.concat(batch.wavs.slice(batch.overlapSegmentCount).map((wav) => wav.subarray(44)))
+      const overlapPcm = Buffer.concat(batch.wavs.slice(0, batch.overlapSegmentCount).map((wav) => wav.subarray(44)))
       const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
       const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
-      const rawPcm = Buffer.concat([retainedOverlap, ...newSegments.map((segment) => segment.wav.subarray(44))])
+      const rawPcm = Buffer.concat([
+        retainedOverlap,
+        ...batch.wavs.slice(batch.overlapSegmentCount).map((wav) => wav.subarray(44))
+      ])
 
       const vad = await this.#vad.detect(newPcm, sampleRate, controller.signal, (child) => { this.#child = child })
       if (vad.outcome === 'aborted' || controller.signal.aborted || !this.#enabled || this.#closed) {
@@ -583,19 +595,20 @@ export class TranscriptionManager {
     if (!this.#archive || !hasLexicalSpeech(rawTranscript)) return
     const archivedSegments = batch.segments.slice(batch.overlapSegmentCount)
     const first = archivedSegments[0]!
+    const archivedWavs = batch.wavs.slice(batch.overlapSegmentCount)
     const measuredNoise = archivedSegments.flatMap((segment) => segment.qualitySpans.flatMap((span) => (
       span.discriminatorNoise === undefined ? [] : [span.discriminatorNoise]
     )))
-    const sampleRate = first.wav.readUInt32LE(24)
-    const pcm = Buffer.concat(archivedSegments.map((segment) => segment.wav.subarray(44)))
+    const sampleRate = archivedWavs[0]!.readUInt32LE(24)
+    const pcm = Buffer.concat(archivedWavs.map((wav) => wav.subarray(44)))
     const bytesPerSecond = sampleRate * 2
     const paddingBytes = TRANSCRIPTION_ARCHIVE_PADDING_SECONDS * bytesPerSecond
     const threshold = discriminatorThreshold(batch.squelch)
     let segmentOffset = 0
     let activeStart = Number.POSITIVE_INFINITY
     let activeEnd = 0
-    for (const segment of archivedSegments) {
-      const segmentBytes = segment.wav.length - 44
+    for (const [index, segment] of archivedSegments.entries()) {
+      const segmentBytes = archivedWavs[index]!.length - 44
       let spanOffset = segmentOffset
       for (const span of segment.qualitySpans) {
         const spanEnd = Math.min(segmentOffset + segmentBytes, spanOffset + span.bytes)

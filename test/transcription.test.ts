@@ -282,6 +282,68 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   manager.close()
 })
 
+test('keeps raw WAV audio available for transcription overlap after Opus compaction', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-compaction-'))
+  const settings = path.join(directory, 'settings.json')
+  const whisper = path.join(directory, 'fake-whisper')
+  const encoder = path.join(directory, 'fake-opus-encoder')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(whisper, [
+    '#!/bin/sh',
+    'state="$0.state"',
+    'bytes=$(wc -c < "$1" | tr -d " ")',
+    'if test -e "$state"; then printf "later %s\\n" "$bytes"; else : > "$state"; printf "first %s\\n" "$bytes"; fi'
+  ].join('\n'))
+  writeFileSync(encoder, '#!/bin/sh\ncat >/dev/null\nprintf x\n')
+  chmodSync(whisper, 0o755)
+  chmodSync(encoder, 0o755)
+  const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
+  const manager = new TranscriptionManager(settings, whisper, {
+    batchSeconds: 4,
+    overlapSeconds: 2,
+    idleMs: 5_000,
+    archive,
+    modelsDir: directory
+  })
+  const replay = new RollingReplay(8_000, 2, 5, '16', Number.POSITIVE_INFINITY, 'A', 0, 1, undefined, encoder)
+  try {
+    await manager.setEnabled(true)
+    const startedAt = Date.now() - 4_000
+    const [first] = replay.append(Buffer.alloc(32_000, 1), startedAt, 0.1)
+    const [overlap] = replay.append(Buffer.alloc(32_000, 2), startedAt + 2_000, 0.1)
+    manager.enqueue(first!, 20)
+    manager.enqueue(overlap!, 20)
+
+    const firstDeadline = Date.now() + 5_000
+    while (overlap!.transcription?.status !== 'complete' && Date.now() < firstDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const encoderDeadline = Date.now() + 5_000
+    while (!overlap!.opus && Date.now() < encoderDeadline) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(overlap!.transcription?.status, 'complete')
+    assert.ok(overlap!.opus)
+    replay.list()
+    assert.equal(overlap!.wav.length, 0, 'production replay compaction releases its raw WAV')
+
+    const [next] = replay.append(Buffer.alloc(32_000, 3), startedAt + 4_000, 0.1)
+    const originalNextWav = Buffer.from(next!.wav)
+    manager.enqueue(next!, 20)
+    const secondDeadline = Date.now() + 5_000
+    while (next!.transcription?.status !== 'complete' && next!.transcription?.status !== 'error' && Date.now() < secondDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    assert.deepEqual(next!.transcription, { status: 'complete', text: 'later 64044' })
+    const records = archive.list().slice().reverse()
+    assert.equal(records.length, 2)
+    assert.deepEqual(archive.wav(records[1]!.id), originalNextWav,
+      'overlap is supplied to Whisper but only new, original audio is archived')
+  } finally {
+    manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('archives overlap-only recognition when raw Whisper output contains speech', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-overlap-only-'))
   const command = path.join(directory, 'fake-whisper')
