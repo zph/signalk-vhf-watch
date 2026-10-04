@@ -48,11 +48,15 @@ The two voice slots can preserve two simultaneous calls; additional collisions r
 RF activity but cannot produce audio without another SDR or demodulation slot. Channel 70 DSC stays
 continuous throughout in-band voice scanning.
 
-The 24-hour activity timeline is channel-centric. Blue spans retain bounded whole-band RF detections,
-green spans identify voice captures that can be played, and amber ticks mark decoded Channel 70 DSC
-calls. Tapping any mark shows its exact time; RF-only marks explicitly report that no playable voice
-was captured. Slot B's `70` selection means the second voice demodulator is idle—Channel 70 remains
-an independent continuous decoder regardless of either voice-slot selection.
+The 24-hour activity timeline combines historical recordings from both voice slots and all captured
+channels in chronological order. Blue spans retain bounded whole-band RF detections, green spans
+identify voice captures that can be played, and amber ticks mark decoded Channel 70 DSC calls. Tapping
+a voice mark starts finite recordings from that point forward; the waveform has its own play, seek, and
+five-second skip controls. **Latest** jumps to the newest historical recording. **Listen live** is a
+separate control for the current Slot A channel and stops when another recording starts or Slot A is
+retuned. RF-only marks explicitly report that no playable voice was captured. Slot B's `70` selection
+means the second voice demodulator is idle—Channel 70 remains an independent continuous decoder
+regardless of either voice-slot selection.
 
 Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
 filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM
@@ -140,9 +144,8 @@ playback gain with transparent peak protection; it does not rewrite the saved re
 Whisper. Live and rolling replay use time-local receiver quality where available; archived clips,
 which do not retain per-frame receiver quality, use the raw-audio detector. The gate intentionally
 leaves uncertain or short regions open, and denoising is not proof that every weak word is preserved.
-The **Between-transmission quieting** slider controls how strongly that existing gate attenuates its
-closed regions: `0%` uses GTCRN without gate attenuation, `50%` applies a gentler envelope, and
-`100%` keeps the existing gate strength. It does not change speech detection or affect open regions.
+Playback uses the existing automatic gate at its full configured strength. This setting does not
+change speech detection or affect open regions.
 Modified currently requires 16 kHz audio; if its runtime is missing, busy, or the rate is unsupported,
 the player reports that condition and Raw remains available. Whisper always uses the unfiltered
 FIR-demodulated source. It receives a full one-minute context window with ten seconds of overlap, and

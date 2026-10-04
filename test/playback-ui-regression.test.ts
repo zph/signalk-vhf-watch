@@ -19,7 +19,7 @@ function declaration(source: string, name: string): string {
   assert.fail(`${name} has a closing brace`)
 }
 
-test('a manual timeline clip keeps playing when Slot A retunes', () => {
+test('historical playback remains independent from Slot A retunes', () => {
   const audio = {
     paused: false,
     src: '/clip.wav',
@@ -31,10 +31,8 @@ test('a manual timeline clip keeps playing when Slot A retunes', () => {
     load() { this.loads += 1 }
   }
   const state = {
-    timelineFollowingLive: false,
     timelineActiveSlotAChannel: 'WX1',
-    timelineAwaitingChannel: undefined as string | undefined,
-    timelineWaitingAtEdge: false,
+    liveListening: false,
     timelineSegmentId: 42 as number | undefined,
     timelineAudio: audio,
     timelineTime: { textContent: '' },
@@ -53,37 +51,123 @@ test('a manual timeline clip keeps playing when Slot A retunes', () => {
   assert.equal(state.timelineSegmentId, 42)
 })
 
-test('following live still waits for audio on the newly tuned channel', () => {
-  const audio = {
-    paused: false,
-    src: '/live.wav',
-    pauses: 0,
-    loads: 0,
+test('live listening stops on Slot A retune', () => {
+  let stoppedWith = ''
+  let liveListening = true
+  const state = {
+    liveListening,
+    timelineActiveSlotAChannel: 'WX1',
+    stopLiveListening(message: string) { stoppedWith = message; liveListening = false },
+    channelDisplay: (channel: string) => channel,
+  }
+  vm.runInNewContext(`${declaration(main, 'handleTimelineSlotARetune')}; globalThis.run = handleTimelineSlotARetune`, state)
+
+  assert.equal((state as any).run('16'), false)
+  assert.equal(liveListening, false)
+  assert.match(stoppedWith, /changed to 16/)
+})
+
+test('historical queue combines channels and sorts equal timestamps deterministically', () => {
+  const state = {}
+  vm.runInNewContext(`${declaration(main, 'sortHistoricalReplaySegments')}; ${declaration(main, 'historicalReplayQueue')}; globalThis.queue = historicalReplayQueue`, state)
+  const segments = [
+    { id: 9, startedAt: '2026-10-03T12:00:00Z', slot: 'B', channel: '70' },
+    { id: 3, startedAt: '2026-10-03T11:59:00Z', slot: 'A', channel: '16' },
+    { id: 7, startedAt: '2026-10-03T12:00:00Z', slot: 'A', channel: 'WX4' },
+    { id: 10, startedAt: '2026-10-03T12:00:00Z', slot: 'B', channel: 'WX4' }
+  ]
+  const queue = (state as any).queue(segments, 7)
+  assert.deepEqual([...queue].map((segment: any) => `${segment.slot}:${segment.id}`), ['A:7', 'B:9', 'B:10'])
+  segments[2].channel = 'changed'
+  assert.equal(queue[0].channel, 'WX4')
+})
+
+test('polling preserves a historical queue and its current source', () => {
+  const queue = [{ id: 7 }, { id: 9 }]
+  const source = '/api/replay/7.wav?snapshot=stable'
+  const state = {
+    replayTimeline: [] as Array<Record<string, unknown>>,
+    timelineRange: { disabled: false, max: '0', value: '0' },
+    timelineLatest: { disabled: false },
+    timelineOldest: { textContent: '' },
+    timelineSegmentId: 7,
+    timelineQueue: queue,
+    timelineQueueIndex: 0,
+    timelineAudioSource: source,
+    timelineAudio: { removeAttribute() { throw new Error('poll must not clear source') }, load() { throw new Error('poll must not reload source') } },
+    timelineTime: { textContent: '' },
+    timelineOffset: { textContent: '' },
+    timelineWaveformLoading: { textContent: '', hidden: false },
+    timelineSelectionVersion: 4,
+    timelineLatestActiveTimelineIndex: () => -1,
+    sortHistoricalReplaySegments: (segments: Array<Record<string, unknown>>) => segments,
+    renderFrequencyMap() {}
+  }
+  vm.runInNewContext(`${declaration(main, 'updateTimeline')}; globalThis.update = updateTimeline`, state)
+
+  ;(state as any).update([
+    { id: 7, startedAt: '2026-10-03T12:00:00Z' },
+    { id: 9, startedAt: '2026-10-03T12:01:00Z' },
+    { id: 12, startedAt: '2026-10-03T12:02:00Z' }
+  ])
+  assert.equal(state.timelineQueue, queue)
+  assert.equal(state.timelineAudioSource, source)
+  assert.equal(state.timelineRange.value, '0')
+})
+
+test('live button opens and closes the dedicated stream at fixed automatic quieting', async () => {
+  const liveAudio = {
+    src: '', paused: true, pauses: 0, loads: 0,
+    play() { this.paused = false; return Promise.resolve() },
     pause() { this.paused = true; this.pauses += 1 },
     removeAttribute(name: string) { if (name === 'src') this.src = '' },
     load() { this.loads += 1 }
   }
+  const liveListen = { textContent: '', setAttribute() {} }
+  const liveListenStatus = { textContent: '' }
   const state = {
-    timelineFollowingLive: true,
-    timelineActiveSlotAChannel: 'WX1',
-    timelineAwaitingChannel: undefined as string | undefined,
-    timelineWaitingAtEdge: true,
-    timelineSegmentId: 42 as number | undefined,
-    timelineAudio: audio,
-    timelineTime: { textContent: '' },
-    timelineOffset: { textContent: '' },
-    channelDisplay: (channel: string) => channel,
-    channelFrequencyDisplay: (channel: string) => `freq ${channel}`
+    API: '/api/', URLSearchParams, liveAudio, liveListen, liveListenStatus,
+    liveAudioSource: undefined as string | undefined,
+    liveAudioGeneration: 0,
+    liveListening: false,
+    timelineActiveSlotAChannel: '16',
+    replaySquelch: { value: '20' }, timelineCleanup: { value: 'modified' },
+    channelDisplay: (channel: string) => `CH ${channel}`,
+    pauseOtherAudio() {}
   }
-  vm.runInNewContext(`${declaration(main, 'handleTimelineSlotARetune')}; globalThis.run = handleTimelineSlotARetune`, state)
+  vm.runInNewContext(`${declaration(main, 'stopLiveListening')}; ${declaration(main, 'startLiveListening')}; globalThis.start = startLiveListening; globalThis.stop = stopLiveListening`, state)
+  await (state as any).start()
+  assert.equal(state.liveListening, true)
+  assert.equal(liveListen.textContent, 'Stop live · CH 16')
+  const url = new URL(liveAudio.src, 'http://localhost')
+  assert.equal(url.pathname, '/api/live.wav')
+  assert.equal(url.searchParams.get('squelch'), '20')
+  assert.equal(url.searchParams.get('cleanup'), 'modified')
+  assert.equal(url.searchParams.get('quieting'), '100')
+  ;(state as any).stop('Stopped for test.')
+  assert.equal(state.liveListening, false)
+  assert.equal(liveAudio.src, '')
+  assert.ok(liveAudio.pauses > 0 && liveAudio.loads > 0)
+})
 
-  assert.equal((state as any).run('16'), true)
-  assert.equal(state.timelineAwaitingChannel, '16')
-  assert.equal(state.timelineWaitingAtEdge, false)
-  assert.equal(state.timelineSegmentId, undefined)
-  assert.equal(audio.paused, true)
-  assert.equal(audio.src, '')
-  assert.equal(audio.loads, 1)
+test('timeline uses finite clips and retains a separate live stream control', () => {
+  const html = readFileSync(path.join(root, 'public/index.html'), 'utf8')
+  assert.match(html, /id="timeline-waveform"/)
+  assert.match(html, /id="timeline-play"/)
+  assert.match(html, /id="timeline-skip"/)
+  assert.match(html, /id="timeline-seek"/)
+  assert.match(html, /id="live-listen"/)
+  assert.match(html, /vendor\/wavesurfer-7\.11\.1\.min\.js/)
+  assert.doesNotMatch(html, /id="timeline-audio" controls/)
+  assert.doesNotMatch(html, /Between-transmission quieting/)
+  assert.match(main, /replay\/\$\{encodeURIComponent\(segment\.id\)\}\.wav/)
+  assert.doesNotMatch(main, /timelineAudio\.src\s*=\s*`\$\{API\}replay\/\$\{segment\.id\}\/continuous\.wav/)
+  assert.match(main, /\$\{API\}live\.wav\?\$\{params\}/)
+  assert.match(main, /quieting: '100'/)
+  assert.match(main, /window\.WaveSurfer\.create/)
+  assert.match(main, /dragToSeek: true/)
+  assert.match(main, /timelineWaveSurfer\.on\('interaction'/)
+  assert.match(main, /destroyArchiveWaveforms\(\)/)
 })
 
 test('archive waveform owns playback controls while audio stays lazy until Play', () => {
@@ -94,6 +178,8 @@ test('archive waveform owns playback controls while audio stays lazy until Play'
   assert.match(archiveRow, /bindArchiveWaveformSeek\(seek, details, audio, updatePlayback/)
   assert.match(archiveRow, /body\.append\(waveform, audio, controls/)
   assert.match(archiveRow, /seek\.type = 'range'/)
+  assert.doesNotMatch(archiveRow, /Between-transmission quieting|quieting\.type = 'range'/)
+  assert.match(archiveRow, /quieting=100/)
   assert.doesNotMatch(archiveRow, /audio\.controls = true/)
   assert.match(archiveRow, /originalDownload\.href = `\$\{originalAudioUrl\}&cleanup=raw&squelch=0`/)
   assert.match(archiveRow, /const audioUrl = `\$\{originalAudioUrl\}&activity=1`/)

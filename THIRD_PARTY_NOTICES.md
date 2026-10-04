@@ -32,3 +32,9 @@ VHF Watch includes the `somnolent-hogwash` speech/recording-noise model from
 apart from its README and tools, the model work is not creative and is not subject to copyright.
 FFmpeg's `arnndn` filter executes the model; no RNNoise executable is bundled. The plugin mixes the
 denoised result equally with the original signal to preserve narrow-band radio speech detail.
+
+The browser UI vendors the WaveSurfer.js 7.11.1 minified distribution from the npm package
+[`wavesurfer.js@7.11.1`](https://www.npmjs.com/package/wavesurfer.js), licensed under BSD-3-Clause.
+Its unmodified license is in [`public/vendor/WAVESURFER-LICENSE.txt`](public/vendor/WAVESURFER-LICENSE.txt).
+The bundled file is `public/vendor/wavesurfer-7.11.1.min.js` (SHA-256
+`3d53013cf5d4e7079e1b3ff445a13571c737393782ffd22bdf5f8d5d16bac807`).

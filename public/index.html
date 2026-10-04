@@ -55,6 +55,11 @@
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
+        <div class="live-listen-control">
+          <button id="live-listen" class="button compact" type="button" disabled>Listen live</button>
+          <span id="live-listen-status" role="status" aria-live="polite">Live audio is separate from historical playback.</span>
+        </div>
+        <audio id="live-audio" class="sr-only archive-audio-source" aria-hidden="true" preload="none"></audio>
       </div>
       <div class="receiver-presets" aria-label="Quick channel selection">
         <strong>Quick watch</strong>
@@ -70,9 +75,9 @@
           <div class="panel-heading timeline-heading">
             <div>
               <h2 id="timeline-title">Activity</h2>
-              <p id="timeline-description">Rolling buffer · select a burst to listen</p>
+              <p id="timeline-description">Historical recordings across channels · select a burst to play</p>
             </div>
-            <button id="timeline-latest" class="button compact" type="button">Go live</button>
+            <button id="timeline-latest" class="button compact" type="button">Latest</button>
           </div>
           <div class="timeline-selection" aria-live="polite">
             <strong id="timeline-time">Waiting for audio…</strong>
@@ -89,7 +94,19 @@
           </div>
           <input id="timeline-range" type="range" min="0" max="0" value="0" step="1" aria-label="Select a time from the rolling radio buffer" disabled />
           <div class="timeline-scale"><span id="timeline-oldest">24 hr ago</span><span>Now</span></div>
-          <audio id="timeline-audio" controls preload="none"></audio>
+          <div id="timeline-waveform" class="archive-waveform timeline-waveform">
+            <div id="timeline-waveform-track" class="archive-waveform-track">
+              <span id="timeline-waveform-loading" class="waveform-loading">Select a recording to load its waveform…</span>
+              <input id="timeline-seek" class="archive-waveform-seek" type="range" min="0" max="0.1" step="0.1" value="0" aria-label="Seek within recording" disabled />
+            </div>
+            <div class="archive-waveform-transport">
+              <button id="timeline-play" class="archive-waveform-button archive-waveform-play" type="button" aria-label="Play recording" disabled>Play</button>
+              <button id="timeline-skip" class="archive-waveform-button archive-waveform-skip" type="button" aria-label="Skip forward 5 seconds" disabled>+5 sec</button>
+              <output id="timeline-playback-time" class="archive-waveform-time">0:00 / 0:00</output>
+              <span id="timeline-playback-status" class="archive-waveform-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+          <audio id="timeline-audio" class="sr-only archive-audio-source" aria-hidden="true" preload="none"></audio>
           <div class="inline-setting">
             <label for="timeline-cleanup">Playback sound</label>
             <select id="timeline-cleanup">
@@ -97,10 +114,6 @@
               <option value="modified" selected>Modified</option>
             </select>
           </div>
-          <label id="timeline-quieting-control" class="quieting-control" for="timeline-quieting">
-            <span>Between-transmission quieting <output id="timeline-quieting-value">100%</output></span>
-            <input id="timeline-quieting" type="range" min="0" max="100" step="1" value="100" aria-label="Between-transmission quieting" />
-          </label>
         </section>
 
         <section class="panel recent-activity" aria-labelledby="archive-title">
@@ -238,6 +251,7 @@
     <footer id="receiver-footnote">No transmit controls exist. Channel 70 watch follows the Slot B selection shown above.</footer>
   </main>
   <script src="./conversation.js?v=47"></script>
-  <script src="./main.js?v=50"></script>
+  <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
+  <script src="./main.js?v=51"></script>
 </body>
 </html>

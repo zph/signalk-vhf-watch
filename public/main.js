@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 50
+  const CLIENT_BUILD = 51
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -23,6 +23,9 @@
   const signalBar = $('#signal-bar')
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
+  const liveListen = $('#live-listen')
+  const liveListenStatus = $('#live-listen-status')
+  const liveAudio = $('#live-audio')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
   const dscModeLabel = $('#dsc-mode-label')
@@ -37,9 +40,13 @@
   const timelineLatest = $('#timeline-latest')
   const timelineDescription = $('#timeline-description')
   const timelineCleanup = $('#timeline-cleanup')
-  const timelineQuieting = $('#timeline-quieting')
-  const timelineQuietingControl = $('#timeline-quieting-control')
-  const timelineQuietingValue = $('#timeline-quieting-value')
+  const timelineWaveformTrack = $('#timeline-waveform-track')
+  const timelineWaveformLoading = $('#timeline-waveform-loading')
+  const timelineSeek = $('#timeline-seek')
+  const timelinePlay = $('#timeline-play')
+  const timelineSkip = $('#timeline-skip')
+  const timelinePlaybackTime = $('#timeline-playback-time')
+  const timelinePlaybackStatus = $('#timeline-playback-status')
   const frequencyMap = $('#frequency-map')
   const frequencyEmpty = $('#frequency-empty')
   const transcriptionEnabled = $('#transcription-enabled')
@@ -84,16 +91,27 @@
   let latestStatus
   let replaySquelchTouched = false
   let replayTimeline = []
+  let timelineQueue = []
+  let timelineQueueIndex = -1
+  let timelineSelectionVersion = 0
+  let timelineWaveformController
+  let timelineWaveSurfer
+  let timelineAudioSource
+  let timelinePendingSeek
+  let timelineMetadataSource
+  let timelineAutoAdvance = false
+  let timelinePlaybackGeneration = 0
+  let liveAudioSource
+  let liveAudioGeneration = 0
+  let liveListening = false
   let spectrumTimeline = []
   let dscTimeline = []
   let timelineSegmentId
-  let timelineFollowingLive = true
-  let timelineWaitingAtEdge = false
   let timelineWindowMinutes = 1_440
   let timelineReceiverRows = []
   let timelineActiveSlotAChannel
-  let timelineAwaitingChannel
   let archiveRenderSignature = ''
+  const archiveWaveSurfers = new Map()
   let conversationRecords = []
   let conversationSelectedId
   let conversationSignature = ''
@@ -105,7 +123,7 @@
   let slotConfigurationPending = false
 
   conversationPlayer = new window.VHFConversation.ConversationPlayer(conversationAudio, {
-    sourceFor: (record) => `${API}transcripts/${record.id}.wav?activity=1&cleanup=${encodeURIComponent(timelineCleanup.value)}&squelch=${encodeURIComponent(replaySquelch.value)}&quieting=${encodeURIComponent(timelineQuieting.value)}`,
+    sourceFor: (record) => `${API}transcripts/${record.id}.wav?activity=1&cleanup=${encodeURIComponent(timelineCleanup.value)}&squelch=${encodeURIComponent(replaySquelch.value)}&quieting=100`,
     onCurrent: (record) => {
       conversationSelectedId = record?.id
       markConversationClip()
@@ -137,10 +155,6 @@
     replaySquelchTouched = true
   }
   timelineCleanup.value = playbackPreference('timeline-cleanup', timelineCleanup.value)
-  const storedTimelineQuieting = Number(storedPreference('timeline-quieting', '100'))
-  timelineQuieting.value = String(Number.isFinite(storedTimelineQuieting) ? Math.min(100, Math.max(0, storedTimelineQuieting)) : 100)
-  timelineQuietingValue.value = `${timelineQuieting.value}%`
-  timelineQuietingValue.textContent = `${timelineQuieting.value}%`
   settingsPanel.open = storedPreference('settings-open', 'false') === 'true'
 
   async function request(path, options) {
@@ -203,10 +217,10 @@
     }
     singleFrequencyActive = status.captureMode === 'single_frequency'
     const activeSlotAChannel = status.slots.A.currentChannel.id
-    const hadActiveSlotAChannel = Boolean(timelineActiveSlotAChannel)
     handleTimelineSlotARetune(activeSlotAChannel)
     timelineActiveSlotAChannel = activeSlotAChannel
-    if (!hadActiveSlotAChannel && replayTimeline.length > 0) selectLatestActiveTimeline()
+    liveListen.disabled = false
+    if (!liveListening) liveListen.textContent = `Listen live · ${channelDisplay(activeSlotAChannel)}`
     if (!slotConfigurationPending) {
       if (document.activeElement !== regionSelect) regionSelect.value = status.channelRegion
       if (document.activeElement !== slotAMode) slotAMode.value = status.slots.A.mode
@@ -257,7 +271,7 @@
     const replayWindow = status.replayMinutes === 1_440 ? '24 hours' : `${status.replayMinutes} minutes`
     retention.textContent = `Latest ${replayWindow} · ${status.maxBufferMiB} MiB total compressed-audio cap · ${status.replaySegments} private playable segments`
     timelineWindowMinutes = status.replayMinutes
-    timelineDescription.textContent = `Past ${replayWindow} · select a burst to listen`
+    timelineDescription.textContent = `Historical recordings · all channels · past ${replayWindow}`
     const frequencyScale = document.querySelectorAll('.frequency-scale span')
     if (frequencyScale.length === 3) {
       frequencyScale[0].textContent = status.replayMinutes === 1_440 ? '24 hr ago' : `${status.replayMinutes} min ago`
@@ -313,17 +327,10 @@
   }
 
   function handleTimelineSlotARetune(activeSlotAChannel) {
-    if (!timelineFollowingLive || !timelineActiveSlotAChannel || timelineActiveSlotAChannel === activeSlotAChannel) return false
-    timelineAwaitingChannel = activeSlotAChannel
-    timelineFollowingLive = true
-    timelineWaitingAtEdge = false
-    timelineSegmentId = undefined
-    timelineAudio.pause()
-    timelineAudio.removeAttribute('src')
-    timelineAudio.load()
-    timelineTime.textContent = `Waiting for ${channelDisplay(activeSlotAChannel)} audio…`
-    timelineOffset.textContent = channelFrequencyDisplay(activeSlotAChannel)
-    return true
+    if (liveListening && timelineActiveSlotAChannel && timelineActiveSlotAChannel !== activeSlotAChannel) {
+      stopLiveListening(`Live audio stopped because Slot A changed to ${channelDisplay(activeSlotAChannel)}.`)
+    }
+    return false
   }
 
   async function loadChannels() {
@@ -592,8 +599,55 @@
 
   function pauseOtherAudio(activeAudio) {
     for (const audio of document.querySelectorAll('audio')) {
-      if (audio !== activeAudio && !audio.paused) audio.pause()
+      if (audio === activeAudio) continue
+      if (audio === liveAudio && liveListening) {
+        stopLiveListening('Live audio stopped while another recording plays.')
+        continue
+      }
+      if (!audio.paused) {
+        if (audio === timelineAudio) timelineAutoAdvance = false
+        audio.pause()
+      }
     }
+  }
+
+  function stopLiveListening(message = 'Live audio stopped.') {
+    liveAudioGeneration += 1
+    liveListening = false
+    liveAudio.pause()
+    liveAudio.removeAttribute('src')
+    liveAudio.load()
+    liveAudioSource = undefined
+    liveListen.textContent = 'Listen live'
+    liveListen.setAttribute('aria-pressed', 'false')
+    liveListenStatus.textContent = message
+  }
+
+  function startLiveListening() {
+    if (!timelineActiveSlotAChannel) {
+      liveListenStatus.textContent = 'Receiver status is not ready yet.'
+      return
+    }
+    if (liveListening) stopLiveListening('Refreshing live audio settings…')
+    pauseOtherAudio(liveAudio)
+    const params = new URLSearchParams({
+      squelch: replaySquelch.value,
+      cleanup: timelineCleanup.value,
+      quieting: '100'
+    })
+    const source = `${API}live.wav?${params}`
+    const generation = ++liveAudioGeneration
+    liveAudioSource = source
+    liveAudio.src = source
+    liveAudio.load()
+    liveListening = true
+    liveListen.textContent = `Stop live · ${channelDisplay(timelineActiveSlotAChannel)}`
+    liveListen.setAttribute('aria-pressed', 'true')
+    liveListenStatus.textContent = `Listening live on ${channelDisplay(timelineActiveSlotAChannel)}.`
+    void liveAudio.play().catch((error) => {
+      if (error?.name === 'AbortError' || generation !== liveAudioGeneration) return
+      if (liveListening && liveAudioSource === source) stopLiveListening('Live audio could not start. Tap Listen live to try again.')
+    })
   }
 
   function sessionRenderSignature(sessions, includeTranscript = false) {
@@ -641,14 +695,25 @@
   }
 
   function selectNonAudioMoment(timestamp, description) {
-    timelineFollowingLive = false
-    timelineWaitingAtEdge = false
+    timelineSelectionVersion += 1
+    timelineWaveformController?.abort()
+    timelineQueue = []
+    timelineQueueIndex = -1
+    timelineSegmentId = undefined
     timelineAudio.pause()
     timelineAudio.removeAttribute('src')
     timelineAudio.load()
+    timelineAudioSource = undefined
+    timelineSeek.disabled = true
+    timelinePlay.disabled = true
+    timelineSkip.disabled = true
+    destroyTimelineWaveform()
+    timelinePlaybackStatus.textContent = ''
+    timelineWaveformLoading.textContent = 'Select a recording to load its waveform…'
+    timelineWaveformLoading.hidden = false
     timelineTime.textContent = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     timelineOffset.textContent = `${description} · no playable voice was captured`
-    timelineLatest.textContent = 'Go live'
+    timelineLatest.textContent = 'Latest'
     timelineLatest.setAttribute('aria-pressed', 'false')
   }
 
@@ -783,8 +848,6 @@
         const time = new Date(mark.runStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         button.setAttribute('aria-label', `Listen to Slot ${mark.segment.slot}, ${channelDisplay(row.channel)}, ${frequency.textContent}, voice captured at ${time}`)
         button.addEventListener('click', () => {
-          timelineFollowingLive = false
-          timelineWaitingAtEdge = false
           selectTimelineIndex(mark.segmentIndex, true)
         })
         track.append(button)
@@ -802,106 +865,214 @@
     highlightFrequencyBurst()
   }
 
-  function selectTimelineIndex(requestedIndex, autoplay = false) {
-    if (replayTimeline.length === 0) return
-    const index = Math.max(0, Math.min(replayTimeline.length - 1, requestedIndex))
-    const segment = replayTimeline[index]
+  function sortHistoricalReplaySegments(segments) {
+    return segments.slice().sort((left, right) => {
+      const timeDifference = Date.parse(left.startedAt) - Date.parse(right.startedAt)
+      if (Number.isFinite(timeDifference) && timeDifference !== 0) return timeDifference
+      const slotDifference = String(left.slot).localeCompare(String(right.slot))
+      if (slotDifference !== 0) return slotDifference
+      return String(left.id).localeCompare(String(right.id), undefined, { numeric: true })
+    })
+  }
+
+  function historicalReplayQueue(segments, startId) {
+    const ordered = sortHistoricalReplaySegments(segments)
+    const startIndex = ordered.findIndex((segment) => String(segment.id) === String(startId))
+    return startIndex < 0 ? [] : ordered.slice(startIndex).map((segment) => ({ ...segment }))
+  }
+
+  function timelineClipUrl(segment, version) {
+    const snapshot = segment.endedAt || segment.updatedAt || segment.startedAt
+    const params = new URLSearchParams({
+      cleanup: timelineCleanup.value,
+      quieting: '100',
+      squelch: replaySquelch.value,
+      snapshot: snapshot || '',
+      selection: String(version)
+    })
+    return `${API}replay/${encodeURIComponent(segment.id)}.wav?${params}`
+  }
+
+  function timelineWaveformUrl(segment, version) {
+    const params = new URLSearchParams({ cleanup: 'raw', quieting: '100', squelch: '0', snapshot: segment.endedAt || segment.updatedAt || segment.startedAt || '', selection: String(version) })
+    return `${API}replay/${encodeURIComponent(segment.id)}.wav?${params}`
+  }
+
+  function timelineDuration(segment) {
+    return Math.max(0.1, Number(segment.durationSeconds || segment.duration || segment.audioDurationSeconds || 0.1))
+  }
+
+  function timelineQueueSegment(index) {
+    const segment = timelineQueue[index]
+    if (!segment) return
+    timelineQueueIndex = index
+    timelineSegmentId = segment.id
     const startedAt = new Date(segment.startedAt)
     const ageMinutes = Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 60_000))
-    timelineRange.value = String(index)
-    timelineSegmentId = segment.id
+    const currentIndex = replayTimeline.findIndex((item) => String(item.id) === String(segment.id))
+    if (currentIndex >= 0) timelineRange.value = String(currentIndex)
     timelineTime.textContent = startedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
-    const source = `${API}replay/${segment.id}/continuous.wav?squelch=${encodeURIComponent(replaySquelch.value)}&cleanup=${encodeURIComponent(timelineCleanup.value)}&quieting=${encodeURIComponent(timelineQuieting.value)}`
-    if (timelineAudio.getAttribute('src') !== source) timelineAudio.src = source
-    if (autoplay) void timelineAudio.play().catch(() => {})
-    timelineLatest.textContent = timelineFollowingLive ? 'Following live' : 'Go live'
-    timelineLatest.setAttribute('aria-pressed', String(timelineFollowingLive))
+    timelineAudio.pause()
+    timelineAutoAdvance = false
+    timelineAudio.removeAttribute('src')
+    timelineAudio.load()
+    timelineAudioSource = undefined
+    timelinePendingSeek = undefined
+    timelineMetadataSource = undefined
+    destroyTimelineWaveform()
+    timelineSeek.disabled = false
+    timelineSeek.min = '0'
+    timelineSeek.max = String(timelineDuration(segment))
+    timelineSeek.value = '0'
+    timelinePlay.textContent = 'Play'
+    timelinePlay.setAttribute('aria-label', 'Play recording')
+    timelinePlaybackStatus.textContent = ''
+    timelinePlaybackTime.textContent = `0:00 / ${archiveTimeLabel(timelineDuration(segment))}`
+    timelinePlay.disabled = false
+    timelineSkip.disabled = false
+    timelineLatest.textContent = 'Latest'
+    timelineLatest.setAttribute('aria-pressed', 'false')
+    renderTimelineWaveform(segment, timelineSelectionVersion)
     highlightFrequencyBurst()
   }
 
-  function latestActiveTimelineIndex() {
-    return replayTimeline.findLastIndex((segment) => timelineReceiverRows.some((receiver) => (
-      segment.slot === receiver.slot && segment.channel === receiver.channel
-    )))
+  function renderTimelineWaveform(segment, version) {
+    destroyTimelineWaveform()
+    timelineWaveformController = new AbortController()
+    const { signal } = timelineWaveformController
+    timelineWaveformLoading.textContent = 'Loading waveform…'
+    timelineWaveformLoading.hidden = false
+    void fetch(timelineWaveformUrl(segment, version), { credentials: 'include', signal }).then(async (response) => {
+      if (!response.ok) throw new Error(`Waveform request failed (${response.status})`)
+      return wavSamples(await response.arrayBuffer())
+    }).then(({ view, offset, samples, sampleRate }) => {
+      if (signal.aborted || version !== timelineSelectionVersion) return
+      timelineWaveSurfer = createWaveform(timelineWaveformTrack, timelineAudio, { view, offset, samples }, sampleRate > 0 ? samples / sampleRate : timelineDuration(segment))
+      timelineWaveSurfer.on('interaction', (time) => seekTimelineAudio(time))
+      timelineSeek.max = String(sampleRate > 0 ? samples / sampleRate : timelineDuration(segment))
+      timelineWaveformLoading.hidden = true
+    }).catch((error) => {
+      if (signal.aborted || version !== timelineSelectionVersion) return
+      timelineWaveformLoading.textContent = 'Waveform unavailable'
+      timelineWaveformLoading.hidden = false
+      timelinePlaybackStatus.textContent = 'Waveform unavailable. Playback may still work.'
+    })
+  }
+
+  function updateTimelinePlayback() {
+    const duration = Number.isFinite(timelineAudio.duration) && timelineAudio.duration > 0
+      ? timelineAudio.duration
+      : timelineQueueIndex >= 0 ? timelineDuration(timelineQueue[timelineQueueIndex]) : 0
+    const currentTime = Math.max(0, Math.min(duration, timelineAudio.currentTime || 0))
+    timelineSeek.max = String(Math.max(0.1, duration))
+    timelineSeek.value = String(currentTime)
+    timelineSeek.setAttribute('aria-valuetext', `${archiveTimeLabel(currentTime)} of ${archiveTimeLabel(duration)}`)
+    timelinePlaybackTime.textContent = `${archiveTimeLabel(currentTime)} / ${archiveTimeLabel(duration)}`
+    timelinePlay.textContent = timelineAudio.paused ? 'Play' : 'Pause'
+    timelinePlay.setAttribute('aria-label', `${timelineAudio.paused ? 'Play' : 'Pause'} recording`)
+  }
+
+  function loadTimelineAudio(segment, autoplay = false, targetTime) {
+    const generation = ++timelinePlaybackGeneration
+    const source = timelineClipUrl(segment, timelineSelectionVersion)
+    const version = timelineSelectionVersion
+    if (timelineAudioSource !== source) {
+      timelineAudioSource = source
+      timelinePendingSeek = undefined
+      timelineMetadataSource = undefined
+      timelineAudio.src = source
+      timelineAudio.load()
+    }
+    if (targetTime !== undefined) {
+      const seek = () => {
+        if (timelineAudioSource !== source || timelineSelectionVersion !== version) return
+        timelineAudio.currentTime = Math.max(0, Math.min(timelineAudio.duration || timelineDuration(segment), targetTime))
+      }
+      if (timelineAudio.readyState >= 1) seek()
+      else {
+        timelinePendingSeek = { source, version, segment, targetTime }
+        if (timelineMetadataSource !== source) {
+          timelineMetadataSource = source
+          timelineAudio.addEventListener('loadedmetadata', () => {
+            if (timelineMetadataSource === source) timelineMetadataSource = undefined
+            const pending = timelinePendingSeek
+            if (pending?.source !== source || pending.version !== timelineSelectionVersion || timelineAudioSource !== source) return
+            timelineAudio.currentTime = Math.max(0, Math.min(timelineAudio.duration || timelineDuration(pending.segment), pending.targetTime))
+            timelinePendingSeek = undefined
+          }, { once: true })
+        }
+      }
+    }
+    if (autoplay) {
+      timelineAutoAdvance = true
+      void timelineAudio.play().catch((error) => {
+        if (error?.name === 'AbortError' || generation !== timelinePlaybackGeneration) return
+        if (timelineAudioSource === source && timelineSelectionVersion === version) {
+          timelineAutoAdvance = false
+          timelinePlaybackStatus.textContent = 'Playback could not start. Tap Play to try again.'
+        }
+      })
+    }
+  }
+
+  function seekTimelineAudio(targetTime) {
+    const segment = timelineQueue[timelineQueueIndex]
+    if (!segment) return
+    loadTimelineAudio(segment, false, targetTime)
+  }
+
+  function refreshTimelineAudio() {
+    const segment = timelineQueue[timelineQueueIndex]
+    if (!segment || !timelineAudioSource) return
+    const currentTime = timelineAudio.currentTime || 0
+    const wasPlaying = !timelineAudio.paused
+    timelineAudioSource = undefined
+    loadTimelineAudio(segment, wasPlaying, currentTime)
+  }
+
+  function selectTimelineIndex(requestedIndex, autoplay = false, snapshotQueue = true) {
+    if (replayTimeline.length === 0) return
+    const index = Math.max(0, Math.min(replayTimeline.length - 1, requestedIndex))
+    const segment = replayTimeline[index]
+    if (snapshotQueue) {
+      timelineSelectionVersion += 1
+      timelineQueue = historicalReplayQueue(replayTimeline, segment.id)
+      timelineQueueIndex = 0
+    }
+    const queueIndex = snapshotQueue ? 0 : timelineQueue.findIndex((item) => String(item.id) === String(segment.id))
+    if (queueIndex >= 0) timelineQueueSegment(queueIndex)
+    if (autoplay && queueIndex >= 0) loadTimelineAudio(timelineQueue[queueIndex], true)
   }
 
   function selectLatestActiveTimeline(autoplay = false) {
-    if (!timelineActiveSlotAChannel) {
-      timelineTime.textContent = 'Waiting for receiver status…'
-      timelineOffset.textContent = 'Starting receiver…'
-      return
-    }
-    const index = latestActiveTimelineIndex()
-    if (index < 0) {
-      timelineAwaitingChannel = timelineActiveSlotAChannel
-      timelineRange.disabled = true
-      timelineLatest.disabled = true
-      timelineTime.textContent = `Waiting for ${channelDisplay(timelineActiveSlotAChannel)} audio…`
-      timelineOffset.textContent = channelFrequencyDisplay(timelineActiveSlotAChannel)
-      timelineAudio.pause()
-      timelineAudio.removeAttribute('src')
-      timelineAudio.load()
-      renderFrequencyMap()
-      return
-    }
-    timelineAwaitingChannel = undefined
-    timelineFollowingLive = true
-    timelineWaitingAtEdge = false
-    timelineRange.disabled = false
-    timelineLatest.disabled = false
-    selectTimelineIndex(index, autoplay)
+    if (replayTimeline.length === 0) return
+    selectTimelineIndex(replayTimeline.length - 1, autoplay)
   }
 
   function updateTimeline(segments) {
-    replayTimeline = segments.slice().reverse()
+    replayTimeline = sortHistoricalReplaySegments(segments)
     timelineRange.disabled = replayTimeline.length === 0
     timelineRange.max = String(Math.max(0, replayTimeline.length - 1))
     timelineLatest.disabled = replayTimeline.length === 0
     if (replayTimeline.length === 0) {
-      timelineAudio.removeAttribute('src')
-      timelineAudio.load()
-      timelineSegmentId = undefined
-      timelineTime.textContent = 'Waiting for audio…'
-      timelineOffset.textContent = 'The rolling buffer is filling.'
-      renderFrequencyMap()
-      return
-    }
-    if (timelineAwaitingChannel) {
-      const matchingIndex = replayTimeline.findLastIndex((segment) =>
-        segment.slot === 'A' && segment.channel === timelineAwaitingChannel
-      )
-      if (matchingIndex < 0) {
-        timelineRange.disabled = true
-        timelineLatest.disabled = true
-        timelineTime.textContent = `Waiting for ${channelDisplay(timelineAwaitingChannel)} audio…`
-        timelineOffset.textContent = channelFrequencyDisplay(timelineAwaitingChannel)
-        renderFrequencyMap()
-        return
+      if (timelineQueue.length === 0) {
+        timelineAudio.removeAttribute('src')
+        timelineAudio.load()
+        timelineSegmentId = undefined
+        timelineTime.textContent = 'Waiting for audio…'
+        timelineOffset.textContent = 'The rolling buffer is filling.'
+        timelineWaveformLoading.textContent = 'Select a recording to load its waveform…'
+        timelineWaveformLoading.hidden = false
       }
-      timelineAwaitingChannel = undefined
-      timelineRange.disabled = false
-      timelineLatest.disabled = false
-      selectTimelineIndex(matchingIndex)
       renderFrequencyMap()
       return
     }
     const oldest = new Date(replayTimeline[0].startedAt)
     timelineOldest.textContent = oldest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    const currentIndex = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
-    if (timelineFollowingLive && timelineWaitingAtEdge && currentIndex >= 0 && currentIndex < replayTimeline.length - 1) {
-      timelineWaitingAtEdge = false
-      selectTimelineIndex(currentIndex + 1, true)
-      renderFrequencyMap()
-      return
-    }
-    const selectedIndex = timelineFollowingLive
-      ? (currentIndex >= 0 && replayTimeline[currentIndex]?.channel === timelineActiveSlotAChannel
-          ? currentIndex
-          : latestActiveTimelineIndex())
-      : Math.max(0, currentIndex)
-    if (selectedIndex < 0) selectLatestActiveTimeline()
-    else selectTimelineIndex(selectedIndex)
+    const selectedIndex = replayTimeline.findIndex((segment) => String(segment.id) === String(timelineSegmentId))
+    if (selectedIndex >= 0) timelineRange.value = String(selectedIndex)
+    else if (!timelineSegmentId) selectLatestActiveTimeline()
     renderFrequencyMap()
   }
 
@@ -1080,58 +1251,105 @@
 
   function wavSamples(arrayBuffer) {
     const view = new DataView(arrayBuffer)
+    if (view.byteLength < 44) throw new Error('WAV header is incomplete')
     let offset = 12
     while (offset + 8 <= view.byteLength) {
       const chunk = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3))
       const length = view.getUint32(offset + 4, true)
-      if (chunk === 'data') return { view, offset: offset + 8, samples: Math.floor(length / 2) }
+      if (offset + 8 + length > view.byteLength) throw new Error('WAV data chunk is truncated')
+      if (chunk === 'data') {
+        const sampleRate = view.getUint32(24, true)
+        if (sampleRate <= 0 || length % 2 !== 0) throw new Error('WAV data format is invalid')
+        return { view, offset: offset + 8, samples: Math.floor(length / 2), sampleRate }
+      }
       offset += 8 + length + (length % 2)
     }
     throw new Error('WAV data chunk is missing')
   }
 
-  async function renderArchiveWaveform(waveform, audioUrl) {
-    if (waveform.dataset.loaded) return
-    waveform.dataset.loaded = 'loading'
+  function createWaveform(container, audio, decoded, duration, onInteraction) {
+    const { view, offset, samples } = decoded
+    const binCount = Math.min(160, Math.max(1, samples))
+    const peaks = new Float32Array(binCount)
+    let maximum = 0
+    for (let bin = 0; bin < binCount; bin += 1) {
+      const start = Math.floor(samples * bin / binCount)
+      const end = Math.max(start + 1, Math.floor(samples * (bin + 1) / binCount))
+      let peak = 0
+      const stride = Math.max(1, Math.floor((end - start) / 80))
+      for (let sample = start; sample < end; sample += stride) peak = Math.max(peak, Math.abs(view.getInt16(offset + sample * 2, true)))
+      peaks[bin] = peak / 32768
+      maximum = Math.max(maximum, peaks[bin])
+    }
+    if (maximum > 0) for (let bin = 0; bin < peaks.length; bin += 1) peaks[bin] /= maximum
+    const instance = window.WaveSurfer.create({
+      container,
+      media: audio,
+      peaks: [peaks],
+      duration,
+      height: 58,
+      barWidth: 3,
+      barGap: 2,
+      barRadius: 2,
+      normalize: true,
+      dragToSeek: true,
+      waveColor: 'rgba(25, 122, 104, 0.72)',
+      progressColor: 'rgba(25, 122, 104, 0.24)',
+      cursorColor: '#2767d8',
+      cursorWidth: 2
+    })
+    container.setAttribute('aria-label', 'Audio waveform. Click or drag to seek.')
+    if (onInteraction) instance.on('interaction', onInteraction)
+    return instance
+  }
+
+  function destroyTimelineWaveform() {
+    timelineWaveformController?.abort()
+    timelineWaveformController = undefined
+    timelineWaveSurfer?.destroy()
+    timelineWaveSurfer = undefined
+  }
+
+  function destroyArchiveWaveforms() {
+    for (const entry of archiveWaveSurfers.values()) {
+      entry.controller?.abort()
+      entry.instance?.destroy()
+    }
+    archiveWaveSurfers.clear()
+  }
+
+  async function renderArchiveWaveform(waveform, audioUrl, audio, fallbackDuration, onInteraction) {
+    if (archiveWaveSurfers.has(waveform)) return
+    const loading = waveform.querySelector('.waveform-loading')
+    const controller = new AbortController()
+    const entry = { controller, instance: null }
+    archiveWaveSurfers.set(waveform, entry)
+    if (loading) {
+      loading.textContent = 'Loading waveform…'
+      loading.hidden = false
+    }
     try {
-      const response = await fetch(`${audioUrl}&cleanup=raw&squelch=0`, { credentials: 'include' })
+      const response = await fetch(`${audioUrl}&cleanup=raw&squelch=0&quieting=100`, { credentials: 'include', signal: controller.signal })
       if (!response.ok) throw new Error(`Waveform request failed (${response.status})`)
-      const { view, offset, samples } = wavSamples(await response.arrayBuffer())
-      const bars = document.createElement('div')
-      bars.className = 'waveform-bars'
-      bars.setAttribute('role', 'img')
-      bars.setAttribute('aria-label', 'Audio waveform')
-      const binCount = 120
-      const peaks = []
-      for (let bin = 0; bin < binCount; bin += 1) {
-        const start = Math.floor(samples * bin / binCount)
-        const end = Math.max(start + 1, Math.floor(samples * (bin + 1) / binCount))
-        let peak = 0
-        for (let sample = start; sample < end; sample += Math.max(1, Math.floor((end - start) / 80))) {
-          peak = Math.max(peak, Math.abs(view.getInt16(offset + sample * 2, true)))
-        }
-        peaks.push(peak)
-      }
-      const maximum = Math.max(1, ...peaks)
-      for (const peak of peaks) {
-        const bar = document.createElement('i')
-        bar.className = 'waveform-bar'
-        bar.style.setProperty('--level', String(Math.max(.06, peak / maximum)))
-        bars.append(bar)
-      }
-      waveform.querySelector('.waveform-loading')?.remove()
-      waveform.prepend(bars)
-      waveform.dataset.loaded = 'true'
+      const decoded = wavSamples(await response.arrayBuffer())
+      if (controller.signal.aborted || !waveform.isConnected) return
+      const duration = decoded.sampleRate > 0 ? decoded.samples / decoded.sampleRate : fallbackDuration
+      entry.instance = createWaveform(waveform, audio, decoded, duration || fallbackDuration, onInteraction)
+      if (loading) loading.hidden = true
     } catch (error) {
-      waveform.dataset.loaded = 'error'
-      waveform.querySelector('.waveform-loading').textContent = 'Waveform unavailable'
+      if (controller.signal.aborted) return
+      archiveWaveSurfers.delete(waveform)
+      if (loading) {
+        loading.textContent = 'Waveform unavailable'
+        loading.hidden = false
+      }
     }
   }
 
   function setArchivePlayback(audio, download, cleanup, squelch, quieting) {
     const currentTime = audio.currentTime
     const wasPlaying = !audio.paused
-    const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}&quieting=${encodeURIComponent(quieting)}`
+    const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}&quieting=100`
     audio.src = source
     download.href = source
     audio.load()
@@ -1175,12 +1393,6 @@
     loading.className = 'waveform-loading'
     loading.textContent = 'Open to load waveform…'
     waveformTrack.append(loading)
-    const progress = document.createElement('span')
-    progress.className = 'archive-waveform-progress'
-    progress.setAttribute('aria-hidden', 'true')
-    const playhead = document.createElement('span')
-    playhead.className = 'archive-waveform-playhead'
-    playhead.setAttribute('aria-hidden', 'true')
     const seek = document.createElement('input')
     seek.className = 'archive-waveform-seek'
     seek.type = 'range'
@@ -1190,7 +1402,7 @@
     seek.value = '0'
     seek.setAttribute('aria-label', 'Seek within recording')
     seek.setAttribute('aria-valuetext', `0:00 of ${archiveTimeLabel(record.durationSeconds)}`)
-    waveformTrack.append(progress, playhead, seek)
+    waveformTrack.append(seek)
     waveform.append(waveformTrack)
 
     const audio = document.createElement('audio')
@@ -1224,9 +1436,7 @@
     const renderWaveformPlayback = () => {
       const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : record.durationSeconds
       const currentTime = Math.max(0, Math.min(duration, audio.currentTime || 0))
-      const percent = duration > 0 ? currentTime / duration * 100 : 0
       seek.max = String(Math.max(0.1, duration))
-      waveformTrack.style.setProperty('--playhead', `${percent}%`)
       seek.value = String(currentTime)
       seek.setAttribute('aria-valuetext', `${archiveTimeLabel(currentTime)} of ${archiveTimeLabel(duration)}`)
       playbackTime.textContent = `${archiveTimeLabel(currentTime)} / ${archiveTimeLabel(duration)}`
@@ -1259,43 +1469,45 @@
     const preferredCleanup = playbackPreference(`${preferenceKey}:cleanup`, timelineCleanup.value)
     cleanup.value = preferredCleanup
     cleanupLabel.append(cleanup)
-    const quietingLabel = document.createElement('label')
-    quietingLabel.className = 'quieting-control'
-    const quietingTitle = document.createElement('span')
-    quietingTitle.textContent = 'Between-transmission quieting'
-    const quietingValue = document.createElement('output')
-    const quieting = document.createElement('input')
-    quieting.type = 'range'
-    quieting.min = '0'
-    quieting.max = '100'
-    quieting.step = '1'
-    quieting.setAttribute('aria-label', 'Between-transmission quieting')
-    const storedQuieting = Number(storedPreference(`${preferenceKey}:quieting`, timelineQuieting.value))
-    quieting.value = String(Number.isFinite(storedQuieting) ? Math.min(100, Math.max(0, storedQuieting)) : 100)
-    quietingValue.value = `${quieting.value}%`
-    quietingValue.textContent = `${quieting.value}%`
-    quietingTitle.append(' ', quietingValue)
-    quietingLabel.append(quietingTitle, quieting)
-    controls.append(squelchLabel, cleanupLabel, quietingLabel)
+    controls.append(squelchLabel, cleanupLabel)
 
     const updatePlayback = () => {
       savePreference(`${preferenceKey}:cleanup`, cleanup.value)
       savePreference(`${preferenceKey}:squelch`, squelch.value)
       squelch.disabled = cleanup.value === 'modified'
-      quieting.disabled = cleanup.value === 'raw'
-      download.href = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup.value)}&squelch=${encodeURIComponent(squelch.value)}&quieting=${encodeURIComponent(quieting.value)}`
-      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, quieting.value)
+      download.href = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup.value)}&squelch=${encodeURIComponent(squelch.value)}&quieting=100`
+      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, 100)
     }
+    let pendingWaveformSeek
+    let waveformSeekWaiting = false
+    const seekFromWaveform = (targetTime) => {
+      if (audio.dataset.archivePlaybackActivated !== 'true' && !activateArchivePlayback(details, audio, updatePlayback)) return
+      if (audio.readyState >= 1) {
+        seekArchiveAudio(audio, targetTime, record.durationSeconds)
+        return
+      }
+      pendingWaveformSeek = targetTime
+      if (waveformSeekWaiting) return
+      waveformSeekWaiting = true
+      audio.addEventListener('loadedmetadata', () => {
+        waveformSeekWaiting = false
+        seekArchiveAudio(audio, pendingWaveformSeek, record.durationSeconds)
+      }, { once: true })
+    }
+    waveformTrack.addEventListener('pointerdown', (event) => {
+      if (event.target instanceof Element && event.target.closest('.transcript-marker')) return
+      if (details.open && audio.dataset.archivePlaybackActivated !== 'true') activateArchivePlayback(details, audio, updatePlayback)
+    }, true)
 
     bindArchivePlaybackButton(playButton, details, audio, () => {
       updatePlayback()
       renderWaveformPlayback()
-    }, () => { void renderArchiveWaveform(waveformTrack, audioUrl) }, playbackStatus)
+    }, () => { void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform) }, playbackStatus)
     bindArchiveSkipButton(skipButton, details, audio, updatePlayback, () => {
-      void renderArchiveWaveform(waveformTrack, audioUrl)
+      void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform)
     }, record.durationSeconds)
     bindArchiveWaveformSeek(seek, details, audio, updatePlayback, () => {
-      void renderArchiveWaveform(waveformTrack, audioUrl)
+      void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform)
     }, record.durationSeconds)
 
     const log = document.createElement('div')
@@ -1377,17 +1589,11 @@
       }
     })
     actions.append(download, originalDownload, copy)
-    quieting.addEventListener('input', () => {
-      quietingValue.value = `${quieting.value}%`
-      quietingValue.textContent = `${quieting.value}%`
-      savePreference(`${preferenceKey}:quieting`, quieting.value)
-    })
-    quieting.addEventListener('change', updatePlayback)
     cleanup.addEventListener('change', updatePlayback)
     squelch.addEventListener('change', updatePlayback)
     updatePlayback()
     details.addEventListener('toggle', () => {
-      if (details.open) void renderArchiveWaveform(waveformTrack, audioUrl)
+      if (details.open) void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform)
     })
     body.append(waveform, audio, controls, log, metadata, actions)
     details.append(summary, body)
@@ -1617,6 +1823,7 @@
       const signature = sessionRenderSignature(sessions, true)
       if (signature !== archiveRenderSignature && !hasPlayingAudio(archiveList)) {
         const expanded = new Set([...archiveList.querySelectorAll('details[open]')].map((details) => details.dataset.sessionKey))
+        destroyArchiveWaveforms()
         archiveList.replaceChildren(...sessions.map(archiveRow))
         for (const details of archiveList.querySelectorAll('details')) {
           if (expanded.has(details.dataset.sessionKey)) details.open = true
@@ -1796,40 +2003,88 @@
   replaySquelch.addEventListener('change', () => {
     replaySquelchTouched = true
     savePreference('replay-squelch', replaySquelch.value)
+    refreshTimelineAudio()
+    if (liveListening) startLiveListening()
     void updateReplay()
   })
   timelineRange.addEventListener('input', () => {
-    timelineFollowingLive = false
-    timelineWaitingAtEdge = false
     selectTimelineIndex(Number(timelineRange.value))
   })
   timelineLatest.addEventListener('click', () => {
-    selectLatestActiveTimeline(true)
+    selectLatestActiveTimeline()
   })
   timelineCleanup.addEventListener('change', () => {
     savePreference('timeline-cleanup', timelineCleanup.value)
     replaySquelch.disabled = timelineCleanup.value === 'modified'
-    timelineQuietingControl.hidden = timelineCleanup.value === 'raw'
-    timelineQuieting.disabled = timelineCleanup.value === 'raw'
-    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
-    if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
+    refreshTimelineAudio()
+    if (liveListening) startLiveListening()
   })
-  timelineQuieting.addEventListener('input', () => {
-    timelineQuietingValue.value = `${timelineQuieting.value}%`
-    timelineQuietingValue.textContent = `${timelineQuieting.value}%`
-    savePreference('timeline-quieting', timelineQuieting.value)
+  liveListen.addEventListener('click', () => {
+    if (liveListening) stopLiveListening()
+    else startLiveListening()
   })
-  timelineQuieting.addEventListener('change', () => {
-    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
-    if (index >= 0) selectTimelineIndex(index, !timelineAudio.paused)
+  timelinePlay.addEventListener('click', () => {
+    if (timelineQueueIndex < 0 || !timelineQueue[timelineQueueIndex]) return
+    if (!timelineAudio.paused) {
+      timelineAutoAdvance = false
+      timelineAudio.pause()
+    }
+    else {
+      pauseOtherAudio(timelineAudio)
+      loadTimelineAudio(timelineQueue[timelineQueueIndex], true)
+    }
   })
+  timelineSkip.addEventListener('click', () => {
+    const segment = timelineQueue[timelineQueueIndex]
+    if (!segment) return
+    const target = (timelineAudio.currentTime || 0) + 5
+    seekTimelineAudio(target)
+  })
+  timelineSeek.addEventListener('input', () => {
+    seekTimelineAudio(Number(timelineSeek.value))
+  })
+  timelineWaveformTrack.addEventListener('pointerdown', () => {
+    const segment = timelineQueue[timelineQueueIndex]
+    if (segment && !timelineAudioSource) loadTimelineAudio(segment)
+  }, true)
   replaySquelch.disabled = timelineCleanup.value === 'modified'
-  timelineQuietingControl.hidden = timelineCleanup.value === 'raw'
-  timelineQuieting.disabled = timelineCleanup.value === 'raw'
+  for (const event of ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'seeked']) timelineAudio.addEventListener(event, updateTimelinePlayback)
+  timelineAudio.addEventListener('play', () => {
+    timelineAutoAdvance = true
+    timelinePlaybackStatus.textContent = ''
+  })
   timelineAudio.addEventListener('ended', () => {
-    const index = replayTimeline.findIndex((segment) => segment.id === timelineSegmentId)
-    if (index >= 0 && index < replayTimeline.length - 1) selectTimelineIndex(index + 1, true)
-    else if (timelineFollowingLive) timelineWaitingAtEdge = true
+    if (timelineAutoAdvance && timelineQueueIndex + 1 < timelineQueue.length) {
+      timelineQueueSegment(timelineQueueIndex + 1)
+      pauseOtherAudio(timelineAudio)
+      loadTimelineAudio(timelineQueue[timelineQueueIndex], true)
+    } else {
+      timelineAutoAdvance = false
+      timelinePlaybackStatus.textContent = 'Historical playback ended.'
+    }
+  })
+  timelineAudio.addEventListener('error', () => {
+    const expectedCurrentSrc = timelineAudioSource && new URL(timelineAudioSource, window.location.href).href
+    if (!expectedCurrentSrc || (timelineAudio.currentSrc && timelineAudio.currentSrc !== expectedCurrentSrc)) return
+    if (timelineAutoAdvance && timelineQueueIndex + 1 < timelineQueue.length) {
+      timelinePlaybackStatus.textContent = 'Recording unavailable; skipping to the next segment.'
+      timelineQueueSegment(timelineQueueIndex + 1)
+      loadTimelineAudio(timelineQueue[timelineQueueIndex], true)
+    } else {
+      timelineAutoAdvance = false
+      timelinePlaybackStatus.textContent = 'Recording playback is unavailable.'
+    }
+  })
+  liveAudio.addEventListener('error', () => {
+    const expectedCurrentSrc = liveAudioSource && new URL(liveAudioSource, window.location.href).href
+    if (liveListening && expectedCurrentSrc && (!liveAudio.currentSrc || liveAudio.currentSrc === expectedCurrentSrc)) stopLiveListening('Live audio stopped because the stream is unavailable.')
+  })
+  liveAudio.addEventListener('ended', () => {
+    if (liveListening) stopLiveListening('Live stream ended. Tap Listen live to reconnect.')
+  })
+  window.addEventListener('pagehide', () => {
+    destroyTimelineWaveform()
+    destroyArchiveWaveforms()
   })
   document.addEventListener('play', (event) => {
     if (event.target instanceof HTMLAudioElement) {

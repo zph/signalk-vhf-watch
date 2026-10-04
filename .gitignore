@@ -4,3 +4,5 @@ dist/
 *.tgz
 *.deb
 .DS_Store
+!public/vendor/
+!public/vendor/**
