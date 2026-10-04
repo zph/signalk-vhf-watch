@@ -26,8 +26,9 @@ without radio hardware.
 ## RTL-SDR receiver
 
 Install the `rtl_sdr` utility on the Signal K host, then make the SDR USB device visible to Signal K.
-The npm package includes a statically linked `linux-arm64` sidecar, so Go is not required on the Pi;
-the configurable sidecar path supports development builds and future platforms. Choose `RTL-SDR
+The npm package includes statically linked `linux-arm64` and `linux-x64` sidecars, so Go is not
+required on Raspberry Pi or x86-64 Linux; the configurable sidecar path supports development builds
+and future platforms. Choose `RTL-SDR
 wideband` in the plugin configuration and restart the plugin. The native sidecar opens the tuner at 2.4 MS/s and performs the audio channelizers plus a sparse whole-band activity FFT;
 only low-rate PCM crosses into JavaScript. Independent channelizers provide Slot A voice and either
 an uninterrupted 24 kHz Channel 70 DSC decoder or Slot B voice. When Slot B carries voice, a
@@ -253,10 +254,10 @@ npm test
 npm pack --dry-run
 ```
 
-Go is a build dependency only. Published artifacts should be complete architecture-specific npm
-packages containing `bin/<platform>-<architecture>/vhf-watch-sidecar`; the current experimental
-artifact contains Linux ARM64. A release build matrix should compile and test each static sidecar,
-insert it into the matching package, and attach those packages to the same GitHub release.
+Go is a build dependency only. The package contains Linux ARM64 and Linux x86-64 sidecars at
+`bin/linux-arm64/vhf-watch-sidecar` and `bin/linux-x64/vhf-watch-sidecar`. Build them with
+`CGO_ENABLED=0` for static, architecture-specific executables; run each on its target Linux
+architecture before release.
 
 The receiver, rolling buffer, HTTP API, and web UI are deliberately independent of Binnacle so this
 plugin can mature before a chart-client integration is added.

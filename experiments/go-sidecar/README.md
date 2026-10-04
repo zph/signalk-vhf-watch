@@ -5,10 +5,12 @@ reports bounded throughput. Production `stream` mode owns `rtl_sdr`, fully chann
 and 24 kHz Channel 70 DSC, and emits framed PCM to the Signal K plugin. JavaScript never handles the
 2.4 MS/s raw IQ stream.
 
-Build a static Raspberry Pi binary from macOS or Linux:
+Build static Linux binaries from macOS or Linux (run from this directory):
 
 ```sh
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o vhf-go-sidecar .
+mkdir -p ../../bin/linux-arm64 ../../bin/linux-x64
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../../bin/linux-arm64/vhf-watch-sidecar .
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../../bin/linux-x64/vhf-watch-sidecar .
 ```
 
 The plugin starts stream mode itself. Its stdin accepts `tune <frequency-hz>` commands, allowing an
