@@ -54,11 +54,11 @@ test('prechecks only new audio, preserves the original overlap for Base, and fai
 
   assert.deepEqual(readFileSync(vadLog, 'utf8').trim().split(/\r?\n/), ['128044 1', '64044 3'])
   assert.deepEqual(readFileSync(whisperLog, 'utf8').trim().split(/\r?\n/), ['128044 1', '96044 2'])
-  assert.deepEqual(manager.status().speechGate, { mode: 'observe', checked: 1, wouldSkip: 0, skipped: 0, failOpen: 1 })
+  assert.deepEqual(manager.status().speechGate, { mode: 'filter', checked: 1, wouldSkip: 0, skipped: 0, failOpen: 1 })
   manager.close()
 })
 
-test('production observation records a no-speech candidate and still sends full audio to Base', async () => {
+test('production skips Base for valid no-speech while preserving the raw replay audio', async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'vhf-vad-silence-'))
   const model = path.join(dir, 'vad.bin')
   const vad = path.join(dir, 'vad')
@@ -78,14 +78,14 @@ test('production observation records a no-speech candidate and still sends full 
   const original = Buffer.from(segment!.wav)
   manager.enqueue(segment!, 20)
   await waitFor(() => segment!.transcription?.status === 'complete')
-  assert.deepEqual(segment!.transcription, { status: 'complete', text: 'coast guard call' })
-  assert.equal(existsSync(whisperLog), true)
+  assert.deepEqual(segment!.transcription, { status: 'complete', text: '' })
+  assert.equal(existsSync(whisperLog), false, 'valid no-speech result skips the Whisper CLI')
   assert.deepEqual(segment!.wav, original)
-  assert.deepEqual(manager.status().speechGate, { mode: 'observe', checked: 1, wouldSkip: 1, skipped: 0, failOpen: 0 })
+  assert.deepEqual(manager.status().speechGate, { mode: 'filter', checked: 1, wouldSkip: 1, skipped: 1, failOpen: 0 })
   manager.close()
 })
 
-test('internal filter mode can skip a valid no-speech batch without changing the retained WAV', async () => {
+test('test-only observe mode still sends a valid no-speech batch to Base', async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'vhf-vad-filter-'))
   const model = path.join(dir, 'vad.bin')
   const vad = path.join(dir, 'vad')
@@ -98,7 +98,7 @@ test('internal filter mode can skip a valid no-speech batch without changing the
   const manager = new TranscriptionManager(path.join(dir, 'settings.json'), whisper, {
     batchSeconds: 2, idleMs: 5, modelsDir: dir,
     vad: new WhisperVadProbe({ command: vad, model }),
-    vadMode: 'filter'
+    vadMode: 'observe'
   })
   await manager.setEnabled(true)
   const replay = new RollingReplay(16_000, 2, 1, '16')
@@ -106,10 +106,10 @@ test('internal filter mode can skip a valid no-speech batch without changing the
   const original = Buffer.from(segment!.wav)
   manager.enqueue(segment!, 20)
   await waitFor(() => segment!.transcription?.status === 'complete')
-  assert.deepEqual(segment!.transcription, { status: 'complete', text: '' })
-  assert.equal(existsSync(whisperLog), false)
+  assert.deepEqual(segment!.transcription, { status: 'complete', text: 'coast guard call' })
+  assert.equal(existsSync(whisperLog), true)
   assert.deepEqual(segment!.wav, original)
-  assert.deepEqual(manager.status().speechGate, { mode: 'filter', checked: 1, wouldSkip: 1, skipped: 1, failOpen: 0 })
+  assert.deepEqual(manager.status().speechGate, { mode: 'observe', checked: 1, wouldSkip: 1, skipped: 0, failOpen: 0 })
   manager.close()
 })
 

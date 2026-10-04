@@ -72,7 +72,7 @@ interface TranscriptionOptions {
   modelsDir?: string
   denoiser?: RnnoiseDenoiser
   vad?: WhisperVadProbe
-  /** Test-only behavior switch; production observes VAD but never drops a batch. */
+  /** Test-only override; production filters valid no-speech VAD results. */
   vadMode?: 'observe' | 'filter'
 }
 
@@ -248,7 +248,7 @@ export class TranscriptionManager {
     this.#modelsDir = options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
     this.#denoiser = options.denoiser
     this.#vad = options.vad ?? new WhisperVadProbe()
-    this.#vadMode = options.vadMode ?? 'observe'
+    this.#vadMode = options.vadMode ?? 'filter'
     const settings = this.#load()
     this.#enabled = settings.enabled
     this.#model = settings.model

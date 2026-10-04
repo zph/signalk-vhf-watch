@@ -192,8 +192,10 @@ flowchart TD
     L --> H
     D --> M{Transcription enabled?}
     M -->|Yes| N[RF squelch selects active audio]
-    N --> O[Silero estimates speech presence<br/>when available]
-    O --> P[Whisper gets full original audio<br/>including no-speech results]
+    N --> O[Silero VAD checks new audio<br/>when helper and 16 kHz are available]
+    O -->|Speech| P[Whisper gets full original window and overlap]
+    O -->|Valid no-speech| S[Skip Whisper; keep replay audio intact]
+    O -->|Unavailable or error| P
     P --> Q[Transcript and source audio archive]
     Q --> F
     M -->|No| R[No transcription]
@@ -229,25 +231,26 @@ seconds. The decode watchdog is at least 90 seconds and scales to twice the audi
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
 processed one at a time; audio is not uploaded.
 
-### Silero speech detection during live transcription
+### Silero VAD gate during live transcription
 
 When the optional runtime is available and the audio is 16 kHz, the one-thread Silero VAD checks each
-eligible live transcription batch, excluding the retained overlap, and classifies it as speech or
-no-speech. The live plugin records valid no-speech results as would-skip candidates, but production
-still sends every eligible batch to Base with its full original audio and context. Silero estimates
-speech presence; it does not identify a speaker or prove that a positive result is human speech. The
-separate RF squelch setting determines which batches are eligible for transcription. Missing
-helpers, unsupported rates, uncertain output, and helper errors fail open to Base. The VAD does not
-trim or rewrite replay or archived audio. Its live result remains advisory: the 0.35 threshold
-missed some previously transcribed records, while lower thresholds also
-detected synthetic noise and hum; those radio records were not independently labeled. The helper
-accepts 80 ms speech segments and adds 200 ms of padding.
+eligible live transcription batch, excluding retained overlap, and classifies it as speech or
+no-speech. A valid no-speech result skips Whisper for that batch and increments the `skipped` status
+counter. Detected speech sends the full original window, including overlap, to Whisper. Missing
+helpers, unsupported rates, malformed results, and helper errors fail open to Whisper. Silero
+estimates speech presence; it does not identify a speaker or prove that a positive result is human
+speech. RF squelch separately determines which batches are eligible for transcription. The VAD does
+not trim or rewrite replay audio, and skipped batches remain playable from the rolling buffer. A
+previous Pi trial using the 0.35 threshold returned no segments for four of six archived records with
+prior nonempty transcripts; those transcripts were not ground-truth labels, so recall is not
+established. Lower thresholds also triggered on synthetic noise and hum. The helper accepts 80 ms
+speech segments and adds 200 ms of padding.
 
 Completed batches with recognized words are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
 compressed WAV. Empty results and known non-speech Whisper annotations are omitted from this durable
-archive. In live transcription, VAD estimates speech presence but does not gate Base ASR. Speech
-that Base misses remains available in the bounded rolling replay buffer until that replay expires.
+archive. In live transcription, VAD gates Whisper only on a valid no-speech result. Audio from
+skipped batches remains available in the bounded rolling replay buffer until that replay expires.
 The Transcript archive section combines adjacent records on the same channel into
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
@@ -270,7 +273,7 @@ packaging/build-whisper-runtime-deb.sh /path/to/whisper.cpp/build/bin /tmp \
 The runtime package includes the matching `whisper-vad-speech-segments` helper and pinned Silero VAD
 model. The build checks the VAD model's SHA-256 and includes its MIT license; the model is installed
 under a separate `vad/` directory and does not appear as a selectable transcription model. The
-observer currently uses the 0.35 threshold for measurement, not to suppress Base transcription.
+Live transcription uses the 0.35 threshold to skip Whisper only for valid no-speech results.
 
 The measured Pi CPU, memory, thermal, speed, and sample-quality tradeoffs are recorded in
 [`docs/WHISPER_BENCHMARK.md`](docs/WHISPER_BENCHMARK.md).
