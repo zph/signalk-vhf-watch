@@ -89,12 +89,12 @@ pairs.
 
 | 10-second workload | Baseline | NEON | Elapsed reduction |
 | --- | ---: | ---: | ---: |
-| Fixed WX4 voice + DSC | 1.830 s | 1.109 s | 39% |
-| Wideband A16 + DSC + 45-channel scanner | 1.841 s | 1.061 s | 42% |
-| Wideband A16 + B68 + DSC + 45-channel scanner | 1.904 s | 1.108 s | 42% |
+| Fixed WX4 voice + DSC | 1.831 s | 1.109 s | 39% |
+| Wideband A16 + DSC + 45-channel scanner | 1.840 s | 1.061 s | 42% |
+| Wideband A16 + B68 + DSC + 45-channel scanner | 1.901 s | 1.101 s | 42% |
 
-Across the three sequential scenarios, median process user CPU time fell from 13.224 s to 7.807 s
-(41%); median total wall time fell from 5.779 s to 3.424 s. The paired runs peaked at 72.5°C with
+Across the three sequential scenarios, mean process user CPU time fell from 13.227 s to 7.809 s
+(41%); mean total wall time fell from 5.765 s to 3.461 s. The paired runs peaked at 72.5°C with
 power flags clear. Pi FIR microbenchmarks also separated the contiguous layout gain from NEON:
 
 | FIR | Original ring | Contiguous scalar | NEON |
@@ -104,7 +104,8 @@ power flags clear. Pi FIR microbenchmarks also separated the contiguous layout g
 
 The measured 39–42% reduction is from offline replay, not a claim about live RF load or reception
 quality. The stored fixture and raw logs remain on the Pi; benchmark output contains only aggregate
-timings, counts, and hashes.
+timings, counts, and hashes. See the [full validation record](../NEON_DSP_VALIDATION.md) for exact
+commands, artifacts, repeated timings, and live-window limitations.
 
 ```sh
 VHF_BENCH_IQ_PATH=/path/to/private.cu8 \
