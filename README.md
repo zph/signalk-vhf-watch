@@ -154,6 +154,47 @@ the durable archive keeps that complete source minute. New archive rows show the
 carrier-active interval plus one second before and after. Existing rows keep their saved activity
 window; the complete original recording remains available through **Original WAV**.
 
+### How audio processing reduces noise
+
+Noise reduction starts in the receiver: two stages of FIR filtering constrain the demodulator to the
+selected channel's 9 kHz passband. The receiver then stores unsquelched, demodulated PCM with
+time-local discriminator-noise measurements. Keeping that source intact lets playback apply cleanup
+without changing replay or archive audio.
+
+**Raw** playback can use the operator's Raw playback squelch setting against the receiver's
+discriminator-noise measurements when those measurements are available; archived clips use an
+audio-level gate. **Modified** playback runs the source through the pinned streaming
+GTCRN speech enhancer, then a gradual soft gate. For live and rolling replay, the gate uses receiver
+quality measurements; archived clips use a detector based on the raw audio's level and spectral
+shape. Short or uncertain regions remain open to reduce the chance of cutting off speech. Fixed gain
+and peak protection make the result easier to hear without modifying the stored source. This is a
+playback aid, so transcription continues to use the original FIR-demodulated audio.
+
+```mermaid
+flowchart TD
+    A[Marine VHF signal] --> B[Channelizer FIR filters<br/>9 kHz passband]
+    B --> C[FM demodulation]
+    C --> D[Raw PCM plus discriminator-noise measurements]
+    D --> E[Bounded rolling replay]
+    E --> F{Playback mode}
+    F -->|Raw| G[Receiver-noise squelch when measured<br/>archived clips use audio-level gate]
+    G --> H[Playback]
+    F -->|Modified| I[GTCRN speech enhancement]
+    I --> J{Gate evidence}
+    D -. live or rolling quality .-> J
+    Q -. archived clip audio .-> J
+    J --> K[Gradual soft gate<br/>uncertain regions stay open]
+    K --> L[Fixed gain and peak protection]
+    L --> H
+    D --> M{Transcription enabled?}
+    M -->|Yes| N[RF squelch selects active audio]
+    N --> O[Optional VAD observation<br/>when helper is available]
+    O --> P[Whisper gets original audio]
+    P --> Q[Transcript and source audio archive]
+    Q --> F
+    M -->|No| R[No transcription]
+```
+
 The playback runtime is optional and is not part of the npm plugin package. To build it from this
 repository on Debian arm64, run `packaging/build-vhf-playback-runtime-deb.sh /tmp/vhf-playback-deb`
 from the plugin checkout, then install the generated package with
