@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 52
+  const CLIENT_BUILD = 53
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -55,6 +55,8 @@
   const transcriptionModel = $('#transcription-model')
   const transcriptionThreads = $('#transcription-threads')
   const transcriptionStatus = $('#transcription-status')
+  const transcriptionProgressState = $('#transcription-progress-state')
+  const transcriptionProgressDetail = $('#transcription-progress-detail')
   const archiveList = $('#archive-list')
   const archiveAllView = $('#archive-all-view')
   const archiveViewAll = $('#archive-view-all')
@@ -208,6 +210,35 @@
     return frequencyHz ? `${(frequencyHz / 1_000_000).toFixed(3)} MHz` : 'Frequency unavailable'
   }
 
+  function renderTranscriptionProgress(transcription) {
+    let label = 'Unavailable'
+    let detail = 'Transcription status is unavailable.'
+    let state = 'unavailable'
+    if (transcription && !transcription.enabled) {
+      label = 'Off'
+      detail = 'Transcription is switched off.'
+    } else if (transcription?.error) {
+      label = 'Needs attention'
+      detail = transcription.error
+      state = 'error'
+    } else if (transcription?.available && transcription.backlog) {
+      const { clips, seconds, processingClips } = transcription.backlog
+      if (clips === 0) {
+        label = 'Caught up'
+        detail = 'No clips waiting for transcription.'
+        state = 'caught-up'
+      } else {
+        label = 'Backlog'
+        detail = `${clips} clip${clips === 1 ? '' : 's'} unfinished · ${Math.ceil(seconds)} s of audio`
+        detail += processingClips ? ` · ${processingClips} processing` : ' · waiting to start'
+        state = 'backlog'
+      }
+    }
+    transcriptionProgressState.textContent = label
+    transcriptionProgressState.dataset.state = state
+    transcriptionProgressDetail.textContent = detail
+  }
+
   function renderStatus(status) {
     if (status.uiVersion && status.uiVersion !== CLIENT_BUILD) {
       const reloadKey = `vhf-watch:reload:${status.uiVersion}`
@@ -301,6 +332,7 @@
     timelineReceiverRows = receiverRows
     if (receiverRowsChanged) renderFrequencyMap()
     const transcription = status.transcription
+    renderTranscriptionProgress(transcription)
     const modelSignature = JSON.stringify(transcription.availableModels)
     if (transcriptionModel.dataset.models !== modelSignature) {
       transcriptionModel.replaceChildren(...transcription.availableModels.map((model) => {
@@ -393,6 +425,7 @@
       latestStatus = await request('status')
       renderStatus(latestStatus)
     } catch (error) {
+      renderTranscriptionProgress(undefined)
       setConnection('error', error.message)
     }
   }

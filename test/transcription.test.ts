@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -8,6 +8,37 @@ import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionActiveSeco
 import { TranscriptArchive } from '../src/transcript-archive'
 import { RnnoiseDenoiser } from '../src/rnnoise'
 import { WhisperVadProbe } from '../src/whisper-vad'
+
+test('backlog includes active, queued and pending clips without counting ASR overlap twice', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-backlog-'))
+  const command = path.join(directory, 'fake-whisper')
+  const release = `${command}.release`
+  writeFileSync(command, '#!/bin/sh\nwhile [ ! -f "${0}.release" ]; do sleep 0.01; done\nprintf "channel one six test\\n"\n')
+  chmodSync(command, 0o755)
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'test model')
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    modelsDir: directory, batchSeconds: 2, overlapSeconds: 1, idleMs: 100
+  })
+  try {
+    await manager.setEnabled(true)
+    assert.deepEqual(manager.status().backlog, { clips: 0, seconds: 0, processingClips: 0 })
+    const replay = new RollingReplay(8_000, 1, 1, '16')
+    const segments = replay.append(Buffer.alloc(8_000 * 2 * 4.5), Date.now(), 0.1)
+    segments.push(replay.flush()!)
+    for (const segment of segments) manager.enqueue(segment, 20)
+    assert.deepEqual(manager.status().backlog, { clips: 5, seconds: 4.5, processingClips: 2 })
+    writeFileSync(release, '')
+    const deadline = Date.now() + 5_000
+    while (manager.status().backlog.clips > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.deepEqual(manager.status().backlog, { clips: 0, seconds: 0, processingClips: 0 })
+    assert.ok(segments.every((segment) => segment.transcription?.status === 'complete'))
+  } finally {
+    manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('reconciles fuzzy text repeated by overlapping transcription windows', () => {
   const previous = 'Conditions improve Wednesday night with locally hazardous conditions across the northern outer waters likely to continue.'
@@ -206,13 +237,17 @@ test('feeds the half-wet RNNoise output to Whisper without modifying archived so
   await manager.setEnabled(true)
   const replay = new RollingReplay(8_000, 2, 1, '16')
   const [segment] = replay.append(Buffer.alloc(32_000, 1), Date.UTC(2026, 8, 29), 0.1)
-  manager.enqueue(segment!, 20)
-  for (let attempt = 0; attempt < 100 && segment!.transcription?.status !== 'complete'; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10))
+  try {
+    manager.enqueue(segment!, 20)
+    const deadline = Date.now() + 5_000
+    while (segment!.transcription?.status !== 'complete' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(segment!.transcription?.text, '2')
+    assert.equal(manager.archiveWav(archive.list()[0]!.id)?.subarray(44, 45)[0], 1)
+  } finally {
+    manager.close()
   }
-  assert.equal(segment!.transcription?.text, '2')
-  assert.equal(manager.archiveWav(archive.list()[0]!.id)?.subarray(44, 45)[0], 1)
-  manager.close()
 })
 
 test('batches adjacent replay slices into a longer radio-speech window', async () => {

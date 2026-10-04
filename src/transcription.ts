@@ -31,6 +31,8 @@ export interface TranscriptionStatus {
   available: boolean
   state: 'disabled' | 'unavailable' | 'idle' | 'transcribing'
   queued: number
+  /** Unfinished clips and input audio seconds, excluding repeated overlap; not a completion ETA. */
+  backlog: { clips: number; seconds: number; processingClips: number }
   engine: string
   model: string
   threads: number
@@ -222,6 +224,7 @@ export class TranscriptionManager {
   #pendingSquelch?: number
   #pendingTimer?: ReturnType<typeof setTimeout>
   #running = false
+  #activeBatch?: TranscriptionBatch
   #child?: ChildProcess
   #currentAbort?: AbortController
   #vadChecked = 0
@@ -259,6 +262,7 @@ export class TranscriptionManager {
       available,
       state: !this.#enabled ? 'disabled' : !available ? 'unavailable' : this.#running ? 'transcribing' : 'idle',
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
+      backlog: this.#backlog(),
       engine: `whisper.cpp ${this.#model}${this.#denoiser?.available() ? ' · RNNoise 50%' : ''}`,
       model: this.#model,
       threads: this.#threads,
@@ -274,6 +278,22 @@ export class TranscriptionManager {
       ...(this.#archive ? { archive: this.#archive.status() } : {}),
       ...(this.#error ? { error: this.#error } : {})
     }
+  }
+
+  #backlog(): TranscriptionStatus['backlog'] {
+    let clips = 0
+    let seconds = 0
+    const add = (segments: ReplaySegment[], overlapCount: number) => {
+      for (let index = overlapCount; index < segments.length; index += 1) {
+        clips += 1
+        seconds += segments[index]!.durationSeconds
+      }
+    }
+    if (this.#activeBatch) add(this.#activeBatch.segments, this.#activeBatch.overlapSegmentCount)
+    const processingClips = clips
+    for (const batch of this.#queue) add(batch.segments, batch.overlapSegmentCount)
+    add(this.#pending, this.#pendingOverlapCount)
+    return { clips, seconds, processingClips }
   }
 
   available(): boolean {
@@ -458,6 +478,7 @@ export class TranscriptionManager {
     try {
       while (this.#enabled && this.#queue.length > 0) {
         const batch = this.#queue.shift()!
+        this.#activeBatch = batch
         const outputSegments = batch.segments.slice(batch.overlapSegmentCount)
         for (const segment of outputSegments) segment.transcription = { status: 'transcribing', text: '' }
         try {
@@ -483,10 +504,13 @@ export class TranscriptionManager {
           const message = error instanceof Error ? error.message : String(error)
           for (const segment of outputSegments) segment.transcription = { status: 'error', text: '', error: message }
           this.#error = message
+        } finally {
+          this.#activeBatch = undefined
         }
       }
     } finally {
       this.#running = false
+      this.#activeBatch = undefined
       this.#child = undefined
     }
   }

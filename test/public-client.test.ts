@@ -3,6 +3,33 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 
+test('sidebar distinguishes caught-up, unfinished, off and unavailable transcription', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const root = path.resolve(__dirname, '../..')
+  const script = readFileSync(path.join(root, 'public/main.js'), 'utf8')
+  const html = readFileSync(path.join(root, 'public/index.html'), 'utf8')
+  assert.match(html, /id="transcription-progress-detail" role="status" aria-live="polite"/)
+  const source = script.slice(script.indexOf('  function renderTranscriptionProgress('), script.indexOf('  function renderStatus('))
+  const state = { textContent: '', dataset: { state: '' } }
+  const detail = { textContent: '' }
+  const render = runInNewContext(`(${source})`, {
+    transcriptionProgressState: state, transcriptionProgressDetail: detail
+  })
+  render({ enabled: true, available: true, backlog: { clips: 0, seconds: 0, processingClips: 0 } })
+  assert.equal(state.textContent, 'Caught up')
+  assert.equal(state.dataset.state, 'caught-up')
+  render({ enabled: true, available: true, backlog: { clips: 3, seconds: 61.2, processingClips: 1 } })
+  assert.equal(state.textContent, 'Backlog')
+  assert.equal(detail.textContent, '3 clips unfinished · 62 s of audio · 1 processing')
+  render({ enabled: true, available: true, error: 'Failed to transcribe' })
+  assert.equal(state.textContent, 'Needs attention')
+  render({ enabled: false })
+  assert.equal(state.textContent, 'Off')
+  render(undefined)
+  assert.equal(state.textContent, 'Unavailable')
+  assert.equal(state.dataset.state, 'unavailable')
+})
+
 test('minimal web client keeps receiver monitoring and one unified activity workspace', () => {
   const root = path.resolve(__dirname, '../..')
   const html = readFileSync(path.join(root, 'public/index.html'), 'utf8')
@@ -199,9 +226,9 @@ test('playback exposes only Raw and default Modified and migrates legacy saved c
   assert.match(script, /playbackPreference\('timeline-cleanup', timelineCleanup\.value\)/)
   assert.match(script, /playbackPreference\(`\$\{preferenceKey\}:cleanup`, timelineCleanup\.value\)/)
   assert.match(script, /replaySquelch\.disabled = timelineCleanup\.value === 'modified'/)
-  assert.match(script, /const CLIENT_BUILD = 52/)
-  assert.match(api, /const UI_VERSION = 52/)
-  assert.match(html, /main\.js\?v=52/)
+  assert.match(script, /const CLIENT_BUILD = 53/)
+  assert.match(api, /const UI_VERSION = 53/)
+  assert.match(html, /main\.js\?v=53/)
   assert.doesNotMatch(html, /Between-transmission quieting/)
   assert.doesNotMatch(script, /timeline-quieting|quieting\.type = 'range'/)
   assert.match(script, /quieting=100/)

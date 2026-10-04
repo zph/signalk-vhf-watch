@@ -11,7 +11,7 @@ import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 
-const UI_VERSION = 52
+const UI_VERSION = 53
 
 interface ByteRange {
   start: number
