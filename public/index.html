@@ -97,11 +97,13 @@
           <div id="timeline-waveform" class="archive-waveform timeline-waveform">
             <div id="timeline-waveform-track" class="archive-waveform-track">
               <span id="timeline-waveform-loading" class="waveform-loading">Select a recording to load its waveform…</span>
+              <span id="timeline-waveform-hover" class="waveform-hover-time" hidden aria-hidden="true"></span>
+              <span id="timeline-waveform-spinner" class="waveform-playback-spinner" hidden role="status" aria-label="Loading playback"></span>
               <input id="timeline-seek" class="archive-waveform-seek" type="range" min="0" max="0.1" step="0.1" value="0" aria-label="Seek within recording" disabled />
             </div>
             <div class="archive-waveform-transport">
-              <button id="timeline-play" class="archive-waveform-button archive-waveform-play" type="button" aria-label="Play recording" disabled>Play</button>
-              <button id="timeline-skip" class="archive-waveform-button archive-waveform-skip" type="button" aria-label="Skip forward 5 seconds" disabled>+5 sec</button>
+              <button id="timeline-play" class="archive-waveform-button archive-waveform-play" type="button" aria-label="Play recording" title="Play recording" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.8v14.4L19 12 7 4.8z"/></svg></button>
+              <button id="timeline-skip" class="archive-waveform-button archive-waveform-skip" type="button" aria-label="Skip forward 5 seconds" title="Skip forward 5 seconds" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 5 8 7-8 7V5zm8 0 8 7-8 7V5z"/></svg><span>5</span></button>
               <output id="timeline-playback-time" class="archive-waveform-time">0:00 / 0:00</output>
               <span id="timeline-playback-status" class="archive-waveform-status" role="status" aria-live="polite"></span>
             </div>
@@ -252,6 +254,6 @@
   </main>
   <script src="./conversation.js?v=47"></script>
   <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
-  <script src="./main.js?v=51"></script>
+  <script src="./main.js?v=52"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 51
+  const CLIENT_BUILD = 52
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -42,6 +42,8 @@
   const timelineCleanup = $('#timeline-cleanup')
   const timelineWaveformTrack = $('#timeline-waveform-track')
   const timelineWaveformLoading = $('#timeline-waveform-loading')
+  const timelineWaveformSpinner = $('#timeline-waveform-spinner')
+  const timelineWaveformHover = $('#timeline-waveform-hover')
   const timelineSeek = $('#timeline-seek')
   const timelinePlay = $('#timeline-play')
   const timelineSkip = $('#timeline-skip')
@@ -101,6 +103,8 @@
   let timelineMetadataSource
   let timelineAutoAdvance = false
   let timelinePlaybackGeneration = 0
+  let timelinePlaybackRequested = false
+  let timelineBusyVersion = 0
   let liveAudioSource
   let liveAudioGeneration = 0
   let liveListening = false
@@ -512,6 +516,65 @@
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
   }
 
+  function localRecordingClock(timestamp) {
+    const date = new Date(timestamp)
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+  }
+
+  function timelineClockAtOffset(segment, offsetSeconds) {
+    const start = Date.parse(segment.startedAt)
+    if (!Number.isFinite(start)) return ''
+    return localRecordingClock(start + Math.max(0, offsetSeconds) * 1000)
+  }
+
+  function archiveClockAtOffset(record, offsetSeconds) {
+    let remaining = Math.max(0, offsetSeconds)
+    const entries = record.records || []
+    for (const entry of entries) {
+      const duration = archivePlaybackDuration(entry)
+      if (remaining < duration || entry === entries.at(-1)) {
+        const start = Date.parse(entry.startedAt)
+        if (!Number.isFinite(start)) return ''
+        return localRecordingClock(start + (archiveActivityStart(entry) + Math.min(remaining, duration)) * 1000)
+      }
+      remaining -= duration
+    }
+    return ''
+  }
+
+  function showWaveformHover(track, tooltip, duration, timestampAt, event) {
+    if (event.pointerType === 'touch' || !duration || (event.target instanceof Element && event.target.closest('.archive-waveform-transport'))) return
+    const bounds = track.getBoundingClientRect()
+    if (!bounds.width) return
+    const fraction = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
+    tooltip.textContent = timestampAt(fraction * duration)
+    tooltip.hidden = !tooltip.textContent
+    tooltip.style.left = `${Math.max(0, Math.min(bounds.width - tooltip.offsetWidth, event.clientX - bounds.left - tooltip.offsetWidth / 2))}px`
+    tooltip.style.transform = 'none'
+  }
+
+  function waveformPlayIcon(button, playing) {
+    button.innerHTML = playing
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM15 5h4v14h-4z"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.8v14.4L19 12 7 4.8z"/></svg>'
+    const label = playing ? 'Pause recording' : 'Play recording'
+    button.setAttribute('aria-label', label)
+    button.title = label
+  }
+
+  function waveformSkipIcon(button) {
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 5 8 7-8 7V5zm8 0 8 7-8 7V5z"/></svg><span>5</span>'
+    button.setAttribute('aria-label', 'Skip forward 5 seconds')
+    button.title = 'Skip forward 5 seconds'
+  }
+
+  function setWaveformBusy(waveform, spinner, button, busy) {
+    spinner.hidden = !busy
+    waveform.setAttribute('aria-busy', String(busy))
+    button.classList.toggle('is-loading', busy)
+    button.setAttribute('aria-busy', String(busy))
+  }
+
   function seekArchiveAudio(audio, targetSeconds, fallbackDuration) {
     const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : fallbackDuration
     audio.currentTime = Math.max(0, Math.min(duration, targetSeconds))
@@ -523,11 +586,20 @@
     status.textContent = error ? 'Playback could not start. Tap Play to try again.' : ''
   }
 
-  function playArchiveAudio(audio, status) {
+  function playArchiveAudio(audio, status, onBusy) {
+    const request = onBusy?.(true)
     try {
-      void audio.play().catch((error) => showArchivePlaybackError(status, error))
+      void audio.play().catch((error) => {
+        if (error?.name === 'AbortError') {
+          onBusy?.(false, request)
+          return
+        }
+        const current = onBusy ? onBusy(false, request) : true
+        if (current !== false) showArchivePlaybackError(status, error)
+      })
     } catch (error) {
-      showArchivePlaybackError(status, error)
+      const current = onBusy ? onBusy(false, request) : true
+      if (current !== false) showArchivePlaybackError(status, error)
     }
   }
 
@@ -539,22 +611,29 @@
     return true
   }
 
-  function beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status) {
+  function beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status, onBusy) {
     if (audio.dataset.archivePlaybackActivated === 'true') return false
     if (!activateArchivePlayback(details, audio, updatePlayback)) return false
     loadWaveform()
-    playArchiveAudio(audio, status)
+    playArchiveAudio(audio, status, onBusy)
     return true
   }
 
-  function bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform, status) {
+  function bindArchivePlaybackButton(button, details, audio, updatePlayback, loadWaveform, status, onBusy, isBusy) {
     button.addEventListener('click', () => {
       if (audio.dataset.archivePlaybackActivated === 'true') {
-        if (audio.paused) playArchiveAudio(audio, status)
-        else audio.pause()
+        if (isBusy?.() && audio.paused) {
+          onBusy?.(false)
+          audio.dataset.archiveReloading = 'false'
+          audio.pause()
+        } else if (audio.paused) playArchiveAudio(audio, status, onBusy)
+        else {
+          onBusy?.(false)
+          audio.pause()
+        }
         return
       }
-      beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status)
+      beginArchivePlayback(details, audio, updatePlayback, loadWaveform, status, onBusy)
     })
   }
 
@@ -708,6 +787,9 @@
     timelinePlay.disabled = true
     timelineSkip.disabled = true
     destroyTimelineWaveform()
+    timelineWaveformHover.hidden = true
+    timelineWaveformTrack.onpointermove = null
+    timelineWaveformTrack.onpointerleave = null
     timelinePlaybackStatus.textContent = ''
     timelineWaveformLoading.textContent = 'Select a recording to load its waveform…'
     timelineWaveformLoading.hidden = false
@@ -915,6 +997,9 @@
     timelineOffset.textContent = `${ageMinutes === 0 ? 'Less than a minute' : `${ageMinutes} min`} ago · Slot ${segment.slot} · ${channelDisplay(segment.channel)} · ${channelFrequencyDisplay(segment.channel)}`
     timelineAudio.pause()
     timelineAutoAdvance = false
+    timelinePlaybackRequested = false
+    timelineBusyVersion += 1
+    setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
     timelineAudio.removeAttribute('src')
     timelineAudio.load()
     timelineAudioSource = undefined
@@ -925,8 +1010,7 @@
     timelineSeek.min = '0'
     timelineSeek.max = String(timelineDuration(segment))
     timelineSeek.value = '0'
-    timelinePlay.textContent = 'Play'
-    timelinePlay.setAttribute('aria-label', 'Play recording')
+    waveformPlayIcon(timelinePlay, false)
     timelinePlaybackStatus.textContent = ''
     timelinePlaybackTime.textContent = `0:00 / ${archiveTimeLabel(timelineDuration(segment))}`
     timelinePlay.disabled = false
@@ -950,7 +1034,10 @@
       if (signal.aborted || version !== timelineSelectionVersion) return
       timelineWaveSurfer = createWaveform(timelineWaveformTrack, timelineAudio, { view, offset, samples }, sampleRate > 0 ? samples / sampleRate : timelineDuration(segment))
       timelineWaveSurfer.on('interaction', (time) => seekTimelineAudio(time))
-      timelineSeek.max = String(sampleRate > 0 ? samples / sampleRate : timelineDuration(segment))
+      const duration = sampleRate > 0 ? samples / sampleRate : timelineDuration(segment)
+      timelineSeek.max = String(duration)
+      timelineWaveformTrack.onpointermove = (event) => showWaveformHover(timelineWaveformTrack, timelineWaveformHover, duration, (offsetSeconds) => timelineClockAtOffset(segment, offsetSeconds), event)
+      timelineWaveformTrack.onpointerleave = () => { timelineWaveformHover.hidden = true }
       timelineWaveformLoading.hidden = true
     }).catch((error) => {
       if (signal.aborted || version !== timelineSelectionVersion) return
@@ -969,8 +1056,7 @@
     timelineSeek.value = String(currentTime)
     timelineSeek.setAttribute('aria-valuetext', `${archiveTimeLabel(currentTime)} of ${archiveTimeLabel(duration)}`)
     timelinePlaybackTime.textContent = `${archiveTimeLabel(currentTime)} / ${archiveTimeLabel(duration)}`
-    timelinePlay.textContent = timelineAudio.paused ? 'Play' : 'Pause'
-    timelinePlay.setAttribute('aria-label', `${timelineAudio.paused ? 'Play' : 'Pause'} recording`)
+    waveformPlayIcon(timelinePlay, !timelineAudio.paused)
   }
 
   function loadTimelineAudio(segment, autoplay = false, targetTime) {
@@ -978,6 +1064,9 @@
     const source = timelineClipUrl(segment, timelineSelectionVersion)
     const version = timelineSelectionVersion
     if (timelineAudioSource !== source) {
+      timelineBusyVersion += 1
+      timelinePlaybackRequested = false
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
       timelineAudioSource = source
       timelinePendingSeek = undefined
       timelineMetadataSource = undefined
@@ -1006,10 +1095,15 @@
     }
     if (autoplay) {
       timelineAutoAdvance = true
+      timelinePlaybackRequested = true
+      const busyVersion = timelineBusyVersion
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, true)
       void timelineAudio.play().catch((error) => {
         if (error?.name === 'AbortError' || generation !== timelinePlaybackGeneration) return
         if (timelineAudioSource === source && timelineSelectionVersion === version) {
           timelineAutoAdvance = false
+          timelinePlaybackRequested = false
+          if (busyVersion === timelineBusyVersion) setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
           timelinePlaybackStatus.textContent = 'Playback could not start. Tap Play to try again.'
         }
       })
@@ -1335,6 +1429,12 @@
       if (controller.signal.aborted || !waveform.isConnected) return
       const duration = decoded.sampleRate > 0 ? decoded.samples / decoded.sampleRate : fallbackDuration
       entry.instance = createWaveform(waveform, audio, decoded, duration || fallbackDuration, onInteraction)
+      const record = waveform.__record
+      const hover = waveform.querySelector('.waveform-hover-time')
+      if (record && hover) {
+        waveform.onpointermove = (event) => showWaveformHover(waveform, hover, duration, (offsetSeconds) => archiveClockAtOffset(record, offsetSeconds), event)
+        waveform.onpointerleave = () => { hover.hidden = true }
+      }
       if (loading) loading.hidden = true
     } catch (error) {
       if (controller.signal.aborted) return
@@ -1346,17 +1446,23 @@
     }
   }
 
-  function setArchivePlayback(audio, download, cleanup, squelch, quieting) {
+  function setArchivePlayback(audio, download, cleanup, squelch, quieting, onBusy, status, isCurrent) {
     const currentTime = audio.currentTime
     const wasPlaying = !audio.paused
     const source = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup)}&squelch=${encodeURIComponent(squelch)}&quieting=100`
     audio.src = source
+    const normalizedSource = new URL(source, window.location.href).href
     download.href = source
+    const request = wasPlaying ? onBusy?.(true) : undefined
+    audio.dataset.archiveReloading = String(wasPlaying)
     audio.load()
     if (currentTime > 0 || wasPlaying) {
       audio.addEventListener('loadedmetadata', () => {
+        if (audio.src !== normalizedSource) return
+        if (wasPlaying && isCurrent && !isCurrent(request)) return
+        audio.dataset.archiveReloading = 'false'
         audio.currentTime = Math.min(currentTime, Number.isFinite(audio.duration) ? audio.duration : currentTime)
-        if (wasPlaying) void audio.play().catch(() => {})
+        if (wasPlaying) playArchiveAudio(audio, status, (busy, token) => onBusy?.(busy, token ?? request))
       }, { once: true })
     }
   }
@@ -1389,10 +1495,22 @@
     waveform.className = 'archive-waveform'
     const waveformTrack = document.createElement('div')
     waveformTrack.className = 'archive-waveform-track'
+    waveformTrack.__record = record
     const loading = document.createElement('span')
     loading.className = 'waveform-loading'
     loading.textContent = 'Open to load waveform…'
     waveformTrack.append(loading)
+    const hoverTime = document.createElement('span')
+    hoverTime.className = 'waveform-hover-time'
+    hoverTime.hidden = true
+    hoverTime.setAttribute('aria-hidden', 'true')
+    waveformTrack.append(hoverTime)
+    const playbackSpinner = document.createElement('span')
+    playbackSpinner.className = 'waveform-playback-spinner'
+    playbackSpinner.hidden = true
+    playbackSpinner.setAttribute('role', 'status')
+    playbackSpinner.setAttribute('aria-label', 'Loading playback')
+    waveformTrack.append(playbackSpinner)
     const seek = document.createElement('input')
     seek.className = 'archive-waveform-seek'
     seek.type = 'range'
@@ -1416,13 +1534,11 @@
     const playButton = document.createElement('button')
     playButton.className = 'archive-waveform-button archive-waveform-play'
     playButton.type = 'button'
-    playButton.textContent = 'Play'
-    playButton.setAttribute('aria-label', 'Play recording')
+    waveformPlayIcon(playButton, false)
     const skipButton = document.createElement('button')
     skipButton.className = 'archive-waveform-button archive-waveform-skip'
     skipButton.type = 'button'
-    skipButton.textContent = '+5 sec'
-    skipButton.setAttribute('aria-label', 'Skip forward 5 seconds')
+    waveformSkipIcon(skipButton)
     const playbackTime = document.createElement('output')
     playbackTime.className = 'archive-waveform-time'
     playbackTime.textContent = `0:00 / ${archiveTimeLabel(record.durationSeconds)}`
@@ -1440,14 +1556,32 @@
       seek.value = String(currentTime)
       seek.setAttribute('aria-valuetext', `${archiveTimeLabel(currentTime)} of ${archiveTimeLabel(duration)}`)
       playbackTime.textContent = `${archiveTimeLabel(currentTime)} / ${archiveTimeLabel(duration)}`
-      playButton.textContent = audio.paused ? 'Play' : 'Pause'
-      playButton.setAttribute('aria-label', `${audio.paused ? 'Play' : 'Pause'} recording`)
+      waveformPlayIcon(playButton, !audio.paused)
+    }
+    let playbackRequested = false
+    let playbackGeneration = 0
+    const setArchiveBusy = (busy) => {
+      setWaveformBusy(waveform, playbackSpinner, playButton, busy)
+      playButton.dataset.loading = String(busy)
+    }
+    const requestArchivePlayback = (busy, expectedGeneration) => {
+      if (expectedGeneration !== undefined && expectedGeneration !== playbackGeneration) return false
+      playbackGeneration += 1
+      playbackRequested = busy
+      setArchiveBusy(busy)
+      return playbackGeneration
     }
     for (const event of ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended', 'seeked']) {
       audio.addEventListener(event, renderWaveformPlayback)
     }
     audio.addEventListener('play', () => { playbackStatus.textContent = '' })
+    audio.addEventListener('playing', () => { if (playbackRequested) setArchiveBusy(false) })
+    audio.addEventListener('waiting', () => { if (playbackRequested && !audio.paused) setArchiveBusy(true) })
+    audio.addEventListener('pause', () => { if (audio.paused && audio.dataset.archiveReloading !== 'true') { playbackGeneration += 1; playbackRequested = false; setArchiveBusy(false) } })
+    audio.addEventListener('ended', () => { playbackRequested = false; setArchiveBusy(false) })
     audio.addEventListener('error', () => {
+      playbackRequested = false
+      setArchiveBusy(false)
       playbackStatus.textContent = 'Recording playback is unavailable.'
     })
     seek.addEventListener('input', renderWaveformPlayback)
@@ -1476,7 +1610,10 @@
       savePreference(`${preferenceKey}:squelch`, squelch.value)
       squelch.disabled = cleanup.value === 'modified'
       download.href = `${audio.dataset.baseUrl}&cleanup=${encodeURIComponent(cleanup.value)}&squelch=${encodeURIComponent(squelch.value)}&quieting=100`
-      if (audio.dataset.archivePlaybackActivated === 'true') setArchivePlayback(audio, download, cleanup.value, squelch.value, 100)
+      if (audio.dataset.archivePlaybackActivated === 'true') {
+        requestArchivePlayback(false)
+        setArchivePlayback(audio, download, cleanup.value, squelch.value, 100, requestArchivePlayback, playbackStatus, (token) => token === playbackGeneration)
+      }
     }
     let pendingWaveformSeek
     let waveformSeekWaiting = false
@@ -1502,7 +1639,7 @@
     bindArchivePlaybackButton(playButton, details, audio, () => {
       updatePlayback()
       renderWaveformPlayback()
-    }, () => { void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform) }, playbackStatus)
+    }, () => { void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform) }, playbackStatus, requestArchivePlayback, () => playButton.dataset.loading === 'true')
     bindArchiveSkipButton(skipButton, details, audio, updatePlayback, () => {
       void renderArchiveWaveform(waveformTrack, audioUrl, audio, record.durationSeconds, seekFromWaveform)
     }, record.durationSeconds)
@@ -2025,12 +2162,26 @@
   })
   timelinePlay.addEventListener('click', () => {
     if (timelineQueueIndex < 0 || !timelineQueue[timelineQueueIndex]) return
+    if (timelineAudio.paused && !timelineWaveformSpinner.hidden) {
+      timelinePlaybackGeneration += 1
+      timelineAutoAdvance = false
+      timelinePlaybackRequested = false
+      timelineBusyVersion += 1
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
+      timelineAudio.pause()
+      return
+    }
     if (!timelineAudio.paused) {
       timelineAutoAdvance = false
+      timelinePlaybackRequested = false
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
       timelineAudio.pause()
     }
     else {
       pauseOtherAudio(timelineAudio)
+      timelinePlaybackRequested = true
+      timelineBusyVersion += 1
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, true)
       loadTimelineAudio(timelineQueue[timelineQueueIndex], true)
     }
   })
@@ -2051,9 +2202,24 @@
   for (const event of ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'seeked']) timelineAudio.addEventListener(event, updateTimelinePlayback)
   timelineAudio.addEventListener('play', () => {
     timelineAutoAdvance = true
+    timelinePlaybackRequested = true
     timelinePlaybackStatus.textContent = ''
   })
+  timelineAudio.addEventListener('playing', () => {
+    if (timelinePlaybackRequested) setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
+  })
+  timelineAudio.addEventListener('waiting', () => {
+    if (timelinePlaybackRequested && !timelineAudio.paused) setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, true)
+  })
+  timelineAudio.addEventListener('pause', () => {
+    if (timelineAudio.paused) {
+      timelinePlaybackRequested = false
+      setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
+    }
+  })
   timelineAudio.addEventListener('ended', () => {
+    timelinePlaybackRequested = false
+    setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
     if (timelineAutoAdvance && timelineQueueIndex + 1 < timelineQueue.length) {
       timelineQueueSegment(timelineQueueIndex + 1)
       pauseOtherAudio(timelineAudio)
@@ -2066,6 +2232,8 @@
   timelineAudio.addEventListener('error', () => {
     const expectedCurrentSrc = timelineAudioSource && new URL(timelineAudioSource, window.location.href).href
     if (!expectedCurrentSrc || (timelineAudio.currentSrc && timelineAudio.currentSrc !== expectedCurrentSrc)) return
+    timelinePlaybackRequested = false
+    setWaveformBusy($('#timeline-waveform'), timelineWaveformSpinner, timelinePlay, false)
     if (timelineAutoAdvance && timelineQueueIndex + 1 < timelineQueue.length) {
       timelinePlaybackStatus.textContent = 'Recording unavailable; skipping to the next segment.'
       timelineQueueSegment(timelineQueueIndex + 1)

@@ -255,6 +255,32 @@ test('waveform skip advances five seconds and clamps at the end', () => {
   assert.equal(audio.currentTime, 9)
 })
 
+test('waveform hover clock follows timeline time and trimmed archive chunk boundaries', () => {
+  const segment = { startedAt: '2026-10-03T11:01:00.000Z' }
+  const entries = [
+    { id: 1, startedAt: '2026-10-03T11:01:00.000Z', durationSeconds: 5, activityStartSeconds: 1, activityEndSeconds: 3 },
+    { id: 2, startedAt: '2026-10-03T11:01:06.000Z', durationSeconds: 5, activityStartSeconds: 1, activityEndSeconds: 3 }
+  ]
+  const record = { records: entries }
+  const state = { segment, record, entries }
+  vm.runInNewContext(`${declaration(main, 'archiveActivityStart')}; ${declaration(main, 'archiveActivityEnd')}; ${declaration(main, 'archivePlaybackDuration')}; ${declaration(main, 'localRecordingClock')}; ${declaration(main, 'timelineClockAtOffset')}; ${declaration(main, 'archiveClockAtOffset')}; globalThis.timelineClock = timelineClockAtOffset(segment, 2.5); globalThis.archiveClock = archiveClockAtOffset(record, 2.5)`, state)
+
+  assert.equal((state as any).timelineClock, new Date(Date.parse(segment.startedAt) + 2500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }))
+  assert.equal((state as any).archiveClock, new Date(Date.parse(entries[1].startedAt) + 1500).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }))
+})
+
+test('waveform controls expose compact play/pause and five-second skip icons', () => {
+  const attributes: Record<string, string> = {}
+  const button = { innerHTML: '', title: '', setAttribute(name: string, value: string) { attributes[name] = value } }
+  const state = { button }
+  vm.runInNewContext(`${declaration(main, 'waveformPlayIcon')}; ${declaration(main, 'waveformSkipIcon')}; waveformPlayIcon(button, false); globalThis.playLabel = button.title; waveformPlayIcon(button, true); globalThis.pauseLabel = button.title; waveformSkipIcon(button)`, state)
+  assert.equal((state as any).playLabel, 'Play recording')
+  assert.equal((state as any).pauseLabel, 'Pause recording')
+  assert.match(button.innerHTML, /<svg/)
+  assert.match(button.innerHTML, /<span>5<\/span>/)
+  assert.equal(attributes['aria-label'], 'Skip forward 5 seconds')
+})
+
 test('waveform skip waits for lazy audio metadata before seeking', () => {
   let click: (() => void) | undefined
   let loaded: (() => void) | undefined
