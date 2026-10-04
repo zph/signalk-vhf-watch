@@ -17,7 +17,7 @@ import {
 } from './receiver'
 import { RollingReplay, type ReplayPlaybackCursor, type ReplayPlaybackPayload, type ReplayPlaybackRead, type ReplaySegment, type ReplaySegmentSummary } from './rolling-buffer'
 import { rmsLevel } from './wav'
-import { TranscriptionManager, type TranscriptionStatus } from './transcription'
+import { TranscriptionManager, type TranscriptionSettingsPatch, type TranscriptionStatus } from './transcription'
 import { discriminatorThreshold } from './squelch'
 import type { TuningSettings } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
@@ -343,12 +343,12 @@ export class VhfRuntime extends EventEmitter<{
     this.#stopReceiver()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
-    this.transcription.stop()
+    await this.transcription.stop()
     this.replay.flush()
     this.replayB.flush()
     this.#receiverState = 'Stopped'
     this.#emitStatus()
-    this.transcription.close()
+    await this.transcription.close()
     this.#scheduleHistorySnapshot()
     await this.#historyStore?.flush()
   }
@@ -647,8 +647,8 @@ export class VhfRuntime extends EventEmitter<{
     return this.status()
   }
 
-  async configureTranscription(model: string, threads: number): Promise<RuntimeStatus> {
-    await this.transcription.configure(model, threads)
+  async configureTranscription(patch: TranscriptionSettingsPatch): Promise<RuntimeStatus> {
+    await this.transcription.configure(patch)
     this.#emitStatus()
     return this.status()
   }

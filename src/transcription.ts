@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
-import { access } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { ReplaySegment } from './rolling-buffer'
@@ -9,15 +8,21 @@ import { TranscriptArchive, type TranscriptArchiveRecord, type TranscriptArchive
 import type { RnnoiseDenoiser } from './rnnoise'
 import { pcmToWav } from './wav'
 import { WhisperVadProbe } from './whisper-vad'
+import { channelById } from './channels'
+import { DEFAULT_WHISPER_SERVER_COMMAND, WhisperServerCancelledError, WhisperServerPool } from './whisper-server-pool'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
 export const DEFAULT_TRANSCRIPTION_MODELS_DIR = '/usr/share/vhf-whisper'
 export const DEFAULT_TRANSCRIPTION_MODEL = 'base.en-q5_1'
 export const DEFAULT_TRANSCRIPTION_THREADS = 2
+export const WEATHER_TRANSCRIPTION_MODEL = DEFAULT_TRANSCRIPTION_MODEL
+export const WEATHER_TRANSCRIPTION_THREADS = DEFAULT_TRANSCRIPTION_THREADS
 export const MAXIMUM_TRANSCRIPTION_THREADS = 16
+export const DEFAULT_KEEP_MODELS_LOADED = false
+export const MAXIMUM_OVERLAP_SECONDS = 30
 export const MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS = 0.35
 export const TRANSCRIPTION_BATCH_SECONDS = 60
-export const TRANSCRIPTION_OVERLAP_SECONDS = 10
+export const TRANSCRIPTION_OVERLAP_SECONDS = 2
 export const TRANSCRIPTION_ARCHIVE_PADDING_SECONDS = 1
 export const TRANSCRIPTION_BATCH_IDLE_MS = 6_000
 export const MINIMUM_TRANSCRIPTION_TIMEOUT_MS = 90_000
@@ -36,6 +41,15 @@ export interface TranscriptionStatus {
   engine: string
   model: string
   threads: number
+  weatherModel: string
+  weatherThreads: number
+  overlapSeconds: number
+  keepModelsLoaded: boolean
+  weatherAvailable: boolean
+  backend: 'whisper-server' | 'whisper-cli' | 'whisper-cli-fallback'
+  activeModel?: string
+  activeThreads?: number
+  residentModels: string[]
   availableModels: TranscriptionModel[]
   command: string
   speechGate: { mode: 'observe' | 'filter'; checked: number; wouldSkip: number; skipped: number; failOpen: number }
@@ -43,11 +57,17 @@ export interface TranscriptionStatus {
   error?: string
 }
 
-interface PersistedSettings {
+export interface PersistedSettings {
   enabled: boolean
   model: string
   threads: number
+  weatherModel: string
+  weatherThreads: number
+  overlapSeconds: number
+  keepModelsLoaded: boolean
 }
+
+export type TranscriptionSettingsPatch = Partial<PersistedSettings>
 
 export interface TranscriptionModel {
   id: string
@@ -60,8 +80,11 @@ interface TranscriptionBatch {
   wavs: Buffer[]
   durationSeconds: number
   overlapSegmentCount: number
+  overlapSeconds: number
   channel: string
   squelch: number
+  model: string
+  threads: number
 }
 
 interface TranscriptionOptions {
@@ -74,6 +97,8 @@ interface TranscriptionOptions {
   vad?: WhisperVadProbe
   /** Test-only override; production filters valid no-speech VAD results. */
   vadMode?: 'observe' | 'filter'
+  serverCommand?: string
+  serverPool?: WhisperServerPool
 }
 
 interface TranscriptWord {
@@ -207,8 +232,9 @@ function hasLexicalSpeech(text: string): boolean {
 export class TranscriptionManager {
   readonly #settingsPath: string
   readonly #command: string
+  readonly #server: WhisperServerPool
   readonly #batchSeconds: number
-  readonly #overlapSeconds: number
+  #overlapSeconds: number
   readonly #idleMs: number
   readonly #archive?: TranscriptArchive
   readonly #modelsDir: string
@@ -218,14 +244,20 @@ export class TranscriptionManager {
   #enabled: boolean
   #model: string
   #threads: number
+  #weatherModel: string
+  #weatherThreads: number
+  #keepModelsLoaded: boolean
   #queue: TranscriptionBatch[] = []
   #pending: ReplaySegment[] = []
   #pendingWavs: Buffer[] = []
   #pendingSeconds = 0
   #pendingOverlapCount = 0
   #pendingSquelch?: number
+  #pendingModel?: string
+  #pendingThreads?: number
   #pendingTimer?: ReturnType<typeof setTimeout>
   #running = false
+  #reconfiguring = false
   #activeBatch?: TranscriptionBatch
   #child?: ChildProcess
   #currentAbort?: AbortController
@@ -241,33 +273,58 @@ export class TranscriptionManager {
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
     this.#settingsPath = settingsPath
     this.#command = command
+    this.#server = options.serverPool ?? new WhisperServerPool({
+      command: options.serverCommand ?? DEFAULT_WHISPER_SERVER_COMMAND,
+      modelsDir: options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
+    })
     this.#batchSeconds = options.batchSeconds ?? TRANSCRIPTION_BATCH_SECONDS
-    this.#overlapSeconds = Math.min(options.overlapSeconds ?? TRANSCRIPTION_OVERLAP_SECONDS, this.#batchSeconds / 2)
     this.#idleMs = options.idleMs ?? TRANSCRIPTION_BATCH_IDLE_MS
     this.#archive = options.archive
     this.#modelsDir = options.modelsDir ?? DEFAULT_TRANSCRIPTION_MODELS_DIR
     this.#denoiser = options.denoiser
     this.#vad = options.vad ?? new WhisperVadProbe()
     this.#vadMode = options.vadMode ?? 'filter'
-    const settings = this.#load()
+    const initialOverlap = Math.min(
+      Number.isFinite(options.overlapSeconds) ? Math.max(0, options.overlapSeconds!) : TRANSCRIPTION_OVERLAP_SECONDS,
+      MAXIMUM_OVERLAP_SECONDS,
+      this.#batchSeconds / 2
+    )
+    const settings = this.#load(initialOverlap)
     this.#enabled = settings.enabled
     this.#model = settings.model
     this.#threads = settings.threads
+    this.#weatherModel = settings.weatherModel
+    this.#weatherThreads = settings.weatherThreads
+    this.#keepModelsLoaded = settings.keepModelsLoaded
+    this.#overlapSeconds = settings.overlapSeconds
     this.#repairArchivedTranscriptOverlap()
   }
 
   status(): TranscriptionStatus {
     const availableModels = this.availableModels()
-    const available = this.#commandAvailable() && availableModels.some((candidate) => candidate.id === this.#model)
+    const available = this.#backendAvailable() && availableModels.some((candidate) => candidate.id === this.#model)
+    const activeModel = this.#activeBatch?.model
+    const activeThreads = this.#activeBatch?.threads
     return {
       enabled: this.#enabled,
       available,
       state: !this.#enabled ? 'disabled' : !available ? 'unavailable' : this.#running ? 'transcribing' : 'idle',
       queued: this.#queue.length + (this.#pending.length > 0 ? 1 : 0),
       backlog: this.#backlog(),
-      engine: `whisper.cpp ${this.#model}${this.#denoiser?.available() ? ' · RNNoise 50%' : ''}`,
+      engine: `whisper.cpp ${this.#model} · WX ${this.#weatherModel}${this.#denoiser?.available() ? ' · RNNoise 50%' : ''}`,
       model: this.#model,
       threads: this.#threads,
+      weatherModel: this.#weatherModel,
+      weatherThreads: this.#weatherThreads,
+      overlapSeconds: this.#overlapSeconds,
+      keepModelsLoaded: this.#keepModelsLoaded,
+      weatherAvailable: availableModels.some((candidate) => candidate.id === this.#weatherModel),
+      backend: !this.#keepModelsLoaded
+        ? 'whisper-cli'
+        : this.#server.available ? 'whisper-server' : 'whisper-cli-fallback',
+      ...(activeModel ? { activeModel } : {}),
+      ...(activeThreads ? { activeThreads } : {}),
+      residentModels: this.#server.residentModels,
       availableModels,
       command: this.#command,
       speechGate: {
@@ -299,11 +356,23 @@ export class TranscriptionManager {
   }
 
   available(): boolean {
-    return this.#commandAvailable() && this.availableModels().some((candidate) => candidate.id === this.#model)
+    return this.#backendAvailable() && this.availableModels().some((candidate) => candidate.id === this.#model)
   }
 
   #commandAvailable(): boolean {
     try { accessSync(this.#command, constants.X_OK); return true } catch { return false }
+  }
+
+  #modelForChannel(channel: string): string {
+    return channelById(channel)?.weather ? this.#weatherModel : this.#model
+  }
+
+  #threadsForChannel(channel: string): number {
+    return channelById(channel)?.weather ? this.#weatherThreads : this.#threads
+  }
+
+  #backendAvailable(): boolean {
+    return this.#commandAvailable() || (this.#keepModelsLoaded && this.#server.available)
   }
 
   availableModels(forceRefresh = false): TranscriptionModel[] {
@@ -328,45 +397,89 @@ export class TranscriptionManager {
     return models.map((model) => ({ ...model }))
   }
 
-  async configure(model: string, threads: number): Promise<TranscriptionStatus> {
-    if (!this.availableModels(true).some((candidate) => candidate.id === model)) {
-      throw new Error(`Whisper model ${model} is not installed`)
-    }
-    if (!Number.isSafeInteger(threads) || threads < 1 || threads > MAXIMUM_TRANSCRIPTION_THREADS) {
+  async configure(patchOrModel: TranscriptionSettingsPatch | string, legacyThreads?: number): Promise<TranscriptionStatus> {
+    const patch: TranscriptionSettingsPatch = typeof patchOrModel === 'string'
+      ? { model: patchOrModel, ...(legacyThreads !== undefined ? { threads: legacyThreads } : {}) }
+      : patchOrModel
+    const current = this.#settings()
+    const next: PersistedSettings = { ...current, ...patch }
+    if (typeof next.enabled !== 'boolean') throw new Error('enabled must be true or false')
+    if (typeof next.model !== 'string') throw new Error('model must be a string')
+    if (!Number.isSafeInteger(next.threads) || next.threads < 1 || next.threads > MAXIMUM_TRANSCRIPTION_THREADS) {
       throw new Error(`threads must be an integer from 1 to ${MAXIMUM_TRANSCRIPTION_THREADS}`)
     }
-    this.#model = model
-    this.#threads = threads
-    this.#error = undefined
-    this.#save()
+    if (typeof next.weatherModel !== 'string') throw new Error('weatherModel must be a string')
+    if (!Number.isSafeInteger(next.weatherThreads) || next.weatherThreads < 1 || next.weatherThreads > MAXIMUM_TRANSCRIPTION_THREADS) {
+      throw new Error(`weatherThreads must be an integer from 1 to ${MAXIMUM_TRANSCRIPTION_THREADS}`)
+    }
+    if (!Number.isFinite(next.overlapSeconds) || next.overlapSeconds < 0 ||
+      next.overlapSeconds > MAXIMUM_OVERLAP_SECONDS || next.overlapSeconds > this.#batchSeconds / 2) {
+      throw new Error(`overlapSeconds must be from 0 to ${Math.min(MAXIMUM_OVERLAP_SECONDS, this.#batchSeconds / 2)} seconds`)
+    }
+    if (typeof next.keepModelsLoaded !== 'boolean') throw new Error('keepModelsLoaded must be true or false')
+
+    const models = this.availableModels(true)
+    if (patch.model !== undefined && !models.some((candidate) => candidate.id === next.model)) {
+      throw new Error(`Whisper model ${next.model} is not installed`)
+    }
+    if (patch.weatherModel !== undefined && next.weatherModel !== current.weatherModel &&
+      !models.some((candidate) => candidate.id === next.weatherModel)) {
+      throw new Error(`Weather Whisper model ${next.weatherModel} is not installed`)
+    }
+    if (next.enabled) {
+      const backendAvailable = this.#commandAvailable() || (next.keepModelsLoaded && this.#server.available)
+      if (!backendAvailable) throw new Error('Install the vhf-whisper-runtime package before enabling transcription')
+      if (!models.some((candidate) => candidate.id === next.model)) {
+        throw new Error(`Install or select the Whisper model ${next.model} before enabling transcription`)
+      }
+    }
+
+    const changed = Object.keys(current).some((key) => current[key as keyof PersistedSettings] !== next[key as keyof PersistedSettings])
+    if (!changed) return this.status()
+    const overlapChanged = next.overlapSeconds !== this.#overlapSeconds
+    const workerConfigChanged = next.model !== this.#model || next.threads !== this.#threads ||
+      next.weatherModel !== this.#weatherModel || next.weatherThreads !== this.#weatherThreads ||
+      next.keepModelsLoaded !== this.#keepModelsLoaded
+    const disabling = this.#enabled && !next.enabled
+
+    this.#reconfiguring = true
+    try {
+      if (overlapChanged && !disabling) this.#flushPending()
+      this.#saveSettings(next)
+      if (workerConfigChanged || disabling) this.#currentAbort?.abort()
+      if (disabling) {
+        this.#queue = []
+        this.#clearPending()
+      }
+      this.#enabled = next.enabled
+      this.#model = next.model
+      this.#threads = next.threads
+      this.#weatherModel = next.weatherModel
+      this.#weatherThreads = next.weatherThreads
+      this.#overlapSeconds = next.overlapSeconds
+      this.#keepModelsLoaded = next.keepModelsLoaded
+      this.#error = undefined
+      if (workerConfigChanged || disabling) await this.#server.closeAll()
+    } finally {
+      this.#reconfiguring = false
+      if (this.#enabled && this.#queue.length > 0) void this.#drain()
+    }
     return this.status()
   }
 
   async setEnabled(enabled: boolean): Promise<TranscriptionStatus> {
-    if (enabled) {
-      try {
-        await access(this.#command, constants.X_OK)
-      } catch {
-        throw new Error('Install the vhf-whisper-runtime package before enabling transcription')
-      }
-      if (!this.availableModels(true).some((candidate) => candidate.id === this.#model)) {
-        throw new Error(`Install or select the Whisper model ${this.#model} before enabling transcription`)
-      }
-    }
-    this.#enabled = enabled
-    this.#error = undefined
-    if (!enabled) {
-      this.#queue = []
-      this.#clearPending()
-      this.#currentAbort?.abort()
-      this.#child?.kill('SIGTERM')
-    }
-    this.#save()
-    return this.status()
+    return this.configure({ enabled })
   }
 
   enqueue(segment: ReplaySegment, squelch: number): void {
-    if (!this.#enabled || !this.available()) return
+    if (this.#closed || !this.#enabled || !this.available()) return
+    const model = this.#modelForChannel(segment.channel)
+    if (channelById(segment.channel)?.weather && !this.availableModels().some((candidate) => candidate.id === model)) {
+      const error = `Weather transcription unavailable: install ${model}`
+      segment.transcription = { status: 'error', text: '', error }
+      this.#error = error
+      return
+    }
     const activeSeconds = transcriptionActiveSeconds(segment, squelch)
     if (activeSeconds < MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS) {
       segment.transcription = { status: 'skipped', text: '' }
@@ -374,14 +487,21 @@ export class TranscriptionManager {
       return
     }
     const previous = this.#pending.at(-1)
+    const threads = this.#threadsForChannel(segment.channel)
     if (previous && (
       previous.channel !== segment.channel ||
+      this.#pendingModel !== model ||
+      this.#pendingThreads !== threads ||
       Math.abs(Date.parse(segment.startedAt) - Date.parse(previous.endedAt)) > 500 ||
       this.#pendingSquelch !== squelch
     )) {
       this.#flushPending()
     }
-    if (this.#pending.length === 0) this.#pendingSquelch = squelch
+    if (this.#pending.length === 0) {
+      this.#pendingSquelch = squelch
+      this.#pendingModel = model
+      this.#pendingThreads = threads
+    }
     segment.transcription = { status: 'queued', text: '' }
     this.#pending.push(segment)
     // Replay compaction may replace segment.wav before a later overlapping batch uses it.
@@ -391,18 +511,18 @@ export class TranscriptionManager {
     else this.#schedulePending()
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.#queue = []
     this.#clearPending()
     this.#currentAbort?.abort()
-    this.#child?.kill('SIGTERM')
+    await this.#server.closeAll()
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.#closed) return
-    this.stop()
-    this.#archive?.close()
     this.#closed = true
+    await this.stop()
+    this.#archive?.close()
   }
 
   busy(): boolean {
@@ -445,8 +565,11 @@ export class TranscriptionManager {
       wavs,
       durationSeconds: this.#pendingSeconds,
       overlapSegmentCount: this.#pendingOverlapCount,
+      overlapSeconds: this.#overlapSeconds,
       channel: segments.at(-1)!.channel,
-      squelch: this.#pendingSquelch ?? 0
+      squelch: this.#pendingSquelch ?? 0,
+      model: this.#pendingModel ?? this.#model,
+      threads: this.#pendingThreads ?? this.#threads
     })
     const retained: ReplaySegment[] = []
     const retainedWavs: Buffer[] = []
@@ -462,7 +585,11 @@ export class TranscriptionManager {
     this.#pendingWavs = retainedWavs
     this.#pendingSeconds = Math.min(retainedSeconds, this.#overlapSeconds)
     this.#pendingOverlapCount = retained.length
-    if (retained.length === 0) this.#pendingSquelch = undefined
+    if (retained.length === 0) {
+      this.#pendingSquelch = undefined
+      this.#pendingModel = undefined
+      this.#pendingThreads = undefined
+    }
     while (this.#queue.length > 8) {
       const dropped = this.#queue.shift()
       for (const segment of dropped?.segments.slice(dropped.overlapSegmentCount) ?? []) {
@@ -480,14 +607,20 @@ export class TranscriptionManager {
     this.#pendingSeconds = 0
     this.#pendingOverlapCount = 0
     this.#pendingSquelch = undefined
+    this.#pendingModel = undefined
+    this.#pendingThreads = undefined
   }
 
   async #drain(): Promise<void> {
     if (this.#running) return
     this.#running = true
     try {
-      while (this.#enabled && this.#queue.length > 0) {
+      while (this.#enabled && !this.#closed && !this.#reconfiguring && this.#queue.length > 0) {
         const batch = this.#queue.shift()!
+        // Queued audio follows the current selection; the model/thread pair is then
+        // frozen for the full active batch. Configuration changes abort that batch.
+        batch.model = this.#modelForChannel(batch.channel)
+        batch.threads = this.#threadsForChannel(batch.channel)
         this.#activeBatch = batch
         const outputSegments = batch.segments.slice(batch.overlapSegmentCount)
         for (const segment of outputSegments) segment.transcription = { status: 'transcribing', text: '' }
@@ -522,6 +655,9 @@ export class TranscriptionManager {
       this.#running = false
       this.#activeBatch = undefined
       this.#child = undefined
+      if (this.#enabled && !this.#closed && !this.#reconfiguring && this.#queue.length > 0) {
+        queueMicrotask(() => { void this.#drain() })
+      }
     }
   }
 
@@ -535,7 +671,7 @@ export class TranscriptionManager {
       const sampleRate = batch.wavs[0]!.readUInt32LE(24)
       const newPcm = Buffer.concat(batch.wavs.slice(batch.overlapSegmentCount).map((wav) => wav.subarray(44)))
       const overlapPcm = Buffer.concat(batch.wavs.slice(0, batch.overlapSegmentCount).map((wav) => wav.subarray(44)))
-      const maximumOverlapBytes = Math.floor(this.#overlapSeconds * sampleRate) * 2
+      const maximumOverlapBytes = Math.floor(batch.overlapSeconds * sampleRate) * 2
       const retainedOverlap = overlapPcm.subarray(Math.max(0, overlapPcm.length - maximumOverlapBytes))
       const rawPcm = Buffer.concat([
         retainedOverlap,
@@ -561,8 +697,23 @@ export class TranscriptionManager {
         : rawPcm
       if (controller.signal.aborted || !this.#enabled || this.#closed) throw new TranscriptionCancelledError()
       writeFileSync(wavPath, pcmToWav(pcm, sampleRate), { mode: 0o600 })
+      if (this.#keepModelsLoaded && this.#server.available) {
+        try {
+          return cleanWhisperOutput(await this.#server.transcribe(
+            batch.model,
+            batch.threads,
+            wavPath,
+            controller.signal,
+            transcriptionTimeoutMs(batch.durationSeconds),
+            (child) => { this.#child = child }
+          ))
+        } catch (error) {
+          if (error instanceof WhisperServerCancelledError || controller.signal.aborted) throw new TranscriptionCancelledError()
+          throw error
+        }
+      }
       return await new Promise((resolve, reject) => {
-        const child = spawn(this.#command, [wavPath!, this.#model, String(this.#threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(this.#command, [wavPath!, batch.model, String(batch.threads)], { stdio: ['ignore', 'pipe', 'pipe'] })
         this.#child = child
         let stdout = ''
         let stderr = ''
@@ -655,33 +806,55 @@ export class TranscriptionManager {
     }
   }
 
-  #load(): PersistedSettings {
+  #settings(): PersistedSettings {
+    return {
+      enabled: this.#enabled,
+      model: this.#model,
+      threads: this.#threads,
+      weatherModel: this.#weatherModel,
+      weatherThreads: this.#weatherThreads,
+      overlapSeconds: this.#overlapSeconds,
+      keepModelsLoaded: this.#keepModelsLoaded
+    }
+  }
+
+  #load(defaultOverlapSeconds: number): PersistedSettings {
+    const defaults: PersistedSettings = {
+      enabled: false,
+      model: DEFAULT_TRANSCRIPTION_MODEL,
+      threads: DEFAULT_TRANSCRIPTION_THREADS,
+      weatherModel: WEATHER_TRANSCRIPTION_MODEL,
+      weatherThreads: WEATHER_TRANSCRIPTION_THREADS,
+      overlapSeconds: defaultOverlapSeconds,
+      keepModelsLoaded: DEFAULT_KEEP_MODELS_LOADED
+    }
     try {
-      if (!existsSync(this.#settingsPath)) return {
-        enabled: false,
-        model: DEFAULT_TRANSCRIPTION_MODEL,
-        threads: DEFAULT_TRANSCRIPTION_THREADS
-      }
+      if (!existsSync(this.#settingsPath)) return defaults
       const parsed = JSON.parse(readFileSync(this.#settingsPath, 'utf8')) as Partial<PersistedSettings>
       return {
         enabled: parsed.enabled === true,
         model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_TRANSCRIPTION_MODEL,
         threads: Number.isSafeInteger(parsed.threads) && parsed.threads! >= 1 && parsed.threads! <= MAXIMUM_TRANSCRIPTION_THREADS
           ? parsed.threads!
-          : DEFAULT_TRANSCRIPTION_THREADS
+          : DEFAULT_TRANSCRIPTION_THREADS,
+        weatherModel: typeof parsed.weatherModel === 'string' ? parsed.weatherModel : WEATHER_TRANSCRIPTION_MODEL,
+        weatherThreads: Number.isSafeInteger(parsed.weatherThreads) && parsed.weatherThreads! >= 1 && parsed.weatherThreads! <= MAXIMUM_TRANSCRIPTION_THREADS
+          ? parsed.weatherThreads!
+          : WEATHER_TRANSCRIPTION_THREADS,
+        overlapSeconds: typeof parsed.overlapSeconds === 'number' && Number.isFinite(parsed.overlapSeconds) &&
+          parsed.overlapSeconds >= 0 && parsed.overlapSeconds <= MAXIMUM_OVERLAP_SECONDS && parsed.overlapSeconds <= this.#batchSeconds / 2
+          ? parsed.overlapSeconds
+          : defaultOverlapSeconds,
+        keepModelsLoaded: typeof parsed.keepModelsLoaded === 'boolean' ? parsed.keepModelsLoaded : DEFAULT_KEEP_MODELS_LOADED
       }
     } catch {
-      return { enabled: false, model: DEFAULT_TRANSCRIPTION_MODEL, threads: DEFAULT_TRANSCRIPTION_THREADS }
+      return defaults
     }
   }
 
-  #save(): void {
+  #saveSettings(settings: PersistedSettings): void {
     const temporary = `${this.#settingsPath}.new`
-    writeFileSync(temporary, `${JSON.stringify({
-      enabled: this.#enabled,
-      model: this.#model,
-      threads: this.#threads
-    })}\n`, { mode: 0o600 })
+    writeFileSync(temporary, `${JSON.stringify(settings)}\n`, { mode: 0o600 })
     renameSync(temporary, this.#settingsPath)
   }
 }

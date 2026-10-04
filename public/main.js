@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 53
+  const CLIENT_BUILD = 55
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -54,6 +54,10 @@
   const transcriptionEnabled = $('#transcription-enabled')
   const transcriptionModel = $('#transcription-model')
   const transcriptionThreads = $('#transcription-threads')
+  const weatherTranscriptionModel = $('#weather-transcription-model')
+  const weatherTranscriptionThreads = $('#weather-transcription-threads')
+  const transcriptionOverlap = $('#transcription-overlap')
+  const transcriptionKeepLoaded = $('#transcription-keep-loaded')
   const transcriptionStatus = $('#transcription-status')
   const transcriptionProgressState = $('#transcription-progress-state')
   const transcriptionProgressDetail = $('#transcription-progress-detail')
@@ -334,27 +338,50 @@
     const transcription = status.transcription
     renderTranscriptionProgress(transcription)
     const modelSignature = JSON.stringify(transcription.availableModels)
-    if (transcriptionModel.dataset.models !== modelSignature) {
-      transcriptionModel.replaceChildren(...transcription.availableModels.map((model) => {
-        const option = document.createElement('option')
-        option.value = model.id
-        option.textContent = `${model.label} · ${(model.bytes / 1024 / 1024).toFixed(0)} MiB`
-        return option
-      }))
-      transcriptionModel.dataset.models = modelSignature
+    for (const selector of [transcriptionModel, weatherTranscriptionModel]) {
+      if (selector.dataset.models !== modelSignature) {
+        selector.replaceChildren(...transcription.availableModels.map((model) => {
+          const option = document.createElement('option')
+          option.value = model.id
+          option.textContent = `${model.label} · ${(model.bytes / 1024 / 1024).toFixed(0)} MiB`
+          return option
+        }))
+        selector.dataset.models = modelSignature
+      }
+    }
+    if (!transcription.weatherAvailable && ![...weatherTranscriptionModel.options].some((option) => option.value === transcription.weatherModel)) {
+      const unavailable = document.createElement('option')
+      unavailable.value = transcription.weatherModel
+      unavailable.textContent = `${transcription.weatherModel} · unavailable`
+      weatherTranscriptionModel.append(unavailable)
     }
     transcriptionModel.value = transcription.model
     transcriptionThreads.value = String(transcription.threads)
-    transcriptionModel.disabled = transcription.availableModels.length === 0
-    transcriptionThreads.disabled = transcription.availableModels.length === 0
+    weatherTranscriptionModel.value = transcription.weatherModel
+    weatherTranscriptionThreads.value = String(transcription.weatherThreads)
+    if (document.activeElement !== transcriptionOverlap) transcriptionOverlap.value = String(transcription.overlapSeconds)
+    transcriptionKeepLoaded.checked = transcription.keepModelsLoaded
+    transcriptionModel.disabled = transcription.availableModels.length === 0 || transcriptionModel.dataset.saving === 'true'
+    transcriptionThreads.disabled = transcription.availableModels.length === 0 || transcriptionThreads.dataset.saving === 'true'
+    weatherTranscriptionModel.disabled = transcription.availableModels.length === 0 || weatherTranscriptionModel.dataset.saving === 'true'
+    weatherTranscriptionThreads.disabled = transcription.availableModels.length === 0 || weatherTranscriptionThreads.dataset.saving === 'true'
+    transcriptionOverlap.disabled = transcriptionOverlap.dataset.saving === 'true'
+    transcriptionKeepLoaded.disabled = transcriptionKeepLoaded.dataset.saving === 'true'
     transcriptionEnabled.checked = transcription.enabled
     transcriptionEnabled.disabled = !transcription.available && !transcription.enabled
+    const modelLabel = (id) => transcription.availableModels.find((model) => model.id === id)?.label || id
+    const marineModel = modelLabel(transcription.model)
+    const weatherModel = modelLabel(transcription.weatherModel)
+    const route = transcription.weatherAvailable
+      ? `weather ${weatherModel} · marine ${marineModel}`
+      : `weather model unavailable · marine ${marineModel}`
+    const activeModel = transcription.activeModel ? ` · processing ${modelLabel(transcription.activeModel)}` : ''
     transcriptionStatus.textContent = transcription.error
       ? `Transcription needs attention · ${transcription.error}`
       : transcription.enabled
-      ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''} · ${transcription.engine} · ${transcription.threads} threads`
+      ? `Local transcription on · ${transcription.state}${transcription.queued ? ` · ${transcription.queued} queued` : ''}${activeModel} · ${route} · marine ${transcription.threads} threads · weather ${transcription.weatherThreads} threads`
       : transcription.available
-        ? `Local transcription off · ${transcription.engine} is installed and ready`
+        ? `Local transcription off · ${route} · ready`
         : 'Local transcription off · install vhf-whisper-runtime to enable it'
     if (transcription.archive) {
       archiveSummary.textContent = `${transcription.archive.records} records · ${(transcription.archive.databaseBytes / 1024 / 1024).toFixed(1)} of ${(transcription.archive.maxBytes / 1024 / 1024).toFixed(0)} MiB · up to ${transcription.archive.retentionDays} days`
@@ -2311,27 +2338,33 @@
     }
   })
 
-  async function saveTranscriptionRuntime() {
-    transcriptionModel.disabled = true
-    transcriptionThreads.disabled = true
+  async function saveTranscriptionRuntime(patch, controls) {
+    for (const control of controls) {
+      control.dataset.saving = 'true'
+      control.disabled = true
+    }
     try {
       const status = await request('transcription', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: transcriptionModel.value,
-          threads: Number(transcriptionThreads.value)
-        })
+        body: JSON.stringify(patch)
       })
       renderStatus(status)
     } catch (error) {
       transcriptionStatus.textContent = error.message
       await updateStatus()
+    } finally {
+      for (const control of controls) delete control.dataset.saving
+      if (latestStatus) renderStatus(latestStatus)
     }
   }
 
-  transcriptionModel.addEventListener('change', saveTranscriptionRuntime)
-  transcriptionThreads.addEventListener('change', saveTranscriptionRuntime)
+  transcriptionModel.addEventListener('change', () => saveTranscriptionRuntime({ model: transcriptionModel.value }, [transcriptionModel]))
+  transcriptionThreads.addEventListener('change', () => saveTranscriptionRuntime({ threads: Number(transcriptionThreads.value) }, [transcriptionThreads]))
+  weatherTranscriptionModel.addEventListener('change', () => saveTranscriptionRuntime({ weatherModel: weatherTranscriptionModel.value }, [weatherTranscriptionModel]))
+  weatherTranscriptionThreads.addEventListener('change', () => saveTranscriptionRuntime({ weatherThreads: Number(weatherTranscriptionThreads.value) }, [weatherTranscriptionThreads]))
+  transcriptionOverlap.addEventListener('change', () => saveTranscriptionRuntime({ overlapSeconds: Number(transcriptionOverlap.value) }, [transcriptionOverlap]))
+  transcriptionKeepLoaded.addEventListener('change', () => saveTranscriptionRuntime({ keepModelsLoaded: transcriptionKeepLoaded.checked }, [transcriptionKeepLoaded]))
   settingsPanel.addEventListener('toggle', () => savePreference('settings-open', settingsPanel.open))
   window.addEventListener('hashchange', openTranscriptFromHash)
   window.addEventListener('pagehide', () => {

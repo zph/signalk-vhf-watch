@@ -4,6 +4,7 @@ import type { ChannelRegion } from './channels'
 import { cleanArchivedPlaybackPcm, cleanPlaybackPcm, parsePlaybackCleanup, PlaybackCleaner } from './playback-cleanup'
 import { canChannelize } from './receiver'
 import type { VhfRuntime } from './runtime'
+import type { TranscriptionSettingsPatch } from './transcription'
 import { discriminatorThreshold } from './squelch'
 import { isFfmpegPlaybackCleanup, type FfmpegPlaybackCleanup } from './rnnoise'
 import { pcmToWav, wavHeader } from './wav'
@@ -11,7 +12,7 @@ import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 
-const UI_VERSION = 53
+const UI_VERSION = 55
 
 interface ByteRange {
   start: number
@@ -842,21 +843,33 @@ export function registerRoutes(
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return
     try {
-      const body = request.body as { enabled?: unknown; model?: unknown; threads?: unknown } | undefined
-      let status = runtime.status()
-      if (body?.model !== undefined || body?.threads !== undefined) {
-        if (typeof body.model !== 'string') throw new Error('model must be a string')
-        if (typeof body.threads !== 'number') throw new Error('threads must be a number')
-        status = await runtime.configureTranscription(body.model, body.threads)
-      }
-      if (body?.enabled !== undefined) {
+      const body = request.body as Record<string, unknown> | undefined
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('A transcription settings object is required')
+      const allowed = new Set(['enabled', 'model', 'threads', 'weatherModel', 'weatherThreads', 'overlapSeconds', 'keepModelsLoaded'])
+      for (const key of Object.keys(body)) if (!allowed.has(key)) throw new Error(`Unknown transcription setting: ${key}`)
+      if (Object.keys(body).length === 0) throw new Error('At least one transcription setting is required')
+      const patch: TranscriptionSettingsPatch = {}
+      if ('enabled' in body) {
         if (typeof body.enabled !== 'boolean') throw new Error('enabled must be true or false')
-        status = await runtime.setTranscriptionEnabled(body.enabled)
+        patch.enabled = body.enabled
       }
-      if (body?.enabled === undefined && body?.model === undefined && body?.threads === undefined) {
-        throw new Error('enabled, model, or threads is required')
+      for (const key of ['model', 'weatherModel'] as const) {
+        if (key in body) {
+          if (typeof body[key] !== 'string') throw new Error(`${key} must be a string`)
+          patch[key] = body[key] as string
+        }
       }
-      response.json(status)
+      for (const key of ['threads', 'weatherThreads', 'overlapSeconds'] as const) {
+        if (key in body) {
+          if (typeof body[key] !== 'number') throw new Error(`${key} must be a number`)
+          patch[key] = body[key] as number
+        }
+      }
+      if ('keepModelsLoaded' in body) {
+        if (typeof body.keepModelsLoaded !== 'boolean') throw new Error('keepModelsLoaded must be true or false')
+        patch.keepModelsLoaded = body.keepModelsLoaded
+      }
+      response.json(await runtime.configureTranscription(patch))
     } catch (error) {
       response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
     }
@@ -909,7 +922,7 @@ export function openApi(): object {
       '/api/channel': { post: { summary: 'Tune the receive channel', responses: { '200': { description: 'Updated status' } } } },
       '/api/slots': { post: { summary: 'Configure both receiver slots and their fixed or scan modes', responses: { '200': { description: 'Updated status' } } } },
       '/api/region': { post: { summary: 'Select the US, Canadian, or combined channel plan', responses: { '200': { description: 'Updated status' } } } },
-      '/api/transcription': { post: { summary: 'Durably enable or disable local voice transcription', responses: { '200': { description: 'Updated status' } } } }
+      '/api/transcription': { post: { summary: 'Update local transcription configuration', responses: { '200': { description: 'Updated status' } } } }
     }
   }
 }

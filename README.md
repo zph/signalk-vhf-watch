@@ -152,9 +152,11 @@ leaves uncertain or short regions open, and denoising is not proof that every we
 Playback uses the existing automatic gate at its full configured strength. This setting does not
 change speech detection or affect open regions.
 Modified currently requires 16 kHz audio; if its runtime is missing, busy, or the rate is unsupported,
-the player reports that condition and Raw remains available. Whisper always uses the unfiltered
-FIR-demodulated source. It receives a full one-minute context window with ten seconds of overlap, and
-the durable archive keeps that complete source minute. New archive rows show the measured
+the player reports that condition and Raw remains available. Transcription starts from the
+FIR-demodulated source and applies a 50% RNNoise mix when that runtime is available; playback cleanup
+is separate. It batches the usual one-minute storage slices with a configurable overlap (two seconds
+by default), so a submitted window can be longer than one minute. The durable archive keeps the
+complete source recording. New archive rows show the measured
 carrier-active interval plus one second before and after. Existing rows keep their saved activity
 window; the complete original recording remains available through **Original WAV**.
 
@@ -216,20 +218,37 @@ directory and survives Signal K restarts. Disabling it stops the worker and clea
 
 Transcription requires the separately installed `vhf-whisper-runtime` Debian package. The receiver,
 DSC decoder, live audio, and replay remain fully functional without it, and the UI will refuse to
-enable transcription until `/usr/bin/vhf-whisper` is installed. The runtime uses the offline
-`whisper.cpp` `base.en-q5_1` model with two CPU threads and its normal audio context by default. The
-web UI discovers every model installed by the runtime package and durably selects both model and a
-1–16 thread count. This boat package also includes `small.en-q5_1`; larger server installations can
-add Medium or Large model files without changing the plugin. Off-air NOAA
-marine forecasts showed that Base recovered substantially more radio speech and nearby place names
-than Tiny. Timestamp-aware decoding is retained for reliable long-window alignment; the plugin strips
-the timestamp labels before display. Adjacent
-one-minute replay slices are exposed to the timeline while they are still growing and are combined into recognition windows. Successive windows reuse
-ten seconds of audio for linguistic context, then reconcile the repeated text with the preceding
+enable transcription until a Whisper CLI or server wrapper is installed. The web UI lets an operator
+select separate weather and marine models and thread counts. Both routes default to Base.EN Q5_1
+with two threads and two seconds of context overlap. Models reload for each recording by default;
+keeping them loaded can be enabled explicitly. Weather model and thread count remain configurable
+for controlled comparison. Overlap is configurable from zero to thirty seconds, up to half the
+transcription window. Status shows each route and the active batch model/thread count. If a selected
+model is absent, that route reports unavailable instead of silently using the other model. The
+optional resident server uses loopback only.
+Recognized text appears with its archived recording and in the conversation view; failed jobs show
+their per-recording error in transcription status and processing details.
+
+Tiny.EN Q5_1 is available for explicit comparison, but is not selected automatically. On one
+unlabeled 60-second WX clip it was about 61% faster than Base at one thread, but its normalized
+output differed by 44.6% of Base's words. That is disagreement, not an accuracy score, because no
+independent weather transcript exists. On a short public JFK speech control, Base scored 0% WER
+clean and 4.5% with added radio noise; Tiny scored 9.1% on both. Those controls do not establish
+marine-radio accuracy. See [the ASR comparison report](experiments/CONTINUOUS_WEATHER_ASR.md) for
+measurements, controls, and limits.
+Timestamp-aware decoding is retained for reliable long-window alignment; the plugin strips
+the timestamp labels before display. Adjacent one-minute replay slices are exposed to the timeline
+while they are still growing and are combined into recognition windows. Successive windows reuse
+two seconds of audio for linguistic context, then reconcile the repeated text with the preceding
 result so it is not shown twice. A shorter final window runs after the channel has been quiet for six
 seconds. The decode watchdog is at least 90 seconds and scales to twice the audio duration, so a full
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
-processed one at a time; audio is not uploaded.
+processed one at a time; audio is not uploaded. If the optional resident server is installed and
+**Keep models ready between recordings** is enabled, the manager lazily keeps at most two
+loopback-only workers and reuses loaded models between batches. This option is off by default and
+workers stop when transcription is disabled or settings change. On the measured 60-second clip,
+resident and fresh CLI inference times were nearly identical; reuse did not materially shorten that
+clip. The command-line backend remains the default and is shown in status.
 
 ### Silero VAD gate during live transcription
 

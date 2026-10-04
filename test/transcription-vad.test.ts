@@ -39,6 +39,7 @@ test('prechecks only new audio, preserves the original overlap for Base, and fai
 
   const manager = new TranscriptionManager(path.join(dir, 'settings.json'), whisper, {
     batchSeconds: 4, overlapSeconds: 1, idleMs: 5, modelsDir: dir,
+    serverCommand: path.join(dir, 'missing-whisper-server'),
     vad: new WhisperVadProbe({ command: vad, model })
   })
   await manager.setEnabled(true)
@@ -55,7 +56,7 @@ test('prechecks only new audio, preserves the original overlap for Base, and fai
   assert.deepEqual(readFileSync(vadLog, 'utf8').trim().split(/\r?\n/), ['128044 1', '64044 3'])
   assert.deepEqual(readFileSync(whisperLog, 'utf8').trim().split(/\r?\n/), ['128044 1', '96044 2'])
   assert.deepEqual(manager.status().speechGate, { mode: 'filter', checked: 1, wouldSkip: 0, skipped: 0, failOpen: 1 })
-  manager.close()
+  await manager.close()
 })
 
 test('production skips Base for valid no-speech while preserving the raw replay audio', async () => {
@@ -70,6 +71,7 @@ test('production skips Base for valid no-speech while preserving the raw replay 
   executable(whisper, ['#!/bin/sh', `printf called >> '${whisperLog}'`, `printf 'coast guard call\\n'`])
   const manager = new TranscriptionManager(path.join(dir, 'settings.json'), whisper, {
     batchSeconds: 2, idleMs: 5, modelsDir: dir,
+    serverCommand: path.join(dir, 'missing-whisper-server'),
     vad: new WhisperVadProbe({ command: vad, model })
   })
   await manager.setEnabled(true)
@@ -82,7 +84,7 @@ test('production skips Base for valid no-speech while preserving the raw replay 
   assert.equal(existsSync(whisperLog), false, 'valid no-speech result skips the Whisper CLI')
   assert.deepEqual(segment!.wav, original)
   assert.deepEqual(manager.status().speechGate, { mode: 'filter', checked: 1, wouldSkip: 1, skipped: 1, failOpen: 0 })
-  manager.close()
+  await manager.close()
 })
 
 test('test-only observe mode still sends a valid no-speech batch to Base', async () => {
@@ -97,6 +99,7 @@ test('test-only observe mode still sends a valid no-speech batch to Base', async
   executable(whisper, ['#!/bin/sh', `printf called >> '${whisperLog}'`, `printf 'coast guard call\\n'`])
   const manager = new TranscriptionManager(path.join(dir, 'settings.json'), whisper, {
     batchSeconds: 2, idleMs: 5, modelsDir: dir,
+    serverCommand: path.join(dir, 'missing-whisper-server'),
     vad: new WhisperVadProbe({ command: vad, model }),
     vadMode: 'observe'
   })
@@ -110,7 +113,7 @@ test('test-only observe mode still sends a valid no-speech batch to Base', async
   assert.equal(existsSync(whisperLog), true)
   assert.deepEqual(segment!.wav, original)
   assert.deepEqual(manager.status().speechGate, { mode: 'observe', checked: 1, wouldSkip: 1, skipped: 0, failOpen: 0 })
-  manager.close()
+  await manager.close()
 })
 
 test('closing the manager while VAD is running does not start Base ASR', async () => {
@@ -130,6 +133,7 @@ test('closing the manager while VAD is running does not start Base ASR', async (
   executable(whisper, ['#!/bin/sh', `printf called >> '${whisperLog}'`])
   const manager = new TranscriptionManager(path.join(dir, 'settings.json'), whisper, {
     batchSeconds: 2, idleMs: 5, modelsDir: dir,
+    serverCommand: path.join(dir, 'missing-whisper-server'),
     vad: new WhisperVadProbe({ command: vad, model })
   })
   await manager.setEnabled(true)
@@ -137,7 +141,7 @@ test('closing the manager while VAD is running does not start Base ASR', async (
   const [segment] = replay.append(Buffer.alloc(64_000, 7), Date.UTC(2026, 8, 29), 0.1)
   manager.enqueue(segment!, 20)
   await waitFor(() => existsSync(started))
-  manager.close()
+  await manager.close()
   await new Promise((resolve) => setTimeout(resolve, 100))
   assert.equal(existsSync(whisperLog), false)
 })

@@ -4,10 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RollingReplay } from '../src/rolling-buffer'
-import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionActiveSeconds, transcriptionTimeoutMs, TranscriptionManager } from '../src/transcription'
+import { cleanWhisperOutput, reconcileTranscriptOverlap, transcriptionActiveSeconds, transcriptionTimeoutMs, TranscriptionManager, TRANSCRIPTION_OVERLAP_SECONDS, WEATHER_TRANSCRIPTION_MODEL } from '../src/transcription'
 import { TranscriptArchive } from '../src/transcript-archive'
 import { RnnoiseDenoiser } from '../src/rnnoise'
 import { WhisperVadProbe } from '../src/whisper-vad'
+import { WhisperServerCancelledError, WhisperServerPool } from '../src/whisper-server-pool'
 
 test('backlog includes active, queued and pending clips without counting ASR overlap twice', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-backlog-'))
@@ -35,7 +36,7 @@ test('backlog includes active, queued and pending clips without counting ASR ove
     assert.deepEqual(manager.status().backlog, { clips: 0, seconds: 0, processingClips: 0 })
     assert.ok(segments.every((segment) => segment.transcription?.status === 'complete'))
   } finally {
-    manager.close()
+    await manager.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })
@@ -59,7 +60,7 @@ test('reconciles a full minute repeated by a long overlap window', () => {
   assert.equal(reconcileTranscriptOverlap(previous, current), 'Elevated fire weather conditions continue through Wednesday.')
 })
 
-test('repairs long duplicate prefixes already stored in consecutive archive records', () => {
+test('repairs long duplicate prefixes already stored in consecutive archive records', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-repair-'))
   const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
   const previous = Array.from({ length: 80 }, (_value, index) => `forecast${index}`).join(' ')
@@ -90,7 +91,7 @@ test('repairs long duplicate prefixes already stored in consecutive archive reco
     previous,
     'elevated fire weather conditions continue'
   ])
-  manager.close()
+  await manager.close()
 })
 
 test('allows decoding to run longer than its one-minute audio window', () => {
@@ -154,7 +155,7 @@ test('does not archive successful empty or annotation-only Whisper output', asyn
     assert.deepEqual(segment!.transcription, { status: 'complete', text: '' })
     assert.equal(archive.status().records, 0)
     assert.equal((await replay.wavFor(segment!.id, 20))?.length, 32_044)
-    manager.close()
+    await manager.close()
   }
 })
 
@@ -176,7 +177,11 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
   assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')), {
     enabled: true,
     model: 'small.en-q5_1',
-    threads: 4
+    threads: 4,
+    weatherModel: WEATHER_TRANSCRIPTION_MODEL,
+    weatherThreads: 2,
+    overlapSeconds: 1,
+    keepModelsLoaded: false
   })
   assert.deepEqual(manager.status().availableModels.map((model) => model.id), ['base.en-q5_1', 'small.en-q5_1'])
   const exposedModels = manager.availableModels()
@@ -212,7 +217,243 @@ test('transcription defaults off, requires its runtime, and persists explicit ac
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
   assert.deepEqual(segment!.transcription, { status: 'complete', text: 'channel one six test' })
-  manager.close()
+  await manager.close()
+})
+
+test('legacy settings inherit weather, overlap, and resident-model defaults; invalid partial updates are atomic', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-transcription-settings-v2-'))
+  const settings = path.join(directory, 'settings.json')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(path.join(directory, `ggml-${WEATHER_TRANSCRIPTION_MODEL}.bin`), 'weather model')
+  writeFileSync(settings, JSON.stringify({ enabled: false, model: 'base.en-q5_1', threads: 2 }))
+  const manager = new TranscriptionManager(settings, path.join(directory, 'missing-cli'), { modelsDir: directory })
+  try {
+    assert.deepEqual({
+      weatherModel: manager.status().weatherModel,
+      weatherThreads: manager.status().weatherThreads,
+      overlapSeconds: manager.status().overlapSeconds,
+      keepModelsLoaded: manager.status().keepModelsLoaded
+    }, {
+      weatherModel: WEATHER_TRANSCRIPTION_MODEL,
+      weatherThreads: 2,
+      overlapSeconds: 2,
+      keepModelsLoaded: false
+    })
+    const before = readFileSync(settings, 'utf8')
+    await assert.rejects(() => manager.configure({ model: 'tiny.en-q5_1', weatherThreads: 0 }), /weatherThreads/)
+    assert.equal(readFileSync(settings, 'utf8'), before)
+    assert.equal(manager.status().model, 'base.en-q5_1')
+    assert.equal(manager.status().weatherThreads, 2)
+    await manager.configure({ weatherThreads: 4, overlapSeconds: 0.5, keepModelsLoaded: false })
+    const reloaded = new TranscriptionManager(settings, path.join(directory, 'missing-cli'), { modelsDir: directory })
+    assert.equal(reloaded.status().weatherThreads, 4)
+    assert.equal(reloaded.status().overlapSeconds, 0.5)
+    assert.equal(reloaded.status().keepModelsLoaded, false)
+    await reloaded.close()
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('routes NOAA weather batches through the configurable weather model and thread count', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-weather-model-'))
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(path.join(directory, 'ggml-small.en-q5_1.bin'), 'small model')
+  writeFileSync(command, '#!/bin/sh\nprintf "%s %s\\n" "$2" "$3"\n')
+  chmodSync(command, 0o755)
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    modelsDir: directory, batchSeconds: 1, idleMs: 5
+  })
+  try {
+    await manager.setEnabled(true)
+    await manager.configure({ weatherModel: 'small.en-q5_1', weatherThreads: 3 })
+    const weatherReplay = new RollingReplay(8_000, 1, 1, 'WX4')
+    const [weather] = weatherReplay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 9, 3), 0.1)
+    manager.enqueue(weather!, 20)
+    for (let i = 0; i < 200 && weather!.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(weather!.transcription?.text, 'small.en-q5_1 3')
+
+    const marineReplay = new RollingReplay(8_000, 1, 1, '16')
+    const [marine] = marineReplay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 9, 3), 0.1)
+    manager.enqueue(marine!, 20)
+    for (let i = 0; i < 200 && marine!.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(marine!.transcription?.text, 'base.en-q5_1 2')
+    assert.equal(manager.status().model, 'base.en-q5_1', 'weather routing does not mutate the persisted selection')
+    assert.equal(manager.status().weatherModel, 'small.en-q5_1')
+    assert.equal(manager.status().weatherThreads, 3)
+    assert.equal(manager.status().backend, 'whisper-cli')
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('reports an explicitly selected unavailable weather model rather than falling back', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-weather-unavailable-'))
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ enabled: false, weatherModel: 'tiny.en-q5_1' }))
+  writeFileSync(command, '#!/bin/sh\nprintf "should not run\\n"\n')
+  chmodSync(command, 0o755)
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, { modelsDir: directory })
+  try {
+    await manager.setEnabled(true)
+    const replay = new RollingReplay(8_000, 1, 1, 'WX4')
+    const [segment] = replay.append(Buffer.alloc(16_000, 1), Date.UTC(2026, 9, 3), 0.1)
+    manager.enqueue(segment!, 20)
+    assert.equal(manager.status().weatherAvailable, false)
+    assert.match(segment!.transcription?.error ?? '', /Weather transcription unavailable/)
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('model changes reap the active server and apply new settings to queued batches', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-server-reconfigure-'))
+  writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ keepModelsLoaded: true }))
+  for (const model of ['base.en-q5_1', 'small.en-q5_1', WEATHER_TRANSCRIPTION_MODEL]) {
+    writeFileSync(path.join(directory, `ggml-${model}.bin`), `${model} model`)
+  }
+  const calls: Array<{ model: string; threads: number; reapsBeforeStart: number }> = []
+  let reaps = 0
+  class FakeServerPool extends WhisperServerPool {
+    constructor() { super({ modelsDir: directory }) }
+    override get available(): boolean { return true }
+    override get residentModels(): string[] { return calls.map((call) => call.model) }
+    override async transcribe(model: string, threads: number, _wavPath: string, signal: AbortSignal): Promise<string> {
+      calls.push({ model, threads, reapsBeforeStart: reaps })
+      if (calls.length === 1) {
+        return await new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new WhisperServerCancelledError()), { once: true })
+        })
+      }
+      return `${model}:${threads}`
+    }
+    override async closeAll(): Promise<void> { reaps += 1 }
+  }
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), path.join(directory, 'missing-cli'), {
+    modelsDir: directory, serverPool: new FakeServerPool(), batchSeconds: 1, idleMs: 5
+  })
+  try {
+    await manager.setEnabled(true)
+    const makeSegment = (at: number) => new RollingReplay(8_000, 1, 1, '16')
+      .append(Buffer.alloc(16_000, 1), at, 0.1)[0]!
+    const first = makeSegment(Date.UTC(2026, 9, 3))
+    manager.enqueue(first, 20)
+    for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.deepEqual(calls, [{ model: 'base.en-q5_1', threads: 2, reapsBeforeStart: 0 }])
+
+    const queued = makeSegment(Date.UTC(2026, 9, 3, 0, 0, 1))
+    manager.enqueue(queued, 20)
+    await manager.configure('small.en-q5_1', 3)
+    for (let i = 0; i < 200 && queued.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.deepEqual(first.transcription, { status: 'skipped', text: '' })
+    assert.deepEqual(calls[1], { model: 'small.en-q5_1', threads: 3, reapsBeforeStart: 1 })
+    assert.equal(queued.transcription?.text, 'small.en-q5_1:3')
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('disabling model residency reaps server workers and routes subsequent clips through the CLI', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-server-residency-setting-'))
+  writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ keepModelsLoaded: true }))
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  const cli = path.join(directory, 'fake-whisper')
+  writeFileSync(cli, '#!/bin/sh\nprintf "cli-result\\n"\n')
+  chmodSync(cli, 0o755)
+  const calls: string[] = []
+  let closes = 0
+  class FakeServerPool extends WhisperServerPool {
+    constructor() { super({ modelsDir: directory }) }
+    override get available(): boolean { return true }
+    override get residentModels(): string[] { return ['base.en-q5_1'] }
+    override async transcribe(): Promise<string> { calls.push('server'); return 'server-result' }
+    override async closeAll(): Promise<void> { closes += 1 }
+  }
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), cli, {
+    modelsDir: directory, batchSeconds: 1, idleMs: 5, vadMode: 'observe', serverPool: new FakeServerPool()
+  })
+  try {
+    await manager.setEnabled(true)
+    const makeSegment = (seconds: number) => new RollingReplay(8_000, 1, 1, '16')
+      .append(Buffer.alloc(16_000, 1), Date.UTC(2026, 9, 3, 0, 0, seconds), 0.1)[0]!
+    const resident = makeSegment(0)
+    manager.enqueue(resident, 20)
+    for (let i = 0; i < 100 && resident.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(resident.transcription?.text, 'server-result')
+    await manager.configure({ keepModelsLoaded: false })
+    assert.equal(closes, 1)
+    assert.equal(manager.status().backend, 'whisper-cli')
+    const cliSegment = makeSegment(1)
+    manager.enqueue(cliSegment, 20)
+    for (let i = 0; i < 100 && cliSegment.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(cliSegment.transcription?.text, 'cli-result')
+    assert.deepEqual(calls, ['server'])
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('defaults adjacent transcription context overlap to two seconds', async () => {
+  assert.equal(TRANSCRIPTION_OVERLAP_SECONDS, 2)
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-two-second-overlap-'))
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
+  chmodSync(command, 0o755)
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    modelsDir: directory, batchSeconds: 4, idleMs: 5, vadMode: 'observe'
+  })
+  try {
+    await manager.setEnabled(true)
+    const started = Date.UTC(2026, 9, 3)
+    const segmentAt = (index: number) => {
+      const replay = new RollingReplay(8_000, 1, 1, '16')
+      return replay.append(Buffer.alloc(16_000, index + 1), started + index * 1_000, 0.1)[0]!
+    }
+    const initial = [0, 1, 2, 3].map(segmentAt)
+    for (const segment of initial) manager.enqueue(segment, 20)
+    for (let i = 0; i < 200 && initial[3]!.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(initial[3]!.transcription?.text, '64044')
+
+    const next = segmentAt(4)
+    manager.enqueue(next, 20)
+    for (let i = 0; i < 200 && next.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(next.transcription?.text, '48044', 'the next window contains two seconds of overlap plus one new second')
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('changing overlap flushes pending audio with its original samples before applying the new value', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-overlap-reconfigure-'))
+  writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  const command = path.join(directory, 'fake-whisper')
+  writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
+  chmodSync(command, 0o755)
+  const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+    modelsDir: directory, batchSeconds: 4, overlapSeconds: 1, idleMs: 60_000, vadMode: 'observe'
+  })
+  try {
+    await manager.setEnabled(true)
+    const replay = new RollingReplay(8_000, 1, 1, '16')
+    const [segment] = replay.append(Buffer.alloc(16_000, 0x31), Date.UTC(2026, 9, 3), 0.1)
+    manager.enqueue(segment!, 20)
+    await manager.configure({ overlapSeconds: 0.5 })
+    assert.equal(manager.status().overlapSeconds, 0.5)
+    for (let i = 0; i < 100 && segment!.transcription?.status !== 'complete'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(segment!.transcription?.text, '16044', 'the flushed old-settings batch still contains its full one-second WAV')
+  } finally {
+    await manager.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('feeds the half-wet RNNoise output to Whisper without modifying archived source audio', async () => {
@@ -246,7 +487,7 @@ test('feeds the half-wet RNNoise output to Whisper without modifying archived so
     assert.equal(segment!.transcription?.text, '2')
     assert.equal(manager.archiveWav(archive.list()[0]!.id)?.subarray(44, 45)[0], 1)
   } finally {
-    manager.close()
+    await manager.close()
   }
 })
 
@@ -279,7 +520,7 @@ test('batches adjacent replay slices into a longer radio-speech window', async (
   assert.equal(archive.list()[0]?.transcript, '96044')
   assert.equal(archive.list()[0]?.channel, '16')
   assert.equal(archive.wav(archive.list()[0]!.id)?.length, 96_044)
-  manager.close()
+  await manager.close()
 })
 
 test('keeps raw WAV audio available for transcription overlap after Opus compaction', async () => {
@@ -339,7 +580,7 @@ test('keeps raw WAV audio available for transcription overlap after Opus compact
     assert.deepEqual(archive.wav(records[1]!.id), originalNextWav,
       'overlap is supplied to Whisper but only new, original audio is archived')
   } finally {
-    manager.close()
+    await manager.close()
     rmSync(directory, { recursive: true, force: true })
   }
 })
@@ -375,7 +616,7 @@ test('archives overlap-only recognition when raw Whisper output contains speech'
     'alpha bravo charlie delta',
     ''
   ])
-  manager.close()
+  await manager.close()
 })
 
 test('archives the full source and marks activity with one second of padding on each side', async () => {
@@ -411,7 +652,7 @@ test('archives the full source and marks activity with one second of padding on 
   assert.equal(record?.audioBytes, 1_920_044)
   assert.equal(record?.activityStartSeconds, 19)
   assert.equal(record?.activityEndSeconds, 26)
-  manager.close()
+  await manager.close()
 })
 
 test('reuses audio overlap between windows without duplicating text or archived audio', async () => {
@@ -461,7 +702,7 @@ test('reuses audio overlap between windows without duplicating text or archived 
     'alpha bravo charlie delta echo foxtrot golf hotel',
     'india juliet'
   ])
-  manager.close()
+  await manager.close()
 })
 
 test('trims overlap audio to ten seconds when replay slices are a full minute', async () => {
@@ -469,6 +710,7 @@ test('trims overlap audio to ten seconds when replay slices are a full minute', 
   const settings = path.join(directory, 'settings.json')
   const command = path.join(directory, 'fake-whisper')
   writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'base model')
+  writeFileSync(path.join(directory, `ggml-${WEATHER_TRANSCRIPTION_MODEL}.bin`), 'tiny model')
   writeFileSync(command, '#!/bin/sh\nwc -c < "$1" | tr -d " "\n')
   chmodSync(command, 0o755)
   const archive = new TranscriptArchive(path.join(directory, 'transcripts.sqlite3'))
@@ -495,5 +737,5 @@ test('trims overlap audio to ten seconds when replay slices are a full minute', 
   assert.equal(first.transcription?.text, '1920044')
   assert.equal(second.transcription?.text, '2240044')
   assert.deepEqual(archive.list().slice().reverse().map((record) => record.durationSeconds), [60, 60])
-  manager.close()
+  await manager.close()
 })

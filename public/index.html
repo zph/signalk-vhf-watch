@@ -222,14 +222,30 @@
               <input id="transcription-enabled" type="checkbox" />
               <span>Transcribe voice</span>
             </label>
-            <label for="transcription-model">Whisper model
+            <label for="transcription-model">Marine model
               <select id="transcription-model"></select>
             </label>
-            <label for="transcription-threads">CPU threads
+            <label for="transcription-threads">Marine CPU threads
               <select id="transcription-threads">
                 <option value="1">1</option><option value="2" selected>2</option><option value="4">4</option>
                 <option value="6">6</option><option value="8">8</option><option value="12">12</option><option value="16">16</option>
               </select>
+            </label>
+            <label for="weather-transcription-model">Weather model
+              <select id="weather-transcription-model"></select>
+            </label>
+            <label for="weather-transcription-threads">Weather CPU threads
+              <select id="weather-transcription-threads">
+                <option value="1" selected>1</option><option value="2">2</option><option value="4">4</option>
+                <option value="6">6</option><option value="8">8</option><option value="12">12</option><option value="16">16</option>
+              </select>
+            </label>
+            <label for="transcription-overlap">Context overlap (seconds)
+              <input id="transcription-overlap" type="number" min="0" max="30" step="0.5" value="2" />
+            </label>
+            <label class="check-setting" for="transcription-keep-loaded">
+              <input id="transcription-keep-loaded" type="checkbox" />
+              <span>Keep models ready between recordings</span>
             </label>
             <p id="retention" class="settings-note">Audio remains in this Signal K process only.</p>
             <p id="transcription-status" class="settings-note">Transcription is off.</p>
@@ -261,6 +277,6 @@
   </main>
   <script src="./conversation.js?v=47"></script>
   <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
-  <script src="./main.js?v=53"></script>
+  <script src="./main.js?v=55"></script>
 </body>
 </html>
