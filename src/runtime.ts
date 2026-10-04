@@ -237,6 +237,8 @@ export class VhfRuntime extends EventEmitter<{
   readonly #slotBActivityScores = new Map<string, number>()
   #channelRegion: ChannelRegion
   #receiver?: AudioReceiver
+  #captureAllowed: boolean
+  readonly #pendingReceiverReleases = new Set<Promise<void>>()
   #receiverState = 'Stopped'
   #level = 0
   #lastAudioAt?: string
@@ -270,6 +272,7 @@ export class VhfRuntime extends EventEmitter<{
   ) {
     super()
     this.config = config
+    this.#captureAllowed = !(config.manageReceiverOwnership && config.receiverMode === 'rtl_sdr' && process.platform === 'linux')
     this.#channelRegion = config.channelRegion
     const configuredChannel = channelById(config.initialChannel, this.#channelRegion)!
     this.#channel = configuredChannel
@@ -331,18 +334,22 @@ export class VhfRuntime extends EventEmitter<{
       return
     }
     this.#startReceiver()
-    if (this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
-    if (this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
+    if (this.#captureAllowed && this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
+    if (this.#captureAllowed && this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
   }
 
   async stop(): Promise<void> {
+    this.#captureAllowed = false
     if (this.#historyTimer) clearInterval(this.#historyTimer)
     this.#historyTimer = undefined
     if (this.#dscIdentityRefreshTimer) clearInterval(this.#dscIdentityRefreshTimer)
     this.#dscIdentityRefreshTimer = undefined
-    this.#stopReceiver()
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
+    this.#scanTimer = undefined
+    this.#slotBScanTimer = undefined
+    let releaseError: unknown
+    try { await this.#stopReceiverAndWait() } catch (error) { releaseError = error }
     await this.transcription.stop()
     this.replay.flush()
     this.replayB.flush()
@@ -351,6 +358,7 @@ export class VhfRuntime extends EventEmitter<{
     await this.transcription.close()
     this.#scheduleHistorySnapshot()
     await this.#historyStore?.flush()
+    if (releaseError) throw releaseError
   }
 
   tune(channelId: string): RuntimeStatus {
@@ -483,7 +491,7 @@ export class VhfRuntime extends EventEmitter<{
 
   status(): RuntimeStatus {
     return {
-      enabled: this.config.enabled,
+      enabled: this.config.enabled && this.#captureAllowed,
       mode: this.config.receiverMode,
       channelRegion: this.#channelRegion,
       channel: this.#channel,
@@ -505,8 +513,8 @@ export class VhfRuntime extends EventEmitter<{
         }
       },
       receiverState: this.#receiverState,
-      receiving: this.#level > 0.003,
-      level: this.#level,
+      receiving: this.#captureAllowed && this.#level > 0.003,
+      level: this.#captureAllowed ? this.#level : 0,
       sampleRate: this.config.sampleRate,
       squelch: this.config.squelch,
       replayMinutes: this.config.replayMinutes,
@@ -516,7 +524,7 @@ export class VhfRuntime extends EventEmitter<{
       receiverMetrics: { ...this.#receiverMetrics },
       ...(this.#lastAudioAt ? { lastAudioAt: this.#lastAudioAt } : {}),
       dscWatch: {
-        enabled: !this.#singleFrequency && this.config.receiverMode === 'rtl_sdr' && this.config.enabled,
+        enabled: this.#captureAllowed && !this.#singleFrequency && this.config.receiverMode === 'rtl_sdr' && this.config.enabled,
         frequencyHz: DSC_CHANNEL_HZ,
         continuous: !this.#singleFrequency && this.#dscContinuous,
         level: this.#dscLevel,
@@ -541,6 +549,35 @@ export class VhfRuntime extends EventEmitter<{
       transcription: this.transcription.status(),
       receiveOnly: true
     }
+  }
+
+  async setCaptureEnabled(enabled: boolean): Promise<void> {
+    this.#captureAllowed = enabled
+    if (enabled && this.config.enabled) {
+      this.#startReceiver()
+      if (this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
+      if (this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
+      return
+    }
+    if (this.#scanTimer) clearTimeout(this.#scanTimer)
+    if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
+    this.#scanTimer = undefined
+    this.#slotBScanTimer = undefined
+    this.#scanLocked = false
+    this.#slotBScanLocked = false
+    this.#scanOpenMs = 0
+    this.#slotBScanOpenMs = 0
+    this.#scanQuietMs = 0
+    this.#slotBScanQuietMs = 0
+    this.#scanPreRoll = []
+    this.#slotBScanPreRoll = []
+    this.#level = 0
+    this.#error = undefined
+    this.#receiverState = 'Releasing receiver capture'
+    this.#emitStatus()
+    await this.#stopReceiverAndWait()
+    this.#receiverState = 'Capture paused for receiver ownership'
+    this.#emitStatus()
   }
 
   segments(squelch?: number): ReplaySegmentSummary[] {
@@ -664,6 +701,7 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   #startReceiver(): void {
+    if (!this.#captureAllowed || !this.config.enabled || this.#receiver) return
     const receiver = this.config.receiverMode === 'rtl_sdr'
       ? new NativeSidecarReceiver(this.config, this.#channel, this.#slotB.id === '70' ? '70' : this.#slotB, this.#singleFrequency)
       : new DemoReceiver(this.config.sampleRate)
@@ -762,8 +800,17 @@ export class VhfRuntime extends EventEmitter<{
     // The capture process exits asynchronously. Detach it before shutdown so a late exit cannot
     // overwrite the final receiver state.
     receiver?.removeAllListeners()
-    receiver?.stop()
+    if (receiver) {
+      const released = receiver.stopAndWait()
+      this.#pendingReceiverReleases.add(released)
+      void released.then(() => this.#pendingReceiverReleases.delete(released), () => {})
+    }
     this.#dscContinuous = false
+  }
+
+  async #stopReceiverAndWait(): Promise<void> {
+    this.#stopReceiver()
+    await Promise.all([...this.#pendingReceiverReleases])
   }
 
   #refreshDscIdentities(): void {
@@ -802,6 +849,7 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   #scheduleScan(delayMs: number): void {
+    if (!this.#captureAllowed || !this.config.enabled) return
     if (this.#scanTimer) clearTimeout(this.#scanTimer)
     this.#scanTimer = setTimeout(() => {
       this.#scanTimer = undefined
@@ -864,6 +912,7 @@ export class VhfRuntime extends EventEmitter<{
   }
 
   #scheduleSlotBScan(delayMs: number): void {
+    if (!this.#captureAllowed || !this.config.enabled) return
     if (this.#slotBScanTimer) clearTimeout(this.#slotBScanTimer)
     this.#slotBScanTimer = setTimeout(() => {
       this.#slotBScanTimer = undefined

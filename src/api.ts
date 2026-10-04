@@ -11,8 +11,9 @@ import { pcmToWav, wavHeader } from './wav'
 import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
+import type { ReceiverOwnershipController } from './receiver-ownership'
 
-const UI_VERSION = 55
+const UI_VERSION = 56
 
 interface ByteRange {
   start: number
@@ -139,14 +140,18 @@ function sameArchiveSource(left: TranscriptArchiveRecord | undefined, right: Tra
 export function registerRoutes(
   router: PluginRouter,
   getRuntime: () => VhfRuntime | undefined,
-  getModifiedPlayback?: () => ModifiedPlayback | undefined
+  getModifiedPlayback?: () => ModifiedPlayback | undefined,
+  getOwnership?: () => ReceiverOwnershipController | undefined
 ): void {
   const fallbackModifiedPlayback = new ModifiedPlayback()
   const getPlayback = getModifiedPlayback ?? (() => fallbackModifiedPlayback)
   const read = router.access('readonly')
   read.get('/api/status', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
-    if (runtime) response.set('Cache-Control', 'no-store').json({ ...runtime.status(), uiVersion: UI_VERSION })
+    if (runtime) response.set('Cache-Control', 'no-store').json({
+      ...runtime.status(), uiVersion: UI_VERSION,
+      receiverOwnership: getOwnership?.()?.status() ?? { configured: false, available: false, owner: 'unknown', desiredOwner: 'ais', switching: false }
+    })
   })
   read.get('/api/channels', (_request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -839,6 +844,26 @@ export function registerRoutes(
     }
   })
   const write = router.access('readwrite')
+  write.post('/api/receiver-owner', async (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const body = request.body as { owner?: unknown } | undefined
+    if (!body || (body.owner !== 'ais' && body.owner !== 'vhf') || Object.keys(body).some((key) => key !== 'owner')) {
+      response.status(400).json({ error: 'owner must be ais or vhf' })
+      return
+    }
+    const ownership = getOwnership?.()
+    if (!ownership) { response.status(503).json({ error: 'Receiver ownership is unavailable' }); return }
+    try {
+      await ownership.switchTo(body.owner)
+      response.set('Cache-Control', 'no-store').json({
+        ...runtime.status(), uiVersion: UI_VERSION, receiverOwnership: ownership.status()
+      })
+    } catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number' ? (error as { status: number }).status : 503
+      response.status(status).json({ error: error instanceof Error ? error.message : String(error), receiverOwnership: ownership.status() })
+    }
+  })
   write.post('/api/transcription', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return

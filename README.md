@@ -105,6 +105,15 @@ before listening. Reverse that order when restoring AIS: disable VHF Watch or st
 receiver, start AIS-catcher, and verify that fresh AIS messages resume. Never run both processes
 against the same tuner and treat repeated device-open failures as harmless contention.
 
+On a native Linux host, optional receiver ownership control can perform this handoff from the VHF
+Watch page. Enable **Manage AIS/VHF receiver ownership** in the plugin configuration and run
+`sudo scripts/install-receiver-ownership-sudoers.sh` on the host. The installer validates and
+atomically installs a root-owned rule that grants the `signalk` account only `systemctl start` and
+`systemctl stop` for `ais-catcher.service`; status checks remain unprivileged. The saved startup
+owner defaults to AIS-Catcher. Ownership control stays unavailable with a clear status error when
+the service or exact sudo permissions are missing. The handoff waits for the old process to release
+the tuner and for the new receiver to become ready before confirming the change.
+
 When Signal K runs in Podman, pass the SDR through to the container, preferably by stable USB path or
 device identity rather than a changing bus number. The container image must include `rtl_sdr`.
 
@@ -119,6 +128,7 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `GET /api/channels` — supported receive channels
 - `POST /api/region` — select `US_CA`, `US`, or `CA`
 - `POST /api/channel` — tune the receiver; body `{ "channel": "16" }`
+- `POST /api/receiver-owner` — hand off the SDR; body `{ "owner": "ais" }` or `{ "owner": "vhf" }` (read/write access required)
 - `GET /api/live.wav` — private live streaming WAV
 - `GET /api/dsc` — decoded Channel 70 calls (MMSI/category/position when present)
 - `DELETE /api/dsc` — clear decoded calls

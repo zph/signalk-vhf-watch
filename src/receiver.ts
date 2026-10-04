@@ -76,6 +76,7 @@ export interface ReceiverMetrics {
 export abstract class AudioReceiver extends EventEmitter<ReceiverEvents> {
   abstract start(): void
   abstract stop(): void
+  async stopAndWait(): Promise<void> { this.stop() }
 }
 
 export function rtlSdrArgs(config: VhfWatchConfig): string[] {
@@ -449,6 +450,22 @@ export class NativeSidecarReceiver extends AudioReceiver {
     this.#terminateCurrent = undefined
     this.#buffer = Buffer.alloc(0)
     this.emit('state', 'Stopped')
+  }
+
+  async stopAndWait(): Promise<void> {
+    const child = this.#process
+    if (!child) { this.stop(); return }
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+    this.stop()
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([closed, new Promise<void>((_resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('VHF sidecar did not exit after SIGTERM and SIGKILL')),
+          5_000)
+      })])
+    } finally {
+      if (deadline) clearTimeout(deadline)
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 55
+  const CLIENT_BUILD = 56
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -23,6 +23,11 @@
   const signalBar = $('#signal-bar')
   const signalValue = $('#signal-value')
   const receiverState = $('#receiver-state')
+  const receiverOwnership = $('#receiver-ownership')
+  const receiverOwnerState = $('#receiver-owner-state')
+  const receiverOwnerNote = $('#receiver-owner-note')
+  const receiverOwnerAis = $('#receiver-owner-ais')
+  const receiverOwnerVhf = $('#receiver-owner-vhf')
   const liveListen = $('#live-listen')
   const liveListenStatus = $('#live-listen-status')
   const liveAudio = $('#live-audio')
@@ -131,6 +136,10 @@
   let conversationPlayer
   let singleFrequencyActive = false
   let slotConfigurationPending = false
+  let receiverOwnershipStatus
+  let receiverOwnershipRequest
+  let receiverOwnershipFeedback = ''
+  let receiverOwnershipGeneration = 0
 
   conversationPlayer = new window.VHFConversation.ConversationPlayer(conversationAudio, {
     sourceFor: (record) => `${API}transcripts/${record.id}.wav?activity=1&cleanup=${encodeURIComponent(timelineCleanup.value)}&squelch=${encodeURIComponent(replaySquelch.value)}&quieting=100`,
@@ -171,7 +180,9 @@
     const response = await fetch(API + path, { credentials: 'include', ...options })
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
-      throw new Error(body.error || `Request failed (${response.status})`)
+      const error = new Error(body.error || `Request failed (${response.status})`)
+      error.status = response.status
+      throw error
     }
     if (response.status === 204) return undefined
     return response.json()
@@ -244,6 +255,8 @@
   }
 
   function renderStatus(status) {
+    receiverOwnershipStatus = ownershipForStatus(status, receiverOwnershipStatus)
+    if (Object.prototype.hasOwnProperty.call(status, 'enabled')) latestStatus = status
     if (status.uiVersion && status.uiVersion !== CLIENT_BUILD) {
       const reloadKey = `vhf-watch:reload:${status.uiVersion}`
       if (!window.sessionStorage.getItem(reloadKey)) {
@@ -255,10 +268,11 @@
       }
     }
     singleFrequencyActive = status.captureMode === 'single_frequency'
+    renderReceiverOwnership()
     const activeSlotAChannel = status.slots.A.currentChannel.id
     handleTimelineSlotARetune(activeSlotAChannel)
     timelineActiveSlotAChannel = activeSlotAChannel
-    liveListen.disabled = false
+    liveListen.disabled = !receiverCanTune()
     if (!liveListening) liveListen.textContent = `Listen live · ${channelDisplay(activeSlotAChannel)}`
     if (!slotConfigurationPending) {
       if (document.activeElement !== regionSelect) regionSelect.value = status.channelRegion
@@ -287,9 +301,7 @@
         : status.slots.B.kind === 'dsc'
         ? 'No second voice channel · DSC 70 remains continuous independently'
         : status.slots.B.channel.purpose
-    slotAMode.disabled = singleFrequencyActive
-    slotBMode.disabled = singleFrequencyActive
-    slotBChannel.disabled = singleFrequencyActive
+    updateCaptureControls()
     dscModeLabel.textContent = singleFrequencyActive
       ? 'Retained history · Channel 70 paused for weather'
       : 'Channel 70 · continuous'
@@ -389,6 +401,116 @@
     setConnection(status.error ? 'error' : 'ok', status.error ? 'Receiver error' : 'Connected')
   }
 
+  function ownershipForStatus(status, currentOwnership) {
+    return Object.prototype.hasOwnProperty.call(status, 'receiverOwnership') ? status.receiverOwnership : currentOwnership
+  }
+
+  function statusPollIsCurrent(requestGeneration, currentGeneration) {
+    return requestGeneration === currentGeneration
+  }
+
+  function receiverOwnershipView(ownership, requestPending, pendingOwner) {
+    if (!ownership || !(ownership.configured ?? ownership.available)) return { visible: false, locked: false, state: '', note: '' }
+    if (!ownership.available) {
+      return {
+        visible: true,
+        locked: true,
+        switching: false,
+        aisSelected: ownership.owner === 'ais',
+        vhfSelected: ownership.owner === 'vhf',
+        state: 'Receiver control unavailable',
+        note: ownership.error || 'Receiver ownership is enabled but unavailable. Check its permissions and receiver connection.'
+      }
+    }
+    const actualOwner = ownership.owner
+    const switching = ownership.switching || requestPending
+    const ownerLabel = actualOwner === 'ais' ? 'AIS-catcher' : actualOwner === 'vhf' ? 'VHF Watch' : actualOwner === 'none' ? 'No active owner' : 'Owner unknown'
+    return {
+      visible: true,
+      locked: switching || actualOwner !== 'vhf',
+      aisSelected: actualOwner === 'ais',
+      vhfSelected: actualOwner === 'vhf',
+      switching,
+      state: switching ? `Switching to ${pendingOwner === 'ais' ? 'AIS' : pendingOwner === 'vhf' ? 'VHF' : 'receiver'}…` : ownerLabel,
+      note: ownership.error || (actualOwner === 'ais'
+        ? 'AIS-catcher is using this receiver; VHF live capture is paused.'
+        : actualOwner === 'vhf'
+          ? 'AIS-catcher reception pauses while VHF uses this receiver.'
+          : 'Live VHF reception is unavailable until an owner is selected.')
+    }
+  }
+
+  function receiverCanTune() {
+    const view = receiverOwnershipView(receiverOwnershipStatus, Boolean(receiverOwnershipRequest), receiverOwnershipRequest)
+    return latestStatus?.enabled !== false && (!view.visible || !view.locked)
+  }
+
+  function updateCaptureControls() {
+    const enabled = receiverCanTune()
+    regionSelect.disabled = !enabled || slotConfigurationPending
+    slotAMode.disabled = !enabled || singleFrequencyActive || slotConfigurationPending
+    slotAChannel.disabled = !enabled || slotConfigurationPending
+    slotBMode.disabled = !enabled || singleFrequencyActive || slotConfigurationPending
+    slotBChannel.disabled = !enabled || singleFrequencyActive || slotConfigurationPending
+    presetStandard.disabled = !enabled || slotConfigurationPending
+    presetSlotA16.disabled = !enabled || slotConfigurationPending
+    presetSlotB70.disabled = !enabled || slotConfigurationPending
+    liveListen.disabled = !enabled
+    if (!enabled && liveListening) {
+      const message = receiverOwnershipRequest === 'ais' || receiverOwnershipStatus?.owner === 'ais'
+        ? 'Live audio stopped while AIS-catcher uses this receiver.'
+        : 'Live audio stopped because this receiver is unavailable.'
+      stopLiveListening(message)
+    }
+  }
+
+  function renderReceiverOwnership() {
+    const view = receiverOwnershipView(receiverOwnershipStatus, Boolean(receiverOwnershipRequest), receiverOwnershipRequest)
+    receiverOwnership.hidden = !view.visible
+    if (!view.visible) {
+      updateCaptureControls()
+      return
+    }
+    receiverOwnerState.textContent = receiverOwnershipFeedback || view.state
+    receiverOwnerNote.textContent = view.note
+    receiverOwnerAis.setAttribute('aria-pressed', String(view.aisSelected))
+    receiverOwnerVhf.setAttribute('aria-pressed', String(view.vhfSelected))
+    receiverOwnerAis.disabled = view.switching || !receiverOwnershipStatus.available
+    receiverOwnerVhf.disabled = view.switching || !receiverOwnershipStatus.available
+    receiverOwnership.dataset.owner = receiverOwnershipStatus.owner || 'unknown'
+    receiverOwnership.dataset.switching = String(view.switching)
+    updateCaptureControls()
+  }
+
+  async function setReceiverOwner(owner) {
+    if (!receiverOwnershipStatus?.available || receiverOwnershipRequest || (receiverOwnershipStatus.owner === owner && !receiverOwnershipStatus.error)) return
+    receiverOwnershipFeedback = ''
+    receiverOwnershipRequest = owner
+    receiverOwnershipGeneration += 1
+    renderReceiverOwnership()
+    try {
+      const status = await request('receiver-owner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner })
+      })
+      latestStatus = status
+      receiverOwnershipFeedback = ''
+      renderStatus(status)
+    } catch (error) {
+      receiverOwnershipFeedback = error.status === 401 || error.status === 403
+        ? 'Sign in with permission to change receiver ownership.'
+        : error.message
+      await updateStatus()
+      renderReceiverOwnership()
+    } finally {
+      receiverOwnershipRequest = undefined
+      receiverOwnershipGeneration += 1
+      renderReceiverOwnership()
+      await updateStatus()
+    }
+  }
+
   function handleTimelineSlotARetune(activeSlotAChannel) {
     if (liveListening && timelineActiveSlotAChannel && timelineActiveSlotAChannel !== activeSlotAChannel) {
       stopLiveListening(`Live audio stopped because Slot A changed to ${channelDisplay(activeSlotAChannel)}.`)
@@ -448,10 +570,14 @@
   }
 
   async function updateStatus() {
+    const ownershipGeneration = receiverOwnershipGeneration
     try {
-      latestStatus = await request('status')
-      renderStatus(latestStatus)
+      const status = await request('status')
+      if (!statusPollIsCurrent(ownershipGeneration, receiverOwnershipGeneration)) return
+      latestStatus = status
+      renderStatus(status)
     } catch (error) {
+      if (!statusPollIsCurrent(ownershipGeneration, receiverOwnershipGeneration)) return
       renderTranscriptionProgress(undefined)
       setConnection('error', error.message)
     }
@@ -2054,13 +2180,7 @@
     }
     const selection = { mode: slotAMode.value, slotAChannel: slotAChannel.value, slotBMode: slotBMode.value, slotBChannel: slotBChannel.value }
     slotConfigurationPending = true
-    slotAMode.disabled = true
-    slotAChannel.disabled = true
-    slotBMode.disabled = true
-    slotBChannel.disabled = true
-    presetStandard.disabled = true
-    presetSlotA16.disabled = true
-    presetSlotB70.disabled = true
+    updateCaptureControls()
     try {
       const status = await request('slots', {
         method: 'POST',
@@ -2072,13 +2192,7 @@
       setConnection('error', error.message)
     } finally {
       slotConfigurationPending = false
-      slotAMode.disabled = singleFrequencyActive
-      slotAChannel.disabled = false
-      slotBMode.disabled = singleFrequencyActive
-      slotBChannel.disabled = singleFrequencyActive
-      presetStandard.disabled = false
-      presetSlotA16.disabled = false
-      presetSlotB70.disabled = false
+      updateCaptureControls()
     }
   }
 
@@ -2103,10 +2217,7 @@
   async function changeRegion() {
     const selectedRegion = regionSelect.value
     slotConfigurationPending = true
-    regionSelect.disabled = true
-    slotAChannel.disabled = true
-    slotBMode.disabled = true
-    slotBChannel.disabled = true
+    updateCaptureControls()
     try {
       const status = await request('region', {
         method: 'POST',
@@ -2119,11 +2230,7 @@
       setConnection('error', error.message)
     } finally {
       slotConfigurationPending = false
-      regionSelect.disabled = false
-      slotAChannel.disabled = false
-      slotAMode.disabled = singleFrequencyActive
-      slotBMode.disabled = singleFrequencyActive
-      slotBChannel.disabled = singleFrequencyActive
+      updateCaptureControls()
     }
   }
 
@@ -2166,6 +2273,8 @@
     await Promise.all([channelRequest, updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
   }
 
+  receiverOwnerAis.addEventListener('click', () => { void setReceiverOwner('ais') })
+  receiverOwnerVhf.addEventListener('click', () => { void setReceiverOwner('vhf') })
   slotAMode.addEventListener('change', configureSlots)
   slotAChannel.addEventListener('change', configureSlots)
   slotBMode.addEventListener('change', configureSlots)

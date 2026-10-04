@@ -10,16 +10,20 @@ import { TuningSettingsStore } from './tuning-settings'
 import { RnnoiseDenoiser } from './rnnoise'
 import { ModifiedPlayback } from './modified-playback'
 import { ReplayHistoryStore } from './replay-history-store'
+import { ReceiverOwnershipController, type ReceiverOwner } from './receiver-ownership'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
+  let ownership: ReceiverOwnershipController | undefined
   let modifiedPlayback: ModifiedPlayback | undefined
+  let pluginConfig: Record<string, unknown> = {}
 
   const startRuntime = (rawConfig: object): void => {
+    pluginConfig = rawConfig && typeof rawConfig === 'object' ? { ...rawConfig } : {}
     const tuningSettings = new TuningSettingsStore(path.join(app.getDataDirPath(), 'tuning-settings.json'))
     const savedTuning = tuningSettings.load()
     const config = normalizeConfig({
-      ...(rawConfig && typeof rawConfig === 'object' ? rawConfig : {}),
+      ...pluginConfig,
       ...(savedTuning.channelRegion ? { channelRegion: savedTuning.channelRegion } : {}),
       ...(savedTuning.slotAMode ? { slotAMode: savedTuning.slotAMode } : {}),
       ...(savedTuning.slotAChannel ? { initialChannel: savedTuning.slotAChannel } : {}),
@@ -69,6 +73,27 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       }
     })
     runtime.start()
+    const managedRuntime = runtime
+    ownership = new ReceiverOwnershipController(
+      () => managedRuntime,
+      config.receiverOwner,
+      (owner: ReceiverOwner) => new Promise<void>((resolve, reject) => {
+        const nextConfig = { ...pluginConfig, receiverOwner: owner }
+        app.savePluginOptions(nextConfig, (error) => {
+          if (error) reject(error)
+          else { pluginConfig = nextConfig; resolve() }
+        })
+      }),
+      undefined,
+      undefined,
+      (level, message) => level === 'error'
+        ? app.error(`[signalk-vhf-watch] ${message}`)
+        : app.debug(`[signalk-vhf-watch] ${message}`)
+    )
+    const managedOwnership = ownership
+    void managedOwnership.initialize().catch((error) => {
+      app.error(`[signalk-vhf-watch] Receiver ownership setup: ${error instanceof Error ? error.message : String(error)}`)
+    })
     app.setPluginStatus(`${config.receiverMode} · ${runtime.status().channel.label} · receive only`)
   }
 
@@ -83,24 +108,38 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         return
       }
       const previous = runtime
+      const previousOwnership = ownership
       runtime = undefined
-      void previous.stop().then(() => {
-        modifiedPlayback?.shutdown()
-        modifiedPlayback = undefined
+      ownership = undefined
+      void (async () => {
+        let ownershipError: unknown
+        try { await previousOwnership?.shutdown() } catch (error) { ownershipError = error }
+        try { await previous.stop() } finally {
+          modifiedPlayback?.shutdown()
+          modifiedPlayback = undefined
+        }
+        if (ownershipError) throw ownershipError
         startRuntime(rawConfig)
-      }).catch((error) => {
+      })().catch((error) => {
         const message = `VHF Watch could not restart: ${error instanceof Error ? error.message : String(error)}`
         app.error(message)
         app.setPluginError(message)
       })
     },
     stop: async () => {
-      await runtime?.stop()
-      modifiedPlayback?.shutdown()
-      runtime = undefined
-      modifiedPlayback = undefined
+      const stoppingRuntime = runtime
+      const stoppingOwnership = ownership
+      let stopError: unknown
+      try { await stoppingOwnership?.shutdown() } catch (error) { stopError = error }
+      try { await stoppingRuntime?.stop() } catch (error) { if (!stopError) stopError = error } finally {
+        modifiedPlayback?.shutdown()
+        runtime = undefined
+        ownership = undefined
+        modifiedPlayback = undefined
+      }
+      if (stopError) throw stopError
     },
-    registerWithRouter: (router) => registerRoutes(router, () => runtime, () => modifiedPlayback),
+    registerWithRouter: (router) => registerRoutes(router, () => runtime, () => modifiedPlayback, () => ownership),
     getOpenApi: openApi,
     statusMessage: () => {
       const status = runtime?.status()

@@ -7,6 +7,8 @@ export type SlotBMode = 'fixed' | 'scan'
 
 export interface VhfWatchConfig {
   enabled: boolean
+  manageReceiverOwnership: boolean
+  receiverOwner: 'ais' | 'vhf'
   receiverMode: ReceiverMode
   channelRegion: ChannelRegion
   initialChannel: string
@@ -33,6 +35,8 @@ export function defaultSidecarPath(platform = process.platform, architecture = p
 
 export const DEFAULT_CONFIG: VhfWatchConfig = {
   enabled: true,
+  manageReceiverOwnership: false,
+  receiverOwner: 'ais',
   receiverMode: 'demo',
   channelRegion: 'US_CA',
   initialChannel: '16',
@@ -72,6 +76,8 @@ export function normalizeConfig(raw: unknown): VhfWatchConfig {
     : Math.min(49.6, Math.max(0, finiteNumber(value.gainDb, 0)))
   return {
     enabled: value.enabled !== false,
+    manageReceiverOwnership: value.manageReceiverOwnership === true,
+    receiverOwner: value.receiverOwner === 'vhf' ? 'vhf' : 'ais',
     receiverMode,
     channelRegion,
     initialChannel: channelById(requestedChannel, channelRegion)?.id ?? DEFAULT_CONFIG.initialChannel,
@@ -111,6 +117,8 @@ export const pluginSchema = {
   type: 'object',
   properties: {
     enabled: { type: 'boolean', title: 'Enable receiver', default: true },
+    manageReceiverOwnership: { type: 'boolean', title: 'Manage AIS/VHF receiver ownership (native Linux only)', default: false },
+    receiverOwner: { type: 'string', title: 'Receiver owner at startup', enum: ['ais', 'vhf'], enumNames: ['AIS-Catcher', 'VHF Watch'], default: 'ais' },
     receiverMode: {
       type: 'string',
       title: 'Receiver source',

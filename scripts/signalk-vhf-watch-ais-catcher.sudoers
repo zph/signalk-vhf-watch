@@ -1,0 +1,2 @@
+# VHF Watch may only start or stop the fixed AIS-Catcher system service.
+signalk ALL=(root) NOPASSWD: /usr/bin/systemctl start ais-catcher.service, /usr/bin/systemctl stop ais-catcher.service

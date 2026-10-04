@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=47" />
+  <link rel="stylesheet" href="./styles.css?v=48" />
 </head>
 <body>
   <main class="app-shell">
@@ -52,6 +52,14 @@
         </div>
       </article>
       <div class="meter-block">
+        <section id="receiver-ownership" class="receiver-ownership" aria-label="Receiver owner" hidden>
+          <div class="receiver-ownership-heading"><strong>Receiver owner</strong><span id="receiver-owner-state" role="status" aria-live="polite"></span></div>
+          <div class="receiver-owner-choice" role="group" aria-label="Choose receiver owner">
+            <button id="receiver-owner-ais" class="button compact" type="button" aria-pressed="false">AIS-catcher</button>
+            <button id="receiver-owner-vhf" class="button compact" type="button" aria-pressed="false">VHF</button>
+          </div>
+          <p id="receiver-owner-note" class="receiver-owner-note"></p>
+        </section>
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
@@ -277,6 +285,6 @@
   </main>
   <script src="./conversation.js?v=47"></script>
   <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
-  <script src="./main.js?v=55"></script>
+  <script src="./main.js?v=56"></script>
 </body>
 </html>
