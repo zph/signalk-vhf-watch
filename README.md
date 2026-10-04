@@ -192,14 +192,10 @@ flowchart TD
     L --> H
     D --> M{Transcription enabled?}
     M -->|Yes| N[RF squelch selects active audio]
-    N --> O[Live transcription: Silero observation<br/>Base still receives the full window]
-    O --> P[Whisper gets original audio]
+    N --> O[Silero estimates speech presence<br/>when available]
+    O --> P[Whisper gets full original audio<br/>including no-speech results]
     P --> Q[Transcript and source audio archive]
     Q --> F
-    Q -. manual archive reprocessing .-> S[Silero VAD prefilters archived WAVs]
-    S -->|Speech| T[Base refreshes transcript]
-    S -->|No speech| U[Clear transcript; preserve WAV]
-    S -->|VAD error| V[Record error; skip Base]
     M -->|No| R[No transcription]
 ```
 
@@ -233,28 +229,25 @@ seconds. The decode watchdog is at least 90 seconds and scales to twice the audi
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
 processed one at a time; audio is not uploaded.
 
-### Silero VAD in live transcription and archive reprocessing
+### Silero speech detection during live transcription
 
-In the live plugin, the optional runtime's one-thread Silero VAD checks only audio newer than the
-retained transcription overlap. Live use is observation-only: a valid no-speech result is counted as
-a would-skip candidate, but every window still reaches Base with its full original audio and context.
-Detected speech, uncertain output, unavailable helpers, and helper errors also continue to Base.
-VAD never trims or rewrites replay or archived audio. We keep live filtering off because the 0.35
-threshold missed some previously transcribed records, while lower thresholds also detected synthetic
-noise and hum; those radio records were not independently labeled. The helper accepts 80 ms speech
-segments and adds 200 ms of padding.
-
-The separate, manually run `scripts/retranscribe-archive.mjs` tool does use Silero as a real filter
-when reprocessing the transcript archive. It checks each archived WAV before Base: records with
-valid speech detections are sent to Base, while valid no-speech results clear the transcript text but
-preserve the original WAV. VAD errors are recorded and skipped rather than passed to Base. This batch
-workflow does not change live transcription behavior.
+When the optional runtime is available and the audio is 16 kHz, the one-thread Silero VAD checks each
+eligible live transcription batch, excluding the retained overlap, and classifies it as speech or
+no-speech. The live plugin records valid no-speech results as would-skip candidates, but production
+still sends every eligible batch to Base with its full original audio and context. Silero estimates
+speech presence; it does not identify a speaker or prove that a positive result is human speech. The
+separate RF squelch setting determines which batches are eligible for transcription. Missing
+helpers, unsupported rates, uncertain output, and helper errors fail open to Base. The VAD does not
+trim or rewrite replay or archived audio. Its live result remains advisory: the 0.35 threshold
+missed some previously transcribed records, while lower thresholds also
+detected synthetic noise and hum; those radio records were not independently labeled. The helper
+accepts 80 ms speech segments and adds 200 ms of padding.
 
 Completed batches with recognized words are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
 compressed WAV. Empty results and known non-speech Whisper annotations are omitted from this durable
-archive. In live transcription, VAD results are only measurements and do not control whether Base
-runs. Speech that Base misses remains available in the bounded rolling replay buffer until that replay expires.
+archive. In live transcription, VAD estimates speech presence but does not gate Base ASR. Speech
+that Base misses remains available in the bounded rolling replay buffer until that replay expires.
 The Transcript archive section combines adjacent records on the same channel into
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
