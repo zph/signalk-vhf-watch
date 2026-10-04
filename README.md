@@ -192,10 +192,14 @@ flowchart TD
     L --> H
     D --> M{Transcription enabled?}
     M -->|Yes| N[RF squelch selects active audio]
-    N --> O[Optional VAD observation<br/>when helper is available]
+    N --> O[Live transcription: Silero observation<br/>Base still receives the full window]
     O --> P[Whisper gets original audio]
     P --> Q[Transcript and source audio archive]
     Q --> F
+    Q -. manual archive reprocessing .-> S[Silero VAD prefilters archived WAVs]
+    S -->|Speech| T[Base refreshes transcript]
+    S -->|No speech| U[Clear transcript; preserve WAV]
+    S -->|VAD error| V[Record error; skip Base]
     M -->|No| R[No transcription]
 ```
 
@@ -229,21 +233,28 @@ seconds. The decode watchdog is at least 90 seconds and scales to twice the audi
 one-minute window receives two minutes to finish. Batches that pass the configured RF squelch are
 processed one at a time; audio is not uploaded.
 
-Before Base runs, the optional runtime's one-thread Silero VAD checks only audio newer than the
-retained transcription overlap. It is currently in observation mode: a valid no-speech result is
-counted as a would-skip candidate, but every window still reaches Base with its full original audio
-and context. Detected speech, uncertain output, and helper errors also pass through unchanged. A
-small Pi trial found that the proposed 0.35 threshold returned no segments on several previously
-transcribed radio records, while a lower threshold also fired on synthetic noise and hum. Those
-records were not independently labeled, so VAD filtering remains off until recall can be validated.
-The observer accepts speech segments as short as 80 ms and adds 200 ms of padding for measurement.
-It never trims or rewrites replay or archived recordings.
+### Silero VAD in live transcription and archive reprocessing
+
+In the live plugin, the optional runtime's one-thread Silero VAD checks only audio newer than the
+retained transcription overlap. Live use is observation-only: a valid no-speech result is counted as
+a would-skip candidate, but every window still reaches Base with its full original audio and context.
+Detected speech, uncertain output, unavailable helpers, and helper errors also continue to Base.
+VAD never trims or rewrites replay or archived audio. We keep live filtering off because the 0.35
+threshold missed some previously transcribed records, while lower thresholds also detected synthetic
+noise and hum; those radio records were not independently labeled. The helper accepts 80 ms speech
+segments and adds 200 ms of padding.
+
+The separate, manually run `scripts/retranscribe-archive.mjs` tool does use Silero as a real filter
+when reprocessing the transcript archive. It checks each archived WAV before Base: records with
+valid speech detections are sent to Base, while valid no-speech results clear the transcript text but
+preserve the original WAV. VAD errors are recorded and skipped rather than passed to Base. This batch
+workflow does not change live transcription behavior.
 
 Completed batches with recognized words are stored in the plugin's private `transcript-archive/transcripts.sqlite3` database with their
 channel, start/end times, duration, sample rate, RF-noise metadata, transcript, and Zstandard-
 compressed WAV. Empty results and known non-speech Whisper annotations are omitted from this durable
-archive. VAD results are only measurements; they do not currently control whether Base runs. Speech
-that Base misses remains available in the bounded rolling replay buffer until that replay expires.
+archive. In live transcription, VAD results are only measurements and do not control whether Base
+runs. Speech that Base misses remains available in the bounded rolling replay buffer until that replay expires.
 The Transcript archive section combines adjacent records on the same channel into
 one transcript and one stitched recording until a channel change, missing time, or six seconds of quiet
 creates a clear session break. It remains playable after a Signal K restart. Records expire after 30 days or when the complete SQLite database reaches 100 MiB,
