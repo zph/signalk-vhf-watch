@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -144,7 +145,7 @@ func originalDiscriminate(c *channelizer, filteredI, filteredQ float64) float64 
 func TestSymmetricFIRMatchesDirectConvolutionAcrossWrapsAndResets(t *testing.T) {
 	for _, config := range []struct {
 		taps, decimation int
-	}{{3, 1}, {63, 1}, {63, 7}, {511, 5}, {511, 64}} {
+	}{{3, 1}, {63, 1}, {63, 5}, {63, 7}, {511, 5}, {511, 64}} {
 		filter := newComplexFIRDecimator(480_000, 9_000, config.taps, config.decimation)
 		direct := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, config.taps), config.decimation)
 		for left, right := 0, len(filter.coefficients)-1; left < right; left, right = left+1, right-1 {
@@ -170,6 +171,56 @@ func TestSymmetricFIRMatchesDirectConvolutionAcrossWrapsAndResets(t *testing.T) 
 			if gotReady && (math.Abs(gotI-wantI) > 2e-14 || math.Abs(gotQ-wantQ) > 2e-14) {
 				t.Fatalf("%d-tap output at sample %d differs: got (%0.17g, %0.17g), direct (%0.17g, %0.17g)", config.taps, sample, gotI, gotQ, wantI, wantQ)
 			}
+		}
+	}
+}
+
+func TestContiguousFIRMatchesDirectConvolutionAcrossWrapsAndResets(t *testing.T) {
+	for _, config := range []struct {
+		taps, decimation int
+	}{{3, 1}, {63, 1}, {63, 5}, {63, 7}, {511, 5}, {511, 64}} {
+		filter := newContiguousFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+		ring := newComplexFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+		direct := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, config.taps), config.decimation)
+		seed := uint32(0x5eed)
+		for sample := 0; sample < 20_000; sample++ {
+			if sample == 7_777 {
+				filter.reset()
+				ring.reset()
+				direct.reset()
+			}
+			seed = seed*1664525 + 1013904223
+			inputI := (float64(seed>>8)/float64(1<<24))*2 - 1
+			seed = seed*1664525 + 1013904223
+			inputQ := (float64(seed>>8)/float64(1<<24))*2 - 1
+			gotI, gotQ, gotReady := filter.push(inputI, inputQ)
+			ringI, ringQ, ringReady := ring.push(inputI, inputQ)
+			wantI, wantQ, wantReady := direct.push(inputI, inputQ)
+			if gotReady != wantReady || gotReady != ringReady {
+				t.Fatalf("contiguous %d-tap readiness at sample %d = %v, ring %v, direct %v", config.taps, sample, gotReady, ringReady, wantReady)
+			}
+			if gotReady && (!finiteClose(gotI, wantI, 2e-14) || !finiteClose(gotQ, wantQ, 2e-14) ||
+				math.Float64bits(gotI) != math.Float64bits(ringI) || math.Float64bits(gotQ) != math.Float64bits(ringQ)) {
+				t.Fatalf("contiguous %d-tap output at sample %d differs: contiguous (%0.17g, %0.17g), ring (%0.17g, %0.17g), direct (%0.17g, %0.17g)", config.taps, sample, gotI, gotQ, ringI, ringQ, wantI, wantQ)
+			}
+		}
+	}
+}
+
+func finiteClose(got, want, tolerance float64) bool {
+	return !math.IsNaN(got) && !math.IsInf(got, 0) && !math.IsNaN(want) && !math.IsInf(want, 0) && math.Abs(got-want) <= tolerance
+}
+
+func TestContiguousFIRKeepsTheOddTapCenterImpulse(t *testing.T) {
+	filter := newContiguousFIRDecimator(480_000, 9_000, 3, 1)
+	filter.coefficients = []float64{0, 1, 0}
+	filter.pairs = []float64{0}
+	inputs := [][2]float64{{1, -2}, {0, 0}, {0, 0}}
+	want := [][2]float64{{0, 0}, {1, -2}, {0, 0}}
+	for index, input := range inputs {
+		gotI, gotQ, ready := filter.push(input[0], input[1])
+		if !ready || gotI != want[index][0] || gotQ != want[index][1] {
+			t.Fatalf("center impulse output %d = (%g, %g, ready=%v), want (%g, %g, ready=true)", index, gotI, gotQ, ready, want[index][0], want[index][1])
 		}
 	}
 }
@@ -204,10 +255,8 @@ func TestChannelizerPcmMatchesDirectFIRWithinOneLsb(t *testing.T) {
 	}
 }
 
-func BenchmarkComplexFIRDecimator(b *testing.B) {
-	const taps, decimation, samples = 511, 5, 4096
-	optimized := newComplexFIRDecimator(480_000, 9_000, taps, decimation)
-	direct := newDirectFIRDecimator(originalLowpassCoefficients(480_000, 9_000, taps), decimation)
+func BenchmarkFIRKernelPaths(b *testing.B) {
+	const samples = 4096
 	inputsI, inputsQ := make([]float64, samples), make([]float64, samples)
 	seed := uint32(42)
 	for index := range inputsI {
@@ -216,18 +265,45 @@ func BenchmarkComplexFIRDecimator(b *testing.B) {
 		seed = seed*1664525 + 1013904223
 		inputsQ[index] = float64(int32(seed)) / math.MaxInt32
 	}
-	b.Run("paired", func(b *testing.B) {
-		b.ReportAllocs()
-		for index := 0; index < b.N; index++ {
-			optimized.push(inputsI[index%samples], inputsQ[index%samples])
-		}
-	})
-	b.Run("direct", func(b *testing.B) {
-		b.ReportAllocs()
-		for index := 0; index < b.N; index++ {
-			direct.push(inputsI[index%samples], inputsQ[index%samples])
-		}
-	})
+	for _, config := range []struct{ taps, decimation int }{{63, 5}, {511, 5}} {
+		config := config
+		b.Run(fmt.Sprintf("taps%d_decim%d/old-ring", config.taps, config.decimation), func(b *testing.B) {
+			b.StopTimer()
+			filter := newComplexFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+			b.ReportAllocs()
+			b.StartTimer()
+			for index := 0; index < b.N; index++ {
+				outputI, outputQ, ready := filter.push(inputsI[index%samples], inputsQ[index%samples])
+				if ready {
+					benchmarkSink = outputI + outputQ
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("taps%d_decim%d/contiguous-scalar", config.taps, config.decimation), func(b *testing.B) {
+			b.StopTimer()
+			filter := newContiguousFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+			b.ReportAllocs()
+			b.StartTimer()
+			for index := 0; index < b.N; index++ {
+				outputI, outputQ, ready := filter.pushScalar(inputsI[index%samples], inputsQ[index%samples])
+				if ready {
+					benchmarkSink = outputI + outputQ
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("taps%d_decim%d/contiguous-kernel", config.taps, config.decimation), func(b *testing.B) {
+			b.StopTimer()
+			filter := newContiguousFIRDecimator(480_000, 9_000, config.taps, config.decimation)
+			b.ReportAllocs()
+			b.StartTimer()
+			for index := 0; index < b.N; index++ {
+				outputI, outputQ, ready := filter.push(inputsI[index%samples], inputsQ[index%samples])
+				if ready {
+					benchmarkSink = outputI + outputQ
+				}
+			}
+		})
+	}
 }
 
 func TestChannelizersProduceExpectedAudioRates(t *testing.T) {

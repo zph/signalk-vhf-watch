@@ -108,7 +108,7 @@ type channelizer struct {
 	inputRate, outputRate, audioDecimation      int
 	oscillatorI, oscillatorQ                    []float64
 	oscillatorIndex                             int
-	firstRF, channelRF                          *complexFIRDecimator
+	firstRF, channelRF                          *contiguousFIRDecimator
 	previousI, previousQ, carrierBias, audioSum float64
 	carrierAlpha, maximumCarrierBias            float64
 	deemphasis, level                           float64
@@ -355,8 +355,8 @@ func newChannelizerWithRFCutoff(inputRate, outputRate, offsetHz, rfCutoffHz int,
 	value := &channelizer{
 		inputRate: inputRate, outputRate: outputRate,
 		audioDecimation: channelRate / outputRate, level: math.Pi / 2,
-		firstRF:            newComplexFIRDecimator(inputRate, 120_000, 63, inputRate/firstRFRate),
-		channelRF:          newComplexFIRDecimator(firstRFRate, rfCutoffHz, 511, firstRFRate/channelRate),
+		firstRF:            newContiguousFIRDecimator(inputRate, 120_000, 63, inputRate/firstRFRate),
+		channelRF:          newContiguousFIRDecimator(firstRFRate, rfCutoffHz, 511, firstRFRate/channelRate),
 		carrierAlpha:       1 - math.Exp(-1/(float64(channelRate)*2.0)),
 		maximumCarrierBias: 2 * math.Pi * 1_500 / channelRate,
 	}
