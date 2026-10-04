@@ -130,11 +130,15 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `GET /api/transcripts` — retained transcript/audio metadata
 - `GET /api/transcripts/:id.wav` — play one retained transcript's audio
 
-Replay is held only in process memory. Restarting Signal K clears it, and nothing is uploaded. The
-buffer expires complete audio slices from its oldest edge by wall-clock time, so short slices created
-by squelch or channel changes do not shorten the configured 24-hour window. Completed minutes are
-compacted to 24 kbps mono Opus in memory; raw PCM remains available until Whisper finishes. The total
-compressed-audio limit defaults to 750 MiB and cannot be configured above 750 MiB.
+Replay slices are checkpointed to the plugin's private `replay-history` directory every three
+seconds and restored after Signal K restarts. An orderly shutdown flushes a final snapshot; an abrupt
+shutdown can lose audio recorded since the last checkpoint. Nothing is uploaded. Age expiry removes
+whole audio slices from the oldest edge by wall-clock time, so short slices created by squelch or
+channel changes do not reduce the configured window. A retained slice can begin up to one slice
+duration before the age cutoff. The window defaults to 24 hours and can be configured from one minute
+to 24 hours. Completed slices are compacted to 24 kbps mono Opus; raw PCM remains available until
+Whisper finishes. The size cap defaults to 750 MiB and cannot be configured above 750 MiB; it can
+evict older slices before their age limit.
 
 The native receiver preserves low-rate unsquelched voice PCM in that bounded replay buffer together
 with discriminator-noise metadata. The **Raw playback squelch** selector controls Raw playback and is
@@ -175,7 +179,7 @@ flowchart TD
     A[Marine VHF signal] --> B[Channelizer FIR filters<br/>9 kHz passband]
     B --> C[FM demodulation]
     C --> D[Raw PCM plus discriminator-noise measurements]
-    D --> E[Bounded rolling replay]
+    D --> E[Durable, time-bounded rolling replay]
     E --> F{Playback mode}
     F -->|Raw| G[Receiver-noise squelch when measured<br/>archived clips use audio-level gate]
     G --> H[Playback]
