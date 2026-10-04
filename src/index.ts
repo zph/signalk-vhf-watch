@@ -48,12 +48,25 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       (settings) => tuningSettings.save(settings), denoiser, '/usr/bin/ffmpeg',
       () => app.getPath('vessels'), replayHistory
     )
+    let lastError: string | undefined
+    let lastReceiverState: string | undefined
     runtime.on('status', (status) => {
       const message = status.error
         ? `${status.mode} · ${status.channel.label} · ${status.error}`
         : `${status.mode} · ${status.channel.label} · ${status.receiverState}`
-      if (status.error) app.setPluginError(message)
-      else app.setPluginStatus(message)
+      if (status.error) {
+        if (status.error !== lastError) app.error(`[signalk-vhf-watch] ${message}`)
+        lastError = status.error
+        app.setPluginError(message)
+      } else {
+        if (lastError) app.debug(`[signalk-vhf-watch] Receiver recovered on ${status.channel.label}`)
+        lastError = undefined
+        app.setPluginStatus(message)
+      }
+      if (status.receiverState && status.receiverState !== lastReceiverState) {
+        app.debug(`[signalk-vhf-watch] ${status.mode} · ${status.channel.label} · ${status.receiverState}`)
+        lastReceiverState = status.receiverState
+      }
     })
     runtime.start()
     app.setPluginStatus(`${config.receiverMode} · ${runtime.status().channel.label} · receive only`)

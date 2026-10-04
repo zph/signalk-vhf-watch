@@ -10,6 +10,40 @@ export const WIDEBAND_CENTER_HZ = 156_750_000
 export const WIDEBAND_SAMPLE_RATE = 2_400_000
 export const DSC_CHANNEL_HZ = 156_525_000
 export const CHANNEL_GUARD_HZ = 25_000
+const SIDECAR_STDERR_LIMIT = 4 * 1024
+const SIDECAR_NO_OUTPUT_TIMEOUT_MS = 15_000
+const SIDECAR_HEALTHY_RESET_MS = 10_000
+
+interface SidecarAttemptOptions {
+  noOutputTimeoutMs?: number
+  healthyResetMs?: number
+  retryDelayMs?: number
+}
+
+function signalSidecarGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch { /* Fall back to the direct child if group signaling is unavailable. */ }
+  }
+  child.kill(signal)
+}
+
+function sidecarDiagnostic(stderr: string): string | undefined {
+  const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const causes = lines.filter((line) =>
+    /error|failed|failure|lost|denied|unable|cannot|no device|not found|busy|permission|timeout|timed out|usb|rtl_sdr/i.test(line) &&
+    !/^exit status \d+$/i.test(line) &&
+    !/^(?:rtl_sdr stopped|sidecar stopped):?\s*exit status \d+$/i.test(line)
+  )
+  const claimFailure = causes.filter((line) => /busy|claim[_ ]interface|interface.*claim|resource.*busy/i.test(line)).at(-1)
+  const useful = claimFailure ?? causes.at(-1) ?? lines.at(-1)
+  if (!useful) return undefined
+  const busy = /busy|claim[_ ]interface|interface.*claim|resource.*busy/i.test(useful)
+  const details = causes.length > 1 && !claimFailure ? `${causes.at(-2)}\n${useful}` : useful
+  return `${details.split('\n').map((line) => line.slice(-500)).join('\n').slice(-1_000)}${busy ? '; the SDR may be in use by AIS-Catcher; disable one receiver before enabling the other' : ''}`
+}
 
 export interface ReceiverQualitySpan {
   bytes: number
@@ -150,16 +184,29 @@ export class NativeSidecarReceiver extends AudioReceiver {
   #process?: ReturnType<typeof spawn>
   #active = false
   #restartTimer?: ReturnType<typeof setTimeout>
+  #terminateCurrent?: () => void
   #restartDelayMs = 1_000
   #buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   #metrics: ReceiverMetrics = { droppedIqChunks: 0, droppedIqBytes: 0, restarts: 0 }
+  readonly #attemptOptions: Required<SidecarAttemptOptions>
 
-  constructor(config: VhfWatchConfig, channel: VhfChannel, slotB: VhfChannel | '70' = '70', singleFrequency = false) {
+  constructor(
+    config: VhfWatchConfig,
+    channel: VhfChannel,
+    slotB: VhfChannel | '70' = '70',
+    singleFrequency = false,
+    attemptOptions: SidecarAttemptOptions = {}
+  ) {
     super()
     this.#config = config
     this.#channel = channel
     this.#slotB = slotB
     this.#singleFrequency = singleFrequency
+    this.#attemptOptions = {
+      noOutputTimeoutMs: attemptOptions.noOutputTimeoutMs ?? SIDECAR_NO_OUTPUT_TIMEOUT_MS,
+      healthyResetMs: attemptOptions.healthyResetMs ?? SIDECAR_HEALTHY_RESET_MS,
+      retryDelayMs: attemptOptions.retryDelayMs ?? 1_000
+    }
   }
 
   start(): void {
@@ -174,21 +221,61 @@ export class NativeSidecarReceiver extends AudioReceiver {
 
   #startCapture(): void {
     if (!this.#active || this.#process) return
-    this.emit('state', this.#singleFrequency ? `Starting single-frequency receiver on ${this.#channel.label}` : 'Starting native wideband receiver')
+    const attempt = this.#metrics.restarts + 1
+    this.emit('state', this.#singleFrequency
+      ? `Starting single-frequency receiver on ${this.#channel.label} (attempt ${attempt})`
+      : `Starting native wideband receiver (attempt ${attempt})`)
     const child = spawn(this.#config.sidecarPath, nativeSidecarArgs(this.#config, this.#channel, this.#slotB, this.#singleFrequency), {
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32'
     })
     this.#process = child
-    let finalized = false
-    const failed = (error: Error): void => {
-      if (finalized) return
-      finalized = true
-      this.#captureEnded(child, error)
+    let closed = false
+    let failure: Error | undefined
+    let firstFrameAt: number | undefined
+    let exitResult: { code: number | null; signal: NodeJS.Signals | null } | undefined
+    let stderrTail = Buffer.alloc(0)
+    let watchdog: ReturnType<typeof setTimeout> | undefined
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+    const clearAttemptTimers = (): void => {
+      if (watchdog) clearTimeout(watchdog)
+      if (forceKillTimer) clearTimeout(forceKillTimer)
+      watchdog = undefined
+      forceKillTimer = undefined
+      if (this.#process === child) this.#terminateCurrent = undefined
     }
+    const terminate = (error?: Error): void => {
+      if (error && !failure) failure = error
+      if (watchdog) clearTimeout(watchdog)
+      watchdog = undefined
+      signalSidecarGroup(child, 'SIGTERM')
+      if (!forceKillTimer) {
+        forceKillTimer = setTimeout(() => {
+          if (!closed) signalSidecarGroup(child, 'SIGKILL')
+        }, 2_000)
+        forceKillTimer.unref?.()
+      }
+    }
+    this.#terminateCurrent = () => terminate()
+    const failed = (error: Error): void => {
+      if (closed || failure) return
+      terminate(error)
+    }
+    const armWatchdog = (): void => {
+      if (watchdog) clearTimeout(watchdog)
+      watchdog = setTimeout(() => {
+        watchdog = undefined
+        failed(new Error(`VHF sidecar produced no complete output frame for ${this.#attemptOptions.noOutputTimeoutMs / 1_000}s`))
+      }, this.#attemptOptions.noOutputTimeoutMs)
+      watchdog.unref?.()
+    }
+    armWatchdog()
     child.stdout.on('data', (chunk: Buffer) => {
+      if (closed || !this.#active || this.#process !== child) return
       try {
         const parsed = parseSidecarFrames(this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]))
         this.#buffer = parsed.remaining
+        let validFrames = 0
         for (const frame of parsed.frames) {
           if (frame.kind === 1) {
             if (frame.payload.length < 8) throw new Error('Truncated voice frame from VHF sidecar')
@@ -198,13 +285,18 @@ export class NativeSidecarReceiver extends AudioReceiver {
             const open = discriminatorNoise < discriminatorThreshold(this.#config.squelch)
             this.emit('audio', open ? rawPcm : Buffer.alloc(rawPcm.length))
             this.emit('replayAudio', rawPcm, discriminatorNoise)
+            validFrames += 1
           }
-          else if (frame.kind === 2) this.emit('dscAudio', frame.payload)
+          else if (frame.kind === 2) {
+            this.emit('dscAudio', frame.payload)
+            validFrames += 1
+          }
           else if (frame.kind === 4) {
             if (frame.payload.length < 8) throw new Error('Truncated Slot B voice frame from VHF sidecar')
             const discriminatorNoise = frame.payload.readDoubleLE(0)
             this.#metrics.slotBDiscriminatorNoise = discriminatorNoise
             this.emit('slotBReplayAudio', frame.payload.subarray(8), discriminatorNoise)
+            validFrames += 1
           }
           else if (frame.kind === 5 || frame.kind === 6) {
             if (frame.payload.length < 24) throw new Error('Truncated retrospective voice frame from VHF sidecar')
@@ -216,6 +308,7 @@ export class NativeSidecarReceiver extends AudioReceiver {
             } else if (frame.kind === 6 && this.#slotB !== '70' && frequencyHz === this.#slotB.frequencyHz) {
               this.emit('slotBReplayAudio', frame.payload.subarray(24), discriminatorNoise, capturedAt, frequencyHz)
             }
+            validFrames += 1
           }
           else if (frame.kind === 7 || frame.kind === 8) {
             const backfill = parseSpannedBackfillFrame(frame.payload)
@@ -224,9 +317,9 @@ export class NativeSidecarReceiver extends AudioReceiver {
             } else if (frame.kind === 8 && this.#slotB !== '70' && backfill.frequencyHz === this.#slotB.frequencyHz) {
               this.emit('slotBReplayAudio', backfill.pcm, backfill.discriminatorNoise, backfill.capturedAt, backfill.frequencyHz, backfill.qualitySpans)
             }
+            validFrames += 1
           }
           else if (frame.kind === 3) {
-            this.#restartDelayMs = 1_000
             const state = JSON.parse(frame.payload.toString('utf8')) as {
               voice_level?: number
               slot_b_level?: number
@@ -247,28 +340,67 @@ export class NativeSidecarReceiver extends AudioReceiver {
             this.emit('state', this.#singleFrequency
               ? `Single-frequency capture · Slot A ${this.#channel.label} · Slot B + DSC paused`
               : `Wideband capture · Slot A ${this.#channel.label} + Slot B ${this.#slotB === '70' ? 'DSC 70' : this.#slotB.label}`)
+            validFrames += 1
+          } else {
+            throw new Error(`Unknown frame kind ${frame.kind} from VHF sidecar`)
           }
+        }
+        if (validFrames > 0) {
+          const now = Date.now()
+          firstFrameAt ??= now
+          if (now - firstFrameAt >= this.#attemptOptions.healthyResetMs && this.#restartDelayMs > this.#attemptOptions.retryDelayMs) {
+            this.#restartDelayMs = this.#attemptOptions.retryDelayMs
+            this.emit('state', `Receiver recovered after ${Math.floor((now - firstFrameAt) / 1_000)}s of sidecar output; retry backoff reset`)
+          }
+          armWatchdog()
         }
       } catch (error) {
         failed(error instanceof Error ? error : new Error(String(error)))
       }
     })
     child.stderr.on('data', (chunk: Buffer) => {
-      const message = chunk.toString('utf8').trim()
-      if (message && /error|failed|lost|usb/i.test(message)) this.emit('state', message.split('\n').at(-1) ?? message)
+      stderrTail = Buffer.concat([stderrTail, chunk])
+      if (stderrTail.length > SIDECAR_STDERR_LIMIT) stderrTail = stderrTail.subarray(stderrTail.length - SIDECAR_STDERR_LIMIT)
     })
-    child.on('error', failed)
+    child.stdin.on('error', failed)
+    child.stdout.on('error', failed)
+    child.stderr.on('error', failed)
     child.on('exit', (code, signal) => {
-      if (finalized) return
-      finalized = true
       const expected = !this.#active && signal === 'SIGTERM'
-      this.#captureEnded(child, expected ? undefined : new Error(`VHF sidecar exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}`))
+      if (!expected && !failure) terminate()
+      exitResult = { code, signal }
+    })
+    child.on('close', (code, signal) => {
+      if (closed) return
+      closed = true
+      signalSidecarGroup(child, 'SIGKILL')
+      clearAttemptTimers()
+      if (this.#process !== child) return
+      const expected = !this.#active && signal === 'SIGTERM'
+      const exit = exitResult ?? { code, signal }
+      const diagnostic = sidecarDiagnostic(stderrTail.toString('utf8'))
+      const context = `VHF sidecar attempt ${attempt} failed on ${this.#channel.label} (${this.#channel.frequencyHz} Hz, RTL device ${this.#config.device})`
+      const terminal = failure
+        ? new Error(`${context}: ${failure.message}${diagnostic ? `: ${diagnostic}` : ''}`)
+        : expected
+          ? undefined
+          : new Error(`${context}: exited with code ${exit.code ?? 'unknown'}${exit.signal ? ` (${exit.signal})` : ''}${diagnostic ? `: ${diagnostic}` : ''}`)
+      this.#captureEnded(child, terminal)
+    })
+    child.on('error', (error) => {
+      if (closed) return
+      const spawnFailure = new Error(`VHF sidecar attempt ${attempt} could not start: ${error.message}`)
+      if (child.pid === undefined) {
+        closed = true
+        clearAttemptTimers()
+        if (this.#process === child && this.#active) this.#captureEnded(child, spawnFailure)
+      } else if (this.#process === child && this.#active) failed(spawnFailure)
     })
   }
 
   #captureEnded(child: ReturnType<typeof spawn>, error?: Error): void {
-    if (this.#process === child) this.#process = undefined
-    if (error && !child.killed) child.kill('SIGTERM')
+    if (this.#process !== child) return
+    this.#process = undefined
     this.#buffer = Buffer.alloc(0)
     if (!this.#active) {
       this.emit('state', 'Stopped')
@@ -313,9 +445,10 @@ export class NativeSidecarReceiver extends AudioReceiver {
     this.#restartTimer = undefined
     const child = this.#process
     this.#process = undefined
-    child?.kill('SIGTERM')
+    if (child) this.#terminateCurrent?.()
+    this.#terminateCurrent = undefined
     this.#buffer = Buffer.alloc(0)
-    if (!child) this.emit('state', 'Stopped')
+    this.emit('state', 'Stopped')
   }
 }
 
