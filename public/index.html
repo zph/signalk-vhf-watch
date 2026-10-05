@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=48" />
+  <link rel="stylesheet" href="./styles.css?v=49" />
 </head>
 <body>
   <main class="app-shell">
@@ -60,6 +60,29 @@
           </div>
           <p id="receiver-owner-note" class="receiver-owner-note"></p>
         </section>
+        <details id="receiver-identity-setup" class="receiver-identity-setup" hidden>
+          <summary>Receiver setup</summary>
+          <div class="receiver-identity-body">
+            <dl class="receiver-identity-current">
+              <div><dt>VHF Watch</dt><dd id="receiver-identity-vhf">Checking…</dd></div>
+              <div><dt>AIS-catcher</dt><dd id="receiver-identity-ais">Checking…</dd></div>
+            </dl>
+            <label for="receiver-identity-serial">Receiver name
+              <input id="receiver-identity-serial" type="text" value="BOATSDR01" minlength="3" maxlength="16" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="receiver-identity-name-help" />
+            </label>
+            <p id="receiver-identity-name-help" class="receiver-identity-note">3–16 characters: start with a letter, then use letters, numbers, _ or -.</p>
+            <label class="receiver-identity-confirm" for="receiver-identity-confirm">
+              <input id="receiver-identity-confirm" type="checkbox" />
+              <span>I can unplug and reconnect the receiver now</span>
+            </label>
+            <p class="receiver-identity-note">Reception pauses until you unplug and reconnect the SDR. This updates VHF Watch and AIS-catcher together.</p>
+            <div class="receiver-identity-actions">
+              <button id="receiver-identity-apply" class="button compact" type="button" disabled>Set receiver name</button>
+              <button id="receiver-identity-retry" class="button compact" type="button" hidden>Retry setup</button>
+            </div>
+            <p id="receiver-identity-status" class="receiver-identity-status" role="status" aria-live="polite">Checking receiver setup…</p>
+          </div>
+        </details>
         <div class="meter-label"><span>Signal</span><strong id="signal-value">0%</strong></div>
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
@@ -285,6 +308,6 @@
   </main>
   <script src="./conversation.js?v=47"></script>
   <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
-  <script src="./main.js?v=56"></script>
+  <script src="./main.js?v=57"></script>
 </body>
 </html>

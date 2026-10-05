@@ -107,12 +107,25 @@ against the same tuner and treat repeated device-open failures as harmless conte
 
 On a native Linux host, optional receiver ownership control can perform this handoff from the VHF
 Watch page. Enable **Manage AIS/VHF receiver ownership** in the plugin configuration and run
-`sudo scripts/install-receiver-ownership-sudoers.sh` on the host. The installer validates and
-atomically installs a root-owned rule that grants the `signalk` account only `systemctl start` and
-`systemctl stop` for `ais-catcher.service`; status checks remain unprivileged. The saved startup
-owner defaults to AIS-Catcher. Ownership control stays unavailable with a clear status error when
-the service or exact sudo permissions are missing. The handoff waits for the old process to release
-the tuner and for the new receiver to become ready before confirming the change.
+`sudo scripts/install-receiver-ownership-sudoers.sh` on the host. The installer stages and validates
+the fixed receiver-identity helper and sudoers rule before installing either; the helper is root-owned
+under `/usr/local/libexec`. Signal K may start or stop only `ais-catcher.service`
+and invoke that helper without arguments; the helper accepts a small JSON request on standard input.
+The saved startup owner defaults to AIS-Catcher. Ownership control stays unavailable with a clear
+status error when the service or exact sudo permissions are missing. The handoff waits for the old
+process to release the tuner and for the new receiver to become ready before confirming the change.
+
+On a native host with one RTL-SDR Blog V4 assigned to AIS-Catcher, the VHF Watch page can change its
+USB serial and synchronize `receiver[0].serial` in `/etc/AIS-catcher/aiscatcher.json`. The operation
+is available only when AIS-Catcher and VHF Watch select the attached tuner. VHF Watch stops both
+receivers, saves a full EEPROM backup and a durable recovery journal, then changes only the serial
+USB descriptor. Manufacturer `RTLSDRBlog`, product `Blog V4`, the EEPROM header, and all other bytes
+are preserved. After the page asks you to unplug and reconnect the SDR, leave both receivers paused;
+the service checks the new USB identity before updating AIS-Catcher and restarting the saved owner.
+If Signal K restarts during this operation, a private pending marker keeps ownership paused until
+the root journal can be reconciled. A failed or interrupted write remains paused when the EEPROM
+state cannot be verified. The helper writes root-only backups and atomically preserves the
+AIS-Catcher config owner and mode.
 
 When Signal K runs in Podman, pass the SDR through to the container, preferably by stable USB path or
 device identity rather than a changing bus number. The container image must include `rtl_sdr`.
@@ -125,6 +138,9 @@ receive antenna or a marine transmit-rated active splitter with a protected and 
 All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access control.
 
 - `GET /api/status` — receiver and buffer state
+- `GET /api/receiver-identity` — native SDR naming availability and pending sync state
+- `POST /api/receiver-identity` — name the sole attached RTL-SDR Blog V4; body `{ "serial": "BoatVhf1" }` (read/write access required)
+- `POST /api/receiver-identity/retry` — resume a verified pending sync; body `{}` (read/write access required)
 - `GET /api/channels` — supported receive channels
 - `POST /api/region` — select `US_CA`, `US`, or `CA`
 - `POST /api/channel` — tune the receiver; body `{ "channel": "16" }`

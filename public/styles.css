@@ -56,6 +56,24 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 650; letter-spacing: -.015e
 .receiver-owner-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 #receiver-ownership[data-owner="ais"] { background: #fff9e9; }
 #receiver-ownership[data-owner="ais"] .receiver-owner-choice .button[aria-pressed="true"] { background: #9a6900; border-color: #9a6900; }
+.receiver-identity-setup { margin: -5px 0 14px; padding: 9px 10px; background: #f5f8f7; border: 1px solid var(--line); border-radius: 10px; }
+.receiver-identity-setup summary { color: var(--ink); font-size: 11px; font-weight: 650; cursor: pointer; }
+.receiver-identity-body { display: grid; gap: 8px; padding-top: 9px; }
+.receiver-identity-current { display: grid; gap: 3px; margin: 0; }
+.receiver-identity-current > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 10px; }
+.receiver-identity-current dt { color: var(--muted); }
+.receiver-identity-current dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; text-align: right; }
+.receiver-identity-body > label:not(.receiver-identity-confirm) { display: grid; gap: 4px; color: var(--muted); font-size: 10px; }
+.receiver-identity-body input[type="text"] { width: 100%; min-height: 36px; padding: 0 9px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; cursor: text; }
+.receiver-identity-body input:disabled { cursor: not-allowed; opacity: .65; }
+.receiver-identity-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.receiver-identity-confirm { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 10px; }
+.receiver-identity-confirm input { width: 16px; height: 16px; margin: 0; accent-color: var(--green); }
+.receiver-identity-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.receiver-identity-status { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.receiver-identity-status[data-state="error"] { color: var(--red); }
+.receiver-identity-status[data-state="pendingReconnect"] { color: var(--amber); }
+.receiver-identity-status[data-state="complete"] { color: var(--green); }
 .meter-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
 .meter-label strong { color: var(--ink); }
 .meter { height: 6px; margin-top: 8px; overflow: hidden; background: var(--soft); border-radius: 999px; }

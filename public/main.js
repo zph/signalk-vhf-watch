@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 56
+  const CLIENT_BUILD = 57
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -28,6 +28,15 @@
   const receiverOwnerNote = $('#receiver-owner-note')
   const receiverOwnerAis = $('#receiver-owner-ais')
   const receiverOwnerVhf = $('#receiver-owner-vhf')
+  const receiverIdentitySetup = $('#receiver-identity-setup')
+  const receiverIdentityVhf = $('#receiver-identity-vhf')
+  const receiverIdentityAis = $('#receiver-identity-ais')
+  const receiverIdentitySerial = $('#receiver-identity-serial')
+  const receiverIdentityNameHelp = $('#receiver-identity-name-help')
+  const receiverIdentityConfirm = $('#receiver-identity-confirm')
+  const receiverIdentityApply = $('#receiver-identity-apply')
+  const receiverIdentityRetry = $('#receiver-identity-retry')
+  const receiverIdentityStatusText = $('#receiver-identity-status')
   const liveListen = $('#live-listen')
   const liveListenStatus = $('#live-listen-status')
   const liveAudio = $('#live-audio')
@@ -140,6 +149,11 @@
   let receiverOwnershipRequest
   let receiverOwnershipFeedback = ''
   let receiverOwnershipGeneration = 0
+  let receiverIdentityStatus
+  let receiverIdentityFeedback = ''
+  let receiverIdentityFeedbackIdentity
+  let receiverIdentityRequest = false
+  let receiverIdentityGeneration = 0
 
   conversationPlayer = new window.VHFConversation.ConversationPlayer(conversationAudio, {
     sourceFor: (record) => `${API}transcripts/${record.id}.wav?activity=1&cleanup=${encodeURIComponent(timelineCleanup.value)}&squelch=${encodeURIComponent(replaySquelch.value)}&quieting=100`,
@@ -182,10 +196,146 @@
       const body = await response.json().catch(() => ({}))
       const error = new Error(body.error || `Request failed (${response.status})`)
       error.status = response.status
+      error.receiverIdentity = body.receiverIdentity
       throw error
     }
     if (response.status === 204) return undefined
     return response.json()
+  }
+
+  function receiverSerialValidation(serial, maxLength = 16) {
+    const maximum = Number.isInteger(maxLength) ? Math.max(3, Math.min(16, maxLength)) : 16
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(serial) || serial.length < 3 || serial.length > maximum) {
+      return { valid: false, message: `Use 3–${maximum} characters: start with a letter, then use letters, numbers, _ or -.` }
+    }
+    return { valid: true, message: '' }
+  }
+
+  function receiverIdentityForStatus(status, currentIdentity) {
+    return Object.prototype.hasOwnProperty.call(status, 'receiverIdentity') ? status.receiverIdentity : currentIdentity
+  }
+
+  function receiverIdentityView(identity, requestPending, validation, confirmed) {
+    const available = identity?.available === true
+    const canRename = identity?.canRename === true
+    const canRetry = identity?.canRetry === true
+    const phase = identity?.phase || 'idle'
+    const pendingReconnect = phase === 'pendingReconnect'
+    const operationInProgress = phase === 'writing' || phase === 'configUpdated'
+    const blocksReceiverControl = pendingReconnect || operationInProgress
+    const retryVisible = canRetry && ['error', 'pendingReconnect', 'configUpdated', 'writing'].includes(phase)
+    const message = phase === 'error'
+      ? identity?.error || identity?.message || 'Receiver setup needs attention.'
+      : identity?.message || (pendingReconnect
+        ? `Unplug and reconnect the receiver as ${identity?.newSerial || 'the new name'} to finish setup.`
+        : operationInProgress
+          ? 'Finishing receiver setup…'
+          : phase === 'complete'
+            ? `Receiver name verified: ${identity?.deviceSerial || identity?.newSerial || 'updated'}.`
+            : !available
+              ? identity?.error || 'Receiver name setup is unavailable on this system.'
+              : validation.valid ? 'Ready to set the receiver name.' : validation.message)
+    return {
+      available,
+      canRename,
+      canRetry,
+      phase,
+      pendingReconnect,
+      operationInProgress,
+      blocksReceiverControl,
+      retryVisible,
+      message,
+      inputDisabled: !available || !canRename || requestPending || blocksReceiverControl,
+      applyDisabled: !available || !canRename || requestPending || blocksReceiverControl || !validation.valid || !confirmed,
+      retryDisabled: !canRetry || requestPending
+    }
+  }
+
+  function renderReceiverIdentity(identity) {
+    if (identity !== undefined) {
+      if (receiverIdentityFeedback && receiverIdentityFeedbackIdentity && JSON.stringify(identity) !== JSON.stringify(receiverIdentityFeedbackIdentity)) {
+        receiverIdentityFeedback = ''
+        receiverIdentityFeedbackIdentity = undefined
+      }
+      if (identity?.phase === 'complete' && receiverIdentityStatus?.phase === 'pendingReconnect') {
+        receiverIdentityConfirm.checked = false
+      }
+      receiverIdentityStatus = identity
+    }
+    const status = receiverIdentityStatus
+    if (!status) {
+      receiverIdentitySetup.hidden = true
+      return
+    }
+    receiverIdentitySetup.hidden = false
+    const maximum = Number.isInteger(status.maxSerialLength) ? status.maxSerialLength : 16
+    const nameMaximum = Math.max(3, Math.min(16, maximum))
+    receiverIdentitySerial.maxLength = nameMaximum
+    receiverIdentityNameHelp.textContent = `3–${nameMaximum} characters: start with a letter, then use letters, numbers, _ or -.`
+    const validation = receiverSerialValidation(receiverIdentitySerial.value, maximum)
+    const view = receiverIdentityView(status, Boolean(receiverIdentityRequest), validation, receiverIdentityConfirm.checked)
+    receiverIdentityVhf.textContent = status.deviceSerial || 'Not configured'
+    receiverIdentityAis.textContent = status.aisSerial || 'Not configured'
+    receiverIdentitySetup.dataset.phase = view.phase
+    receiverIdentityStatusText.dataset.state = receiverIdentityFeedback ? 'error' : view.phase
+    receiverIdentityStatusText.textContent = receiverIdentityFeedback || view.message
+    receiverIdentitySerial.disabled = view.inputDisabled
+    receiverIdentityConfirm.disabled = !view.available || Boolean(receiverIdentityRequest) || view.pendingReconnect
+    receiverIdentityApply.disabled = view.applyDisabled
+    receiverIdentityRetry.hidden = !view.retryVisible
+    receiverIdentityRetry.disabled = view.retryDisabled
+  }
+
+  async function loadReceiverIdentity() {
+    const generation = receiverIdentityGeneration
+    try {
+      const identity = await request('receiver-identity')
+      if (generation !== receiverIdentityGeneration) return
+      renderReceiverIdentity(identity)
+    } catch (error) {
+      if (generation !== receiverIdentityGeneration) return
+      renderReceiverIdentity({ available: false, phase: 'error', message: error.message })
+      receiverIdentityStatusText.dataset.state = 'error'
+    }
+  }
+
+  async function setReceiverIdentity(action) {
+    if (receiverIdentityRequest || !receiverIdentityStatus) return
+    if (action === 'apply') {
+      const validation = receiverSerialValidation(receiverIdentitySerial.value, receiverIdentityStatus.maxSerialLength)
+      if (receiverIdentityStatus.available !== true || receiverIdentityStatus.canRename !== true || !validation.valid || !receiverIdentityConfirm.checked || receiverIdentityStatus.phase === 'pendingReconnect') return
+    } else if (receiverIdentityStatus.canRetry !== true) {
+      return
+    }
+    receiverIdentityFeedback = ''
+    receiverIdentityFeedbackIdentity = undefined
+    receiverIdentityRequest = action
+    receiverIdentityGeneration += 1
+    receiverOwnershipGeneration += 1
+    renderReceiverIdentity()
+    renderReceiverOwnership()
+    try {
+      const identity = await request(action === 'retry' ? 'receiver-identity/retry' : 'receiver-identity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'retry' ? {} : { serial: receiverIdentitySerial.value })
+      })
+      renderReceiverIdentity(identity)
+    } catch (error) {
+      if (error.receiverIdentity) renderReceiverIdentity(error.receiverIdentity)
+      receiverIdentityFeedback = error.status === 401 || error.status === 403
+        ? `${error.message} Sign in with permission to change the receiver name.`
+        : error.message
+      receiverIdentityFeedbackIdentity = receiverIdentityStatus
+      renderReceiverIdentity()
+    } finally {
+      receiverIdentityRequest = false
+      receiverIdentityGeneration += 1
+      receiverOwnershipGeneration += 1
+      renderReceiverIdentity()
+      renderReceiverOwnership()
+      await updateStatus()
+    }
   }
 
   async function copyText(text) {
@@ -256,6 +406,10 @@
 
   function renderStatus(status) {
     receiverOwnershipStatus = ownershipForStatus(status, receiverOwnershipStatus)
+    if (Object.prototype.hasOwnProperty.call(status, 'receiverIdentity')) {
+      receiverIdentityGeneration += 1
+      renderReceiverIdentity(status.receiverIdentity)
+    }
     if (Object.prototype.hasOwnProperty.call(status, 'enabled')) latestStatus = status
     if (status.uiVersion && status.uiVersion !== CLIENT_BUILD) {
       const reloadKey = `vhf-watch:reload:${status.uiVersion}`
@@ -442,7 +596,9 @@
 
   function receiverCanTune() {
     const view = receiverOwnershipView(receiverOwnershipStatus, Boolean(receiverOwnershipRequest), receiverOwnershipRequest)
-    return latestStatus?.enabled !== false && (!view.visible || !view.locked)
+    const identityPhase = receiverIdentityStatus?.phase
+    const identitySetupLocksReceiver = ['writing', 'pendingReconnect', 'configUpdated'].includes(identityPhase)
+    return latestStatus?.enabled !== false && !receiverIdentityRequest && !identitySetupLocksReceiver && (!view.visible || !view.locked)
   }
 
   function updateCaptureControls() {
@@ -466,17 +622,24 @@
 
   function renderReceiverOwnership() {
     const view = receiverOwnershipView(receiverOwnershipStatus, Boolean(receiverOwnershipRequest), receiverOwnershipRequest)
+    const waitingForReconnect = receiverIdentityStatus?.phase === 'pendingReconnect'
+    const identitySetupInProgress = ['writing', 'configUpdated'].includes(receiverIdentityStatus?.phase)
+    const identitySetupLocksReceiver = waitingForReconnect || identitySetupInProgress
     receiverOwnership.hidden = !view.visible
     if (!view.visible) {
       updateCaptureControls()
       return
     }
-    receiverOwnerState.textContent = receiverOwnershipFeedback || view.state
-    receiverOwnerNote.textContent = view.note
+    receiverOwnerState.textContent = receiverOwnershipFeedback || (waitingForReconnect ? 'Reconnect receiver' : identitySetupInProgress ? 'Setting up receiver' : view.state)
+    receiverOwnerNote.textContent = waitingForReconnect
+      ? `Reconnect the receiver${receiverIdentityStatus.newSerial ? ` as ${receiverIdentityStatus.newSerial}` : ''} to finish setup. VHF Watch and AIS-catcher will resume automatically.`
+      : identitySetupInProgress
+        ? receiverIdentityStatus.message || 'Finishing receiver setup…'
+        : view.note
     receiverOwnerAis.setAttribute('aria-pressed', String(view.aisSelected))
     receiverOwnerVhf.setAttribute('aria-pressed', String(view.vhfSelected))
-    receiverOwnerAis.disabled = view.switching || !receiverOwnershipStatus.available
-    receiverOwnerVhf.disabled = view.switching || !receiverOwnershipStatus.available
+    receiverOwnerAis.disabled = view.switching || !receiverOwnershipStatus.available || Boolean(receiverIdentityRequest) || identitySetupLocksReceiver
+    receiverOwnerVhf.disabled = view.switching || !receiverOwnershipStatus.available || Boolean(receiverIdentityRequest) || identitySetupLocksReceiver
     receiverOwnership.dataset.owner = receiverOwnershipStatus.owner || 'unknown'
     receiverOwnership.dataset.switching = String(view.switching)
     updateCaptureControls()
@@ -2270,11 +2433,19 @@
   async function initialize() {
     startPolling()
     const channelRequest = loadChannels().catch((error) => setConnection('error', error.message))
-    await Promise.all([channelRequest, updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
+    await Promise.all([channelRequest, loadReceiverIdentity(), updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
   }
 
   receiverOwnerAis.addEventListener('click', () => { void setReceiverOwner('ais') })
   receiverOwnerVhf.addEventListener('click', () => { void setReceiverOwner('vhf') })
+  receiverIdentitySerial.addEventListener('input', () => {
+    renderReceiverIdentity()
+  })
+  receiverIdentityConfirm.addEventListener('change', () => {
+    renderReceiverIdentity()
+  })
+  receiverIdentityApply.addEventListener('click', () => { void setReceiverIdentity('apply') })
+  receiverIdentityRetry.addEventListener('click', () => { void setReceiverIdentity('retry') })
   slotAMode.addEventListener('change', configureSlots)
   slotAChannel.addEventListener('change', configureSlots)
   slotBMode.addEventListener('change', configureSlots)

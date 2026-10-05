@@ -11,10 +11,12 @@ import { RnnoiseDenoiser } from './rnnoise'
 import { ModifiedPlayback } from './modified-playback'
 import { ReplayHistoryStore } from './replay-history-store'
 import { ReceiverOwnershipController, type ReceiverOwner } from './receiver-ownership'
+import { ReceiverIdentityController } from './receiver-identity'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
   let ownership: ReceiverOwnershipController | undefined
+  let identity: ReceiverIdentityController | undefined
   let modifiedPlayback: ModifiedPlayback | undefined
   let pluginConfig: Record<string, unknown> = {}
 
@@ -72,6 +74,9 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         lastReceiverState = status.receiverState
       }
     })
+    if (config.manageReceiverOwnership && config.enabled && config.receiverMode === 'rtl_sdr' && process.platform === 'linux') {
+      void runtime.setCaptureEnabled(false)
+    }
     runtime.start()
     const managedRuntime = runtime
     ownership = new ReceiverOwnershipController(
@@ -91,7 +96,29 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
         : app.debug(`[signalk-vhf-watch] ${message}`)
     )
     const managedOwnership = ownership
-    void managedOwnership.initialize().catch((error) => {
+    identity = new ReceiverIdentityController(
+      () => managedRuntime,
+      managedOwnership,
+      (device) => new Promise<void>((resolve, reject) => {
+        const nextConfig = { ...pluginConfig, device }
+        app.savePluginOptions(nextConfig, (error) => {
+          if (error) reject(error)
+          else { pluginConfig = nextConfig; resolve() }
+        })
+      }),
+      path.join(app.getDataDirPath(), 'receiver-identity-pending.json'),
+      process.platform,
+      (level, message) => level === 'error'
+        ? app.error(`[signalk-vhf-watch] ${message}`)
+        : app.debug(`[signalk-vhf-watch] ${message}`)
+    )
+    const managedIdentity = identity
+    void (async () => {
+      await managedIdentity.initializeGate()
+      await managedOwnership.initialize()
+      await managedIdentity.refresh()
+      managedIdentity.startRecovery()
+    })().catch((error) => {
       app.error(`[signalk-vhf-watch] Receiver ownership setup: ${error instanceof Error ? error.message : String(error)}`)
     })
     app.setPluginStatus(`${config.receiverMode} · ${runtime.status().channel.label} · receive only`)
@@ -109,10 +136,13 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
       }
       const previous = runtime
       const previousOwnership = ownership
+      const previousIdentity = identity
       runtime = undefined
       ownership = undefined
+      identity = undefined
       void (async () => {
         let ownershipError: unknown
+        await previousIdentity?.shutdown()
         try { await previousOwnership?.shutdown() } catch (error) { ownershipError = error }
         try { await previous.stop() } finally {
           modifiedPlayback?.shutdown()
@@ -129,17 +159,20 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
     stop: async () => {
       const stoppingRuntime = runtime
       const stoppingOwnership = ownership
+      const stoppingIdentity = identity
       let stopError: unknown
+      await stoppingIdentity?.shutdown()
       try { await stoppingOwnership?.shutdown() } catch (error) { stopError = error }
       try { await stoppingRuntime?.stop() } catch (error) { if (!stopError) stopError = error } finally {
         modifiedPlayback?.shutdown()
         runtime = undefined
         ownership = undefined
+        identity = undefined
         modifiedPlayback = undefined
       }
       if (stopError) throw stopError
     },
-    registerWithRouter: (router) => registerRoutes(router, () => runtime, () => modifiedPlayback, () => ownership),
+    registerWithRouter: (router) => registerRoutes(router, () => runtime, () => modifiedPlayback, () => ownership, () => identity),
     getOpenApi: openApi,
     statusMessage: () => {
       const status = runtime?.status()

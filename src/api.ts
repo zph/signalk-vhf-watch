@@ -12,8 +12,9 @@ import { ModifiedPlayback, ModifiedPlaybackError } from './modified-playback'
 import type { TranscriptArchiveRecord } from './transcript-archive'
 import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buffer'
 import type { ReceiverOwnershipController } from './receiver-ownership'
+import type { ReceiverIdentityController } from './receiver-identity'
 
-const UI_VERSION = 56
+const UI_VERSION = 57
 
 interface ByteRange {
   start: number
@@ -141,7 +142,8 @@ export function registerRoutes(
   router: PluginRouter,
   getRuntime: () => VhfRuntime | undefined,
   getModifiedPlayback?: () => ModifiedPlayback | undefined,
-  getOwnership?: () => ReceiverOwnershipController | undefined
+  getOwnership?: () => ReceiverOwnershipController | undefined,
+  getIdentity?: () => ReceiverIdentityController | undefined
 ): void {
   const fallbackModifiedPlayback = new ModifiedPlayback()
   const getPlayback = getModifiedPlayback ?? (() => fallbackModifiedPlayback)
@@ -150,7 +152,8 @@ export function registerRoutes(
     const runtime = runtimeOr503(getRuntime, response)
     if (runtime) response.set('Cache-Control', 'no-store').json({
       ...runtime.status(), uiVersion: UI_VERSION,
-      receiverOwnership: getOwnership?.()?.status() ?? { configured: false, available: false, owner: 'unknown', desiredOwner: 'ais', switching: false }
+      receiverOwnership: getOwnership?.()?.status() ?? { configured: false, available: false, owner: 'unknown', desiredOwner: 'ais', switching: false },
+      receiverIdentity: getIdentity?.()?.status() ?? { available: false, phase: 'idle', maxSerialLength: null, canRename: false, canRetry: false }
     })
   })
   read.get('/api/channels', (_request: Request, response: Response) => {
@@ -844,6 +847,40 @@ export function registerRoutes(
     }
   })
   const write = router.access('readwrite')
+  read.get('/api/receiver-identity', async (_request: Request, response: Response) => {
+    const identity = getIdentity?.()
+    if (!identity) { response.status(503).json({ error: 'Receiver identity is unavailable' }); return }
+    try { response.set('Cache-Control', 'no-store').json(await identity.refresh()) }
+    catch (error) { response.status(503).json({ error: error instanceof Error ? error.message : String(error) }) }
+  })
+  write.post('/api/receiver-identity', async (request: Request, response: Response) => {
+    const identity = getIdentity?.()
+    if (!identity) { response.status(503).json({ error: 'Receiver identity is unavailable' }); return }
+    const body = request.body as { serial?: unknown } | undefined
+    if (!body || typeof body.serial !== 'string' || Object.keys(body).some((key) => key !== 'serial')) {
+      response.status(400).json({ error: 'serial is required' }); return
+    }
+    try { response.set('Cache-Control', 'no-store').json({ receiverIdentity: await identity.rename(body.serial) }) }
+    catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number' ? (error as { status: number }).status : 503
+      const receiverIdentity = (error as { identity?: unknown })?.identity ?? identity.status()
+      response.status(status).json({ error: error instanceof Error ? error.message : String(error), receiverIdentity })
+    }
+  })
+  write.post('/api/receiver-identity/retry', async (request: Request, response: Response) => {
+    const identity = getIdentity?.()
+    if (!identity) { response.status(503).json({ error: 'Receiver identity is unavailable' }); return }
+    const body = request.body as unknown
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 0) {
+      response.status(400).json({ error: 'An empty JSON object is required' }); return
+    }
+    try { response.set('Cache-Control', 'no-store').json({ receiverIdentity: await identity.retry() }) }
+    catch (error) {
+      const status = typeof (error as { status?: unknown })?.status === 'number' ? (error as { status: number }).status : 503
+      const receiverIdentity = (error as { identity?: unknown })?.identity ?? identity.status()
+      response.status(status).json({ error: error instanceof Error ? error.message : String(error), receiverIdentity })
+    }
+  })
   write.post('/api/receiver-owner', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
     if (!runtime) return

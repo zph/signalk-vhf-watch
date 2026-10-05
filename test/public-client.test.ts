@@ -150,6 +150,10 @@ test('receiver ownership reflects confirmed owner and locks live tuning for AIS 
 
   assert.match(html, /id="receiver-owner-ais"[^>]*>AIS-catcher<\/button>/)
   assert.match(html, /id="receiver-owner-vhf"[^>]*>VHF<\/button>/)
+  assert.match(html, /<summary>Receiver setup<\/summary>/)
+  assert.match(html, /id="receiver-identity-confirm"/)
+  assert.match(html, /I can unplug and reconnect the receiver now/)
+  assert.match(html, /Reception pauses until you unplug and reconnect the SDR\. This updates VHF Watch and AIS-catcher together\./)
   const ais = view({ available: true, owner: 'ais', switching: false }, false)
   assert.equal(ais.aisSelected, true)
   assert.equal(ais.locked, true)
@@ -172,6 +176,55 @@ test('receiver ownership reflects confirmed owner and locks live tuning for AIS 
   assert.equal(ownershipForStatus({ receiverOwnership: null }, knownOwnership), null)
   assert.match(script, /error\.status === 401 \|\| error\.status === 403/)
   assert.match(script, /receiverOwnershipStatus\.owner === owner && !receiverOwnershipStatus\.error/)
+})
+
+test('receiver identity setup validates names and communicates reconnect and retry states', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const root = path.resolve(__dirname, '../..')
+  const script = readFileSync(path.join(root, 'public/main.js'), 'utf8')
+  const start = script.indexOf('  function receiverSerialValidation(')
+  const end = script.indexOf('\n  function renderReceiverIdentity(', start)
+  assert.ok(start >= 0 && end > start)
+  const source = script.slice(start, end)
+  const helpers = runInNewContext(`(() => { ${source}; return { receiverSerialValidation, receiverIdentityForStatus, receiverIdentityView } })()`)
+
+  assert.equal(helpers.receiverSerialValidation('BOATSDR01', 16).valid, true)
+  assert.equal(helpers.receiverSerialValidation('A_b-3', 5).valid, true)
+  assert.equal(helpers.receiverSerialValidation('A1234567890123456', 20).valid, false)
+  assert.equal(helpers.receiverSerialValidation('9BOAT', 16).valid, false)
+  assert.equal(helpers.receiverSerialValidation('ab', 16).valid, false)
+  assert.equal(helpers.receiverSerialValidation('BOATSDR01', 8).valid, false)
+  assert.match(helpers.receiverSerialValidation('BOAT SDR', 16).message, /start with a letter/)
+
+  const pending = helpers.receiverIdentityView({ available: true, canRetry: true, phase: 'pendingReconnect', newSerial: 'BOATSDR01' }, false,
+    { valid: true }, true)
+  assert.equal(pending.applyDisabled, true)
+  assert.equal(pending.retryVisible, true)
+  assert.match(pending.message, /reconnect the receiver as BOATSDR01/)
+  const unplugged = helpers.receiverIdentityView({ available: false, canRetry: true, phase: 'pendingReconnect', newSerial: 'BOATSDR01' }, false,
+    { valid: true }, true)
+  assert.equal(unplugged.retryDisabled, false, 'retry remains available while the renamed receiver is unplugged')
+  const writing = helpers.receiverIdentityView({ available: true, canRename: false, phase: 'writing', message: 'Setting up the receiver' }, false,
+    { valid: true }, true)
+  assert.equal(writing.blocksReceiverControl, true)
+  assert.equal(writing.message, 'Setting up the receiver')
+  assert.match(helpers.receiverIdentityView({ available: true, canRename: true, phase: 'idle' }, false,
+    helpers.receiverSerialValidation('bad name', 14), false).message, /letters, numbers/)
+  const error = helpers.receiverIdentityView({ available: true, canRetry: true, phase: 'error', error: 'Permission denied' }, false,
+    { valid: true }, true)
+  assert.equal(error.retryVisible, true)
+  assert.equal(error.message, 'Permission denied')
+  assert.equal(helpers.receiverIdentityView({ available: false, message: 'One receiver required' }, false,
+    { valid: true }, true).applyDisabled, true)
+  assert.equal(helpers.receiverIdentityView({ available: true, phase: 'idle' }, false,
+    { valid: true }, true).applyDisabled, true, 'renaming stays locked until the backend confirms it is safe')
+  assert.equal(helpers.receiverIdentityView({ available: true, canRename: true, phase: 'idle' }, false,
+    { valid: true }, true).applyDisabled, false)
+  assert.equal(helpers.receiverIdentityForStatus({}, pending), pending)
+  assert.match(script, /action === 'retry' \? 'receiver-identity\/retry' : 'receiver-identity'/)
+  assert.match(script, /JSON\.stringify\(action === 'retry' \? \{\} : \{ serial: receiverIdentitySerial\.value \}\)/)
+  assert.match(script, /error\.status === 401 \|\| error\.status === 403[\s\S]*?permission to change the receiver name/)
+  assert.match(script, /receiverOwnershipGeneration \+= 1/)
 })
 
 test('client starts polling before initialization finishes and retries failed channel setup', async () => {
@@ -209,6 +262,7 @@ test('client starts polling before initialization finishes and retries failed ch
     renderFrequencyMap: () => void
     request: () => Promise<{ channels: Array<Record<string, unknown>>; region: string }>
     loadChannels: () => Promise<void>
+    loadReceiverIdentity: () => Promise<void>
     updateStatus: () => Promise<void>
     updateReplay: () => Promise<void>
     updateSpectrumActivity: () => Promise<void>
@@ -221,6 +275,7 @@ test('client starts polling before initialization finishes and retries failed ch
     pollTimers: new Set(), pollingStarted: false, channelsLoaded: false, channelsLoading: false, poll: undefined,
     latestStatus: {}, regionSelect: element(), slotAChannel: element(), slotBChannel: element(),
     renderStatus: () => { context.renderedChannelCount = context.slotAChannel.children.length }, renderFrequencyMap: () => {},
+    loadReceiverIdentity: async () => {},
     request: async () => {
       attempts += 1
       if (attempts === 1) throw new Error('Signal K is starting')
@@ -265,9 +320,10 @@ test('playback exposes only Raw and default Modified and migrates legacy saved c
   assert.match(script, /playbackPreference\('timeline-cleanup', timelineCleanup\.value\)/)
   assert.match(script, /playbackPreference\(`\$\{preferenceKey\}:cleanup`, timelineCleanup\.value\)/)
   assert.match(script, /replaySquelch\.disabled = timelineCleanup\.value === 'modified'/)
-  assert.match(script, /const CLIENT_BUILD = 56/)
-  assert.match(api, /const UI_VERSION = 56/)
-  assert.match(html, /main\.js\?v=56/)
+  assert.match(script, /const CLIENT_BUILD = 57/)
+  assert.match(api, /const UI_VERSION = 57/)
+  assert.match(html, /styles\.css\?v=49/)
+  assert.match(html, /main\.js\?v=57/)
   assert.match(html, /id="weather-transcription-model"/)
   assert.match(html, /id="weather-transcription-threads"/)
   assert.match(html, /id="transcription-overlap"/)

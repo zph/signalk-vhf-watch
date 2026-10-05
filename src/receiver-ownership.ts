@@ -13,6 +13,7 @@ export interface ReceiverOwnershipStatus {
   owner: ObservedOwner
   desiredOwner: ReceiverOwner
   switching: boolean
+  identityPending?: boolean
   error?: string
 }
 
@@ -74,7 +75,7 @@ export class SystemdReceiverService implements ReceiverService {
   }
 }
 
-interface OwnershipRuntime extends Pick<VhfRuntime, 'config' | 'status' | 'setCaptureEnabled'> {}
+interface OwnershipRuntime extends Pick<VhfRuntime, 'config' | 'status' | 'setCaptureEnabled' | 'setReceiverDevice'> {}
 
 export class ReceiverOwnershipController {
   #owner: ObservedOwner = 'unknown'
@@ -86,6 +87,9 @@ export class ReceiverOwnershipController {
   #settled?: () => void
   #closing = false
   #vhfCaptureEnabled = false
+  #identityPending = false
+  #identityDesiredOwner: ReceiverOwner = 'ais'
+  #initialized = false
 
   constructor(
     private readonly getRuntime: () => OwnershipRuntime | undefined,
@@ -102,22 +106,55 @@ export class ReceiverOwnershipController {
     const runtime = this.getRuntime()
     const configured = Boolean(runtime?.config.manageReceiverOwnership)
     const supported = runtime?.config.enabled === true && runtime.config.receiverMode === 'rtl_sdr' && (this.options.platform ?? process.platform) === 'linux'
-    const available = Boolean(configured && supported && !this.#unavailableError)
+    const available = Boolean(configured && supported && this.#initialized && !this.#unavailableError && !this.#identityPending)
+    const identityError = this.#identityPending ? 'Receiver identity change is waiting for the SDR to be unplugged and reconnected' : undefined
     return {
       configured,
       available,
       owner: this.#owner,
       desiredOwner: this.#desiredOwner,
       switching: this.#switching,
-      ...((this.#error ?? this.#unavailableError ?? (configured && !supported
+      ...(this.#identityPending ? { identityPending: true } : {}),
+      ...((identityError ?? this.#error ?? this.#unavailableError ?? (configured && !supported
         ? runtime?.config.enabled === false ? 'Enable the VHF Watch receiver to manage ownership' : 'Receiver ownership requires native Linux with RTL-SDR selected'
         : undefined))
-        ? { error: this.#error ?? this.#unavailableError ?? (runtime?.config.enabled === false ? 'Enable the VHF Watch receiver to manage ownership' : 'Receiver ownership requires native Linux with RTL-SDR selected') } : {})
+        ? { error: identityError ?? this.#error ?? this.#unavailableError ?? (runtime?.config.enabled === false ? 'Enable the VHF Watch receiver to manage ownership' : 'Receiver ownership requires native Linux with RTL-SDR selected') } : {})
+    }
+  }
+
+  get identityPending(): boolean { return this.#identityPending }
+  get initialized(): boolean { return this.#initialized }
+
+  setIdentityPending(pending: boolean): void {
+    this.#identityPending = pending
+    if (pending) {
+      this.#identityDesiredOwner = this.#desiredOwner
+      this.#vhfCaptureEnabled = false
+      this.#owner = 'none'
     }
   }
 
   async initialize(): Promise<void> {
-    if (!this.status().available) {
+    if (this.#closing || this.#switching) return
+    if (this.#identityPending) {
+      this.#beginTransition()
+      try {
+        await this.getRuntime()?.setCaptureEnabled(false)
+        if (this.#closing) return
+        await this.service.stop()
+        if (await this.service.isActive()) throw new Error(`${AIS_UNIT} remained active during pending receiver identity recovery`)
+        this.#owner = 'none'
+      } catch (error) {
+        this.#error = message(error)
+        this.#owner = 'unknown'
+      } finally { this.#initialized = true; this.#endTransition() }
+      return
+    }
+    const runtime = this.getRuntime()
+    const configured = Boolean(runtime?.config.manageReceiverOwnership)
+    const supported = runtime?.config.enabled === true && runtime.config.receiverMode === 'rtl_sdr' && (this.options.platform ?? process.platform) === 'linux'
+    if (!configured || !supported) {
+      this.#initialized = true
       const error = this.status().error
       if (error) this.log?.('error', `Receiver ownership unavailable: ${error}`)
       return
@@ -132,6 +169,7 @@ export class ReceiverOwnershipController {
       }
       const runtime = this.getRuntime()
       if (runtime) await runtime.setCaptureEnabled(false)
+      if (this.#closing) return
       const active = await this.service.isActive()
       this.#owner = active ? 'ais' : 'none'
       if (this.#desiredOwner === 'vhf') {
@@ -139,6 +177,7 @@ export class ReceiverOwnershipController {
         this.#owner = 'vhf'
       }
       else if (!active) {
+        if (this.#closing) return
         await this.service.start()
         if (!await this.service.isActive()) throw new Error(`${AIS_UNIT} did not become active`)
         this.#owner = 'ais'
@@ -149,11 +188,13 @@ export class ReceiverOwnershipController {
       this.#owner = await this.#readOwner()
       this.log?.('error', `Receiver ownership startup failed (${this.#owner}): ${this.#error}`)
     } finally {
+      this.#initialized = true
       this.#endTransition()
     }
   }
 
   async switchTo(owner: ReceiverOwner, restoring = false): Promise<ReceiverOwnershipStatus> {
+    if (this.#identityPending) throw new ReceiverOwnershipError('Receiver ownership is locked during the receiver identity change', 409)
     if (this.#closing && !restoring) throw new ReceiverOwnershipError('VHF Watch is shutting down', 503)
     if (this.#unavailableError) throw new ReceiverOwnershipError(this.#unavailableError, 503)
     if (!this.status().available) throw new ReceiverOwnershipError('Receiver ownership is unavailable; use native Linux with RTL-SDR and enable ownership management', 503)
@@ -197,10 +238,114 @@ export class ReceiverOwnershipController {
   async shutdown(): Promise<void> {
     this.#closing = true
     if (this.#pending) await this.#pending
+    if (this.#identityPending) {
+      await this.getRuntime()?.setCaptureEnabled(false)
+      return
+    }
     if (!this.status().available || this.#owner === 'ais') return
     const desiredOwner = this.#desiredOwner
     await this.switchTo('ais', true)
     this.#desiredOwner = desiredOwner
+  }
+
+  async pauseForIdentity(action: () => Promise<void>): Promise<void> {
+    if (!this.#initialized) throw new ReceiverOwnershipError('Receiver ownership startup is still reconciling', 503)
+    if (this.#closing) throw new ReceiverOwnershipError('VHF Watch is shutting down', 503)
+    if (this.#switching) throw new ReceiverOwnershipError('A receiver ownership change is already in progress', 409)
+    if (this.#identityPending) throw new ReceiverOwnershipError('A receiver identity change is already pending', 409)
+    this.#identityDesiredOwner = this.#desiredOwner
+    this.#identityPending = true
+    this.#beginTransition()
+    try {
+      const runtime = this.getRuntime()
+      if (!runtime) throw new Error('VHF Watch is not running')
+      await runtime.setCaptureEnabled(false)
+      this.#vhfCaptureEnabled = false
+      await this.service.stop()
+      if (await this.service.isActive()) throw new Error(`${AIS_UNIT} is still active; the SDR was not opened`)
+      this.#owner = 'none'
+      await action()
+    } finally { this.#endTransition() }
+  }
+
+  async releaseIdentityGate(resume: boolean): Promise<void> {
+    if (!this.#initialized) throw new ReceiverOwnershipError('Receiver ownership startup is still reconciling', 503)
+    if (!this.#identityPending) return
+    if (!resume) return
+    if (this.#switching) throw new ReceiverOwnershipError('A receiver operation is already in progress', 409)
+    this.#beginTransition()
+    try {
+      await this.#restoreIdentityOwner()
+      this.#identityPending = false
+    } catch (error) {
+      await this.#parkIdentityOwner()
+      throw error
+    } finally { this.#endTransition() }
+  }
+
+  async finalizeIdentity(action: () => Promise<string>, saveDevice: (serial: string) => Promise<void>, complete: () => Promise<void>): Promise<void> {
+    if (!this.#initialized) throw new ReceiverOwnershipError('Receiver ownership startup is still reconciling', 503)
+    if (!this.#identityPending) throw new ReceiverOwnershipError('No receiver identity change is pending', 409)
+    if (this.#switching) throw new ReceiverOwnershipError('A receiver ownership change is already in progress', 409)
+    this.#beginTransition()
+    try {
+      await this.getRuntime()?.setCaptureEnabled(false)
+      await this.service.stop()
+      if (await this.service.isActive()) throw new Error(`${AIS_UNIT} is still active; finalization was not started`)
+      this.#owner = 'none'
+      const serial = await action()
+      await saveDevice(serial)
+      const runtime = this.getRuntime()
+      runtime?.setReceiverDevice(serial)
+      await this.#restoreIdentityOwner()
+      await complete()
+      this.#identityPending = false
+    } catch (error) {
+      await this.#parkIdentityOwner()
+      throw error
+    } finally { this.#endTransition() }
+  }
+
+  async recoverCompletedIdentity(serial: string, saveDevice: (serial: string) => Promise<void>): Promise<void> {
+    if (!this.#initialized) throw new ReceiverOwnershipError('Receiver ownership startup is still reconciling', 503)
+    if (!this.#identityPending) throw new ReceiverOwnershipError('No receiver identity change is pending', 409)
+    if (this.#switching) throw new ReceiverOwnershipError('A receiver ownership change is already in progress', 409)
+    this.#beginTransition()
+    try {
+      await this.getRuntime()?.setCaptureEnabled(false)
+      await this.service.stop()
+      if (await this.service.isActive()) throw new Error(`${AIS_UNIT} is still active; finalization was not started`)
+      this.#owner = 'none'
+      await saveDevice(serial)
+      this.getRuntime()?.setReceiverDevice(serial)
+      await this.#restoreIdentityOwner()
+      this.#identityPending = false
+    } catch (error) {
+      await this.#parkIdentityOwner()
+      throw error
+    } finally { this.#endTransition() }
+  }
+
+  async #restoreIdentityOwner(): Promise<void> {
+    if (this.#identityDesiredOwner === 'ais') {
+      if (this.#vhfCaptureEnabled) throw new Error('VHF capture unexpectedly holds the SDR during AIS restore')
+      await this.service.start()
+      if (!await this.service.isActive()) throw new Error(`${AIS_UNIT} did not become active after SDR identity sync`)
+      this.#owner = 'ais'
+      return
+    }
+    await this.#toVhf()
+    this.#owner = 'vhf'
+  }
+
+  async #parkIdentityOwner(): Promise<void> {
+    this.#identityPending = true
+    try { await this.getRuntime()?.setCaptureEnabled(false) } catch { /* preserve the gate */ }
+    this.#vhfCaptureEnabled = false
+    try { await this.service.stop() } catch { /* preserve the gate */ }
+    try {
+      this.#owner = await this.service.isActive() ? 'unknown' : 'none'
+    } catch { this.#owner = 'unknown' }
   }
 
   async #toVhf(): Promise<void> {

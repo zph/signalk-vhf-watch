@@ -333,7 +333,7 @@ export class VhfRuntime extends EventEmitter<{
       this.#emitStatus()
       return
     }
-    this.#startReceiver()
+    if (this.#captureAllowed) this.#startReceiver()
     if (this.#captureAllowed && this.#slotAMode === 'scan' && !this.#singleFrequency) this.#scheduleScan(0)
     if (this.#captureAllowed && this.#slotBMode === 'scan' && !this.#singleFrequency) this.#scheduleSlotBScan(0)
   }
@@ -578,6 +578,11 @@ export class VhfRuntime extends EventEmitter<{
     await this.#stopReceiverAndWait()
     this.#receiverState = 'Capture paused for receiver ownership'
     this.#emitStatus()
+  }
+
+  setReceiverDevice(device: string): void {
+    if (this.#receiver) throw new Error('The receiver must be stopped before changing its device identity')
+    this.config.device = device
   }
 
   segments(squelch?: number): ReplaySegmentSummary[] {
