@@ -194,6 +194,8 @@ class ReceiverIdentityHelperTests(unittest.TestCase):
 
     def test_factory_numeric_serial_is_valid_as_the_current_identity(self) -> None:
         factory_image = v4_image("00000001")
+        stale_string_area = bytes.fromhex("31 00 30 00 30 00 30 00 30 00 30 00 31")
+        factory_image = factory_image[:65] + stale_string_area + factory_image[78:]
         self.rtl.image = factory_image
         self.rtl.devices[0] = (helper.BLOG_MANUFACTURER, helper.BLOG_PRODUCT, "00000001")
         self.config_data["receiver"][0]["serial"] = "00000001"
@@ -201,6 +203,10 @@ class ReceiverIdentityHelperTests(unittest.TestCase):
         result = helper.begin({"action": "begin", "currentSerial": "00000001", "serial": "BOATSDR01"})
         self.assertEqual(result["phase"], "pendingReconnect")
         self.assertEqual(helper.eeprom_serial(self.rtl.image), "BOATSDR01")
+        self.assertEqual(self.rtl.image[67:], factory_image[67:])
+        expected = bytearray(factory_image)
+        expected[47:67] = usb_descriptor("BOATSDR01")
+        self.assertEqual(self.rtl.image, bytes(expected))
 
     def test_config_replacement_preserves_mode_owner_and_parent_directory_permissions(self) -> None:
         before = self.config_path.stat()

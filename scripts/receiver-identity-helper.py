@@ -228,19 +228,18 @@ def eeprom_serial(image: bytes) -> str:
 def patch_serial(image: bytes, serial: str) -> bytes:
     if not isinstance(serial, str) or not SERIAL_RE.fullmatch(serial):
         raise IdentityError("Serial must start with a letter and use 3–16 letters, digits, underscores, or hyphens")
-    descriptors, end = read_descriptors(image)
+    descriptors, _ = read_descriptors(image)
     if descriptors[0][2] != BLOG_MANUFACTURER or descriptors[1][2] != BLOG_PRODUCT:
         raise IdentityError("Expected an RTL-SDR Blog V4; manufacturer/product strings must be preserved")
     if image[6] != 0xA5:
         raise IdentityError("The SDR does not have an enabled serial descriptor")
-    position, old_length, old_serial = descriptors[2]
+    position, old_length, _ = descriptors[2]
     encoded = serial.encode("utf-16le")
     descriptor_length = len(encoded) + 2
     if position + descriptor_length > DESCRIPTOR_LIMIT:
         raise IdentityError(f"Serial is too long for this V4 EEPROM (maximum {serial_capacity(image)} characters)")
-    # The pre-existing third descriptor owns bytes through offset 78. Refuse malformed trailing data.
-    if descriptor_length > old_length and any(image[end:position + descriptor_length]):
-        raise IdentityError("Unexpected data after the serial descriptor; refusing to overwrite it")
+    # RTL-SDR Blog may leave stale text in the unused string-descriptor area.
+    # Growth is bounded by DESCRIPTOR_LIMIT and changes only the old/new serial span.
     updated = bytearray(image)
     updated[position] = descriptor_length
     updated[position + 1] = 3
