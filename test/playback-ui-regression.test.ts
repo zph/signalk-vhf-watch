@@ -127,6 +127,7 @@ test('live button opens and closes the dedicated stream at fixed automatic quiet
   const liveListenStatus = { textContent: '' }
   const state = {
     API: '/api/', URLSearchParams, liveAudio, liveListen, liveListenStatus,
+    listenMode: { value: 'live' }, messageListener: { active: false },
     liveAudioSource: undefined as string | undefined,
     liveAudioGeneration: 0,
     liveListening: false,

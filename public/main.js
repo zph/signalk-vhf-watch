@@ -1,6 +1,6 @@
 (() => {
   'use strict'
-  const CLIENT_BUILD = 57
+  const CLIENT_BUILD = 58
   const API = new URL('../plugins/signalk-vhf-watch/api/', window.location.href).pathname
   const $ = (selector) => document.querySelector(selector)
   const connection = $('#connection')
@@ -40,6 +40,11 @@
   const liveListen = $('#live-listen')
   const liveListenStatus = $('#live-listen-status')
   const liveAudio = $('#live-audio')
+  const listenMode = $('#listen-mode')
+  const messageAudio = $('#message-audio')
+  const messageMuteList = $('#message-mute-list')
+  const messageMuteCount = $('#message-mute-count')
+  const messageMuteStatus = $('#message-mute-status')
   const dscList = $('#dsc-list')
   const dscEmpty = $('#dsc-empty')
   const dscModeLabel = $('#dsc-mode-label')
@@ -128,6 +133,15 @@
   let liveAudioSource
   let liveAudioGeneration = 0
   let liveListening = false
+  const messageListener = new window.VHFMessageListener(messageAudio, {
+    request,
+    sourceFor: (message) => `${API}message-listen/${message.id}.wav?session=${encodeURIComponent(messageListener.session)}`,
+    onStatus: (message) => { liveListenStatus.textContent = message },
+    onActive: (active) => {
+      liveListen.textContent = active ? 'Stop listening' : 'Listen with mutes'
+      liveListen.setAttribute('aria-pressed', String(active))
+    }
+  })
   let spectrumTimeline = []
   let dscTimeline = []
   let timelineSegmentId
@@ -188,6 +202,7 @@
     replaySquelchTouched = true
   }
   timelineCleanup.value = playbackPreference('timeline-cleanup', timelineCleanup.value)
+  listenMode.value = storedPreference('listen-mode', 'live') === 'messages' ? 'messages' : 'live'
   settingsPanel.open = storedPreference('settings-open', 'false') === 'true'
 
   async function request(path, options) {
@@ -427,7 +442,8 @@
     handleTimelineSlotARetune(activeSlotAChannel)
     timelineActiveSlotAChannel = activeSlotAChannel
     liveListen.disabled = !receiverCanTune()
-    if (!liveListening) liveListen.textContent = `Listen live · ${channelDisplay(activeSlotAChannel)}`
+    if (!liveListening && !messageListener.active) liveListen.textContent = listenMode.value === 'messages'
+      ? 'Listen with mutes' : `Listen live · ${channelDisplay(activeSlotAChannel)}`
     if (!slotConfigurationPending) {
       if (document.activeElement !== regionSelect) regionSelect.value = status.channelRegion
       if (document.activeElement !== slotAMode) slotAMode.value = status.slots.A.mode
@@ -612,7 +628,7 @@
     presetSlotA16.disabled = !enabled || slotConfigurationPending
     presetSlotB70.disabled = !enabled || slotConfigurationPending
     liveListen.disabled = !enabled
-    if (!enabled && liveListening) {
+    if (!enabled && (liveListening || messageListener.active)) {
       const message = receiverOwnershipRequest === 'ais' || receiverOwnershipStatus?.owner === 'ais'
         ? 'Live audio stopped while AIS-catcher uses this receiver.'
         : 'Live audio stopped because this receiver is unavailable.'
@@ -1026,6 +1042,7 @@
   }
 
   function pauseOtherAudio(activeAudio) {
+    if (activeAudio !== messageAudio && messageListener.active) messageListener.stop('Message listening stopped while another recording plays.')
     for (const audio of document.querySelectorAll('audio')) {
       if (audio === activeAudio) continue
       if (audio === liveAudio && liveListening) {
@@ -1040,6 +1057,7 @@
   }
 
   function stopLiveListening(message = 'Live audio stopped.') {
+    if (messageListener.active) messageListener.stop(message)
     liveAudioGeneration += 1
     liveListening = false
     liveAudio.pause()
@@ -1052,6 +1070,13 @@
   }
 
   function startLiveListening() {
+    if (listenMode.value === 'messages') {
+      if (liveListening) stopLiveListening()
+      pauseOtherAudio(messageAudio)
+      void messageListener.start()
+      return
+    }
+    if (messageListener.active) messageListener.stop('')
     if (!timelineActiveSlotAChannel) {
       liveListenStatus.textContent = 'Receiver status is not ready yet.'
       return
@@ -1084,7 +1109,8 @@
       durationSeconds: session.durationSeconds,
       ...(includeTranscript ? {
         transcript: session.transcript,
-        transcription: session.transcription
+        transcription: session.transcription,
+        mutes: session.records?.map((record) => record.mute?.id)
       } : {})
     })))
   }
@@ -2016,7 +2042,7 @@
       bindTranscriptMoment(stamp, details, entry, offsetSeconds, updatePlayback)
       const text = document.createElement('span')
       text.textContent = entry.transcript || '[no speech recognized]'
-      line.append(stamp, text)
+      line.append(stamp, text, messageMuteButton(entry))
       log.append(line)
 
       const marker = document.createElement('a')
@@ -2184,7 +2210,7 @@
       button.append(time, duration, transcript)
       button.setAttribute('aria-label', `Play ${channelDisplay(channel)} clip at ${time.textContent}: ${transcript.textContent}`)
       button.addEventListener('click', () => playConversationFrom(clip.record.id))
-      item.append(button)
+      item.append(button, messageMuteButton(clip.record))
       rows.push(item)
       furthestPreviousEnd = Math.max(furthestPreviousEnd, clip.end)
     })
@@ -2261,7 +2287,7 @@
   }
 
   function refreshConversation(records, archive) {
-    const signature = JSON.stringify(records.map((record) => [record.id, record.channel, record.startedAt, record.durationSeconds, record.activityStartSeconds, record.activityEndSeconds, record.transcript]))
+    const signature = JSON.stringify(records.map((record) => [record.id, record.channel, record.startedAt, record.durationSeconds, record.activityStartSeconds, record.activityEndSeconds, record.transcript, record.mute?.id]))
     const previousIds = new Set(conversationRecords.map((record) => String(record.id)))
     conversationRecords = records
     conversationPlayer.updateRecords(records)
@@ -2304,6 +2330,15 @@
   async function updateArchive() {
     try {
       const { records, archive } = await request('transcripts?limit=500')
+      for (const button of document.querySelectorAll('.message-mute-button')) {
+        const current = records.find((record) => record.id === button.__record?.id)
+        if (current) {
+          button.__record.mute = current.mute
+          button.textContent = current.mute ? 'Unmute similar messages' : 'Mute similar messages'
+          button.setAttribute('aria-pressed', String(Boolean(current.mute)))
+          button.disabled = !current.transcript?.trim()
+        }
+      }
       refreshConversation(records, archive)
       const sessions = groupArchiveSessions(records)
       const signature = sessionRenderSignature(sessions, true)
@@ -2328,6 +2363,61 @@
       archiveEmpty.hidden = false
       archiveEmpty.textContent = error.message
     }
+  }
+
+  function messageMuteButton(record) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.__record = record
+    button.className = 'button compact message-mute-button'
+    button.textContent = record.mute ? 'Unmute similar messages' : 'Mute similar messages'
+    button.setAttribute('aria-pressed', String(Boolean(record.mute)))
+    button.disabled = !record.transcript?.trim()
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      try {
+        if (record.mute) await request(`message-mutes/${encodeURIComponent(record.mute.id)}`, { method: 'DELETE' })
+        else {
+          await request('message-mutes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcriptId: record.id }) })
+          listenMode.value = 'messages'
+          savePreference('listen-mode', 'messages')
+          if (liveListening) startLiveListening()
+        }
+        messageMuteStatus.textContent = record.mute ? 'Message mute removed.' : 'Similar messages will be skipped in delayed listening.'
+        await messageListener.poll()
+        await Promise.all([updateMessageMutes(), updateArchive()])
+      } catch (error) {
+        messageMuteStatus.textContent = error.message
+        button.disabled = false
+      }
+    })
+    return button
+  }
+
+  async function updateMessageMutes() {
+    try {
+      const { rules } = await request('message-mutes')
+      messageMuteCount.textContent = String(rules.length)
+      messageMuteList.replaceChildren(...rules.map((rule) => {
+        const item = document.createElement('li')
+        const text = document.createElement('span')
+        text.textContent = `${channelDisplay(rule.channel)} · ${rule.transcript}`
+        const remove = document.createElement('button')
+        remove.type = 'button'
+        remove.className = 'button compact'
+        remove.textContent = 'Unmute'
+        remove.addEventListener('click', async () => {
+          remove.disabled = true
+          try {
+            await request(`message-mutes/${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
+            messageMuteStatus.textContent = 'Message mute removed.'
+            await Promise.all([updateMessageMutes(), updateArchive()])
+          } catch (error) { messageMuteStatus.textContent = error.message; remove.disabled = false }
+        })
+        item.append(text, remove)
+        return item
+      }))
+    } catch (error) { messageMuteStatus.textContent = error.message }
   }
 
   async function configureSlots() {
@@ -2425,6 +2515,7 @@
     pollTimers.add(window.setInterval(updateSpectrumActivity, 5000))
     pollTimers.add(window.setInterval(updateDsc, 5000))
     pollTimers.add(window.setInterval(updateArchive, 15_000))
+    pollTimers.add(window.setInterval(updateMessageMutes, 15_000))
     pollTimers.add(window.setInterval(() => {
       if (!channelsLoaded) void loadChannels().catch((error) => setConnection('error', error.message))
     }, 5_000))
@@ -2433,7 +2524,7 @@
   async function initialize() {
     startPolling()
     const channelRequest = loadChannels().catch((error) => setConnection('error', error.message))
-    await Promise.all([channelRequest, loadReceiverIdentity(), updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive()])
+    await Promise.all([channelRequest, loadReceiverIdentity(), updateStatus(), updateReplay(), updateSpectrumActivity(), updateDsc(), updateArchive(), updateMessageMutes()])
   }
 
   receiverOwnerAis.addEventListener('click', () => { void setReceiverOwner('ais') })
@@ -2497,8 +2588,13 @@
     if (liveListening) startLiveListening()
   })
   liveListen.addEventListener('click', () => {
-    if (liveListening) stopLiveListening()
+    if (liveListening || messageListener.active) stopLiveListening()
     else startLiveListening()
+  })
+  listenMode.addEventListener('change', () => {
+    savePreference('listen-mode', listenMode.value)
+    if (liveListening || messageListener.active) { stopLiveListening(); startLiveListening() }
+    else liveListen.textContent = listenMode.value === 'messages' ? 'Listen with mutes' : 'Listen live'
   })
   timelinePlay.addEventListener('click', () => {
     if (timelineQueueIndex < 0 || !timelineQueue[timelineQueueIndex]) return
@@ -2591,6 +2687,7 @@
     if (liveListening) stopLiveListening('Live stream ended. Tap Listen live to reconnect.')
   })
   window.addEventListener('pagehide', () => {
+    messageListener.stop('')
     destroyTimelineWaveform()
     destroyArchiveWaveforms()
   })

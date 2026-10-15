@@ -268,6 +268,7 @@ test('client starts polling before initialization finishes and retries failed ch
     updateSpectrumActivity: () => Promise<void>
     updateDsc: () => Promise<void>
     updateArchive: () => Promise<void>
+    updateMessageMutes: () => Promise<void>
     setConnection: () => void
   } = {
     window: { setInterval: (callback) => { callbacks.push(callback); return callbacks.length } },
@@ -285,20 +286,20 @@ test('client starts polling before initialization finishes and retries failed ch
     loadChannels: async () => {},
     updateStatus: async () => { statusUpdates += 1 },
     updateReplay: async () => { replayUpdates += 1 },
-    updateSpectrumActivity: async () => {}, updateDsc: async () => {}, updateArchive: async () => {},
+    updateSpectrumActivity: async () => {}, updateDsc: async () => {}, updateArchive: async () => {}, updateMessageMutes: async () => {},
     setConnection: () => {}
   }
   await runInNewContext(`(async () => { ${source}; await initialize() })()`, context)
-  assert.equal(callbacks.length, 6)
+  assert.equal(callbacks.length, 7)
   assert.equal(attempts, 1)
   assert.equal(statusUpdates, 1)
   assert.equal(replayUpdates, 1)
-  await callbacks[5]!()
+  await callbacks[6]!()
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(attempts, 2)
   assert.ok(context.slotAChannel.children.length > 0)
   assert.ok(context.renderedChannelCount! > 0)
-  assert.equal(context.pollTimers.size, 6)
+  assert.equal(context.pollTimers.size, 7)
 })
 
 test('playback exposes only Raw and default Modified and migrates legacy saved choices', () => {
@@ -320,10 +321,10 @@ test('playback exposes only Raw and default Modified and migrates legacy saved c
   assert.match(script, /playbackPreference\('timeline-cleanup', timelineCleanup\.value\)/)
   assert.match(script, /playbackPreference\(`\$\{preferenceKey\}:cleanup`, timelineCleanup\.value\)/)
   assert.match(script, /replaySquelch\.disabled = timelineCleanup\.value === 'modified'/)
-  assert.match(script, /const CLIENT_BUILD = 57/)
-  assert.match(api, /const UI_VERSION = 57/)
-  assert.match(html, /styles\.css\?v=49/)
-  assert.match(html, /main\.js\?v=57/)
+  assert.match(script, /const CLIENT_BUILD = 58/)
+  assert.match(api, /const UI_VERSION = 58/)
+  assert.match(html, /styles\.css\?v=58/)
+  assert.match(html, /main\.js\?v=58/)
   assert.match(html, /id="weather-transcription-model"/)
   assert.match(html, /id="weather-transcription-threads"/)
   assert.match(html, /id="transcription-overlap"/)

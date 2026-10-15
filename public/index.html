@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#f5f6f7" />
   <title>VHF Watch</title>
   <link rel="icon" href="./vhf-watch.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="./styles.css?v=49" />
+  <link rel="stylesheet" href="./styles.css?v=58" />
 </head>
 <body>
   <main class="app-shell">
@@ -87,10 +87,17 @@
         <div class="meter" aria-hidden="true"><div id="signal-bar"></div></div>
         <p id="receiver-state" role="status" aria-live="polite">Receiver stopped</p>
         <div class="live-listen-control">
+          <label for="listen-mode">Listening
+            <select id="listen-mode">
+              <option value="live">Live · message mutes off</option>
+              <option value="messages">With message mutes · delayed</option>
+            </select>
+          </label>
           <button id="live-listen" class="button compact" type="button" disabled>Listen live</button>
           <span id="live-listen-status" role="status" aria-live="polite">Live audio is separate from historical playback.</span>
         </div>
         <audio id="live-audio" class="sr-only archive-audio-source" aria-hidden="true" preload="none"></audio>
+        <audio id="message-audio" class="sr-only archive-audio-source" aria-hidden="true" preload="none"></audio>
       </div>
       <div class="receiver-presets" aria-label="Quick channel selection">
         <strong>Quick watch</strong>
@@ -161,6 +168,12 @@
             <button id="archive-view-all" class="button compact is-active" type="button" aria-pressed="true">All channels</button>
             <button id="archive-view-conversation" class="button compact" type="button" aria-pressed="false">Channel conversation</button>
           </div>
+          <details class="message-mutes">
+            <summary>Muted messages (<span id="message-mute-count">0</span>)</summary>
+            <p>Choose “Mute similar messages” on a transcript below. Mutes apply to delayed listening on the same channel. Audio waits for recognition; unrecognized audio still plays. Original recordings remain available.</p>
+            <ul id="message-mute-list"></ul>
+            <p id="message-mute-status" role="status" aria-live="polite"></p>
+          </details>
           <div id="archive-all-view">
             <div id="archive-empty" class="empty">No archived transcripts yet.</div>
             <ol id="archive-list" class="archive-list" aria-live="polite"></ol>
@@ -308,6 +321,7 @@
   </main>
   <script src="./conversation.js?v=47"></script>
   <script src="./vendor/wavesurfer-7.11.1.min.js"></script>
-  <script src="./main.js?v=57"></script>
+  <script src="./message-listening.js?v=58"></script>
+  <script src="./main.js?v=58"></script>
 </body>
 </html>

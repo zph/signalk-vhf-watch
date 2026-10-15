@@ -326,3 +326,14 @@ footer { padding: 22px 0 0; color: var(--muted); font-size: 11px; text-align: ce
   .side-column { grid-template-columns: 1fr; }
   .settings-panel, .receiver-note { grid-column: auto; }
 }
+/* Saved message mutes remain readable on narrow touch displays. */
+.message-mutes { margin: 12px 0; padding: 12px; border: 1px solid var(--line, #d4dcd9); border-radius: 8px; }
+.message-mutes p { font-size: .88rem; line-height: 1.5; }
+.message-mutes ul { list-style: none; padding: 0; }
+.message-mutes li { display: flex; align-items: start; gap: 12px; margin: 12px 0; }
+.message-mutes li span { flex: 1; overflow-wrap: anywhere; }
+.message-mutes li button { flex: none; }
+.message-mute-button { margin: 4px 0; white-space: normal; }
+.archive-log-line .message-mute-button { grid-column: 2; justify-self: start; }
+.live-listen-control label { display: grid; width: 100%; gap: 4px; color: var(--muted); font-size: 11px; }
+.live-listen-control select { min-width: 0; width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--ink); font-size: 11px; }

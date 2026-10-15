@@ -9,6 +9,33 @@ import { TranscriptArchive } from '../src/transcript-archive'
 import { RnnoiseDenoiser } from '../src/rnnoise'
 import { WhisperVadProbe } from '../src/whisper-vad'
 import { WhisperServerCancelledError, WhisperServerPool } from '../src/whisper-server-pool'
+import { MessageMuteStore } from '../src/message-mutes'
+
+test('completed listening mutes known text and retains original audio when recognition is empty or fails', async () => {
+  for (const output of ['printf "routine harbor announcement\\n"', 'exit 0', 'exit 1']) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-listening-asr-'))
+    const command = path.join(directory, 'fake-whisper')
+    writeFileSync(command, `#!/bin/sh\n${output}\n`, { mode: 0o755 })
+    writeFileSync(path.join(directory, 'ggml-base.en-q5_1.bin'), 'test model')
+    const messageMutes = new MessageMuteStore()
+    messageMutes.add('16', 'routine harbor announcement')
+    const manager = new TranscriptionManager(path.join(directory, 'settings.json'), command, {
+      modelsDir: directory, batchSeconds: 1, overlapSeconds: 0, messageMutes
+    })
+    try {
+      await manager.setEnabled(true)
+      const replay = new RollingReplay(8_000, 1, 1, '16')
+      const [segment] = replay.append(Buffer.alloc(16_000, 9), Date.now(), 0.1)
+      manager.enqueue(segment, 20)
+      const deadline = Date.now() + 5_000
+      while (manager.busy() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10))
+      const messages = manager.listening.list(0).messages
+      assert.equal(messages.length, 1, output)
+      assert.equal(Boolean(messages[0].mute), output.startsWith('printf'))
+      assert.deepEqual(manager.listening.wav(messages[0].id)!.subarray(44), segment.wav.subarray(44))
+    } finally { await manager.close(); rmSync(directory, { recursive: true, force: true }) }
+  }
+})
 
 test('backlog includes active, queued and pending clips without counting ASR overlap twice', async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'vhf-backlog-'))

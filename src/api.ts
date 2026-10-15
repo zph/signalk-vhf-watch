@@ -14,7 +14,7 @@ import type { ReplayPlaybackCursor, ReplayPlaybackPayload } from './rolling-buff
 import type { ReceiverOwnershipController } from './receiver-ownership'
 import type { ReceiverIdentityController } from './receiver-identity'
 
-const UI_VERSION = 57
+const UI_VERSION = 58
 
 interface ByteRange {
   start: number
@@ -191,9 +191,50 @@ export function registerRoutes(
     const requested = Number(request.query.limit ?? 500)
     const limit = Number.isFinite(requested) ? Math.min(2_000, Math.max(1, Math.floor(requested))) : 500
     response.set('Cache-Control', 'no-store').json({
-      records: runtime.transcription.archiveRecords(limit),
+      records: runtime.transcription.archiveRecords(limit).map((record) => ({
+        ...record, mute: runtime.transcription.messageMutes.match(record.channel, record.transcript) ?? null
+      })),
       archive: runtime.transcription.status().archive
     })
+  })
+  read.get('/api/message-mutes', (_request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (runtime) response.set('Cache-Control', 'no-store').json({ rules: runtime.transcription.messageMutes.list() })
+  })
+  read.get('/api/message-listen', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const after = request.query.after === undefined ? undefined : Number(request.query.after)
+    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) {
+      response.status(400).json({ error: 'after must be a nonnegative integer' }); return
+    }
+    const status = runtime.transcription.status()
+    response.set('Cache-Control', 'no-store').json({
+      ...runtime.transcription.listening.list(after), enabled: status.enabled && status.available
+    })
+  })
+  read.get('/api/message-listen/:id/status', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    if (request.query.session !== runtime.transcription.listening.session) {
+      response.status(409).json({ error: 'Listening session changed; reconnect' }); return
+    }
+    const message = runtime.transcription.listening.record(Number(request.params.id))
+    if (!message) { response.status(404).json({ error: 'Listening message expired' }); return }
+    response.set('Cache-Control', 'no-store').json(message)
+  })
+  read.get('/api/message-listen/:id.wav', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    if (request.query.session !== runtime.transcription.listening.session) {
+      response.status(409).json({ error: 'Listening session changed; reconnect' }); return
+    }
+    const id = Number(request.params.id)
+    const message = runtime.transcription.listening.record(id)
+    if (!message) { response.status(404).json({ error: 'Listening message expired' }); return }
+    if (message.mute) { response.status(409).json({ error: 'Message matches a saved mute' }); return }
+    const wav = runtime.transcription.listening.wav(id)!
+    sendSeekableWav(request, response, wav, `vhf-message-${id}.wav`, 'no-store, private')
   })
   read.get('/api/transcripts/:id.wav', async (request: Request, response: Response) => {
     const runtime = runtimeOr503(getRuntime, response)
@@ -847,6 +888,35 @@ export function registerRoutes(
     }
   })
   const write = router.access('readwrite')
+  write.post('/api/message-mutes', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    const body = request.body as { transcriptId?: unknown } | undefined
+    if (!body || typeof body.transcriptId !== 'number' || !Number.isSafeInteger(body.transcriptId) || body.transcriptId <= 0 ||
+        Object.keys(body).some((key) => key !== 'transcriptId')) {
+      response.status(400).json({ error: 'transcriptId must identify an archived transcript' }); return
+    }
+    const record = runtime.transcription.archiveRecord(body.transcriptId)
+    if (!record) { response.status(404).json({ error: 'Archived transcript not found' }); return }
+    try {
+      const rule = runtime.transcription.messageMutes.add(record.channel, record.transcript)
+      response.status(201).set('Cache-Control', 'no-store').json({ rule, rules: runtime.transcription.messageMutes.list() })
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+  write.delete('/api/message-mutes/:id', (request: Request, response: Response) => {
+    const runtime = runtimeOr503(getRuntime, response)
+    if (!runtime) return
+    try {
+      if (!runtime.transcription.messageMutes.remove(String(request.params.id))) {
+        response.status(404).json({ error: 'Message mute not found' }); return
+      }
+      response.status(204).end()
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+    }
+  })
   read.get('/api/receiver-identity', async (_request: Request, response: Response) => {
     const identity = getIdentity?.()
     if (!identity) { response.status(503).json({ error: 'Receiver identity is unavailable' }); return }
@@ -974,6 +1044,14 @@ export function openApi(): object {
       '/api/replay/{id}/continuous.wav': { get: { summary: 'Play seamless replay through the live edge', responses: { '200': { description: 'Streaming WAV audio' } } } },
       '/api/replay-session.wav': { get: { summary: 'Play one stitched historical radio session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/transcripts': { get: { summary: 'List retained voice transcripts and metadata', responses: { '200': { description: 'Transcript archive' } } } },
+      '/api/message-mutes': {
+        get: { summary: 'List recurring-message mutes', responses: { '200': { description: 'Saved channel-specific rules' } } },
+        post: { summary: 'Mute messages similar to an archived transcript', responses: { '201': { description: 'Saved mute' }, '400': { description: 'Invalid transcript' }, '404': { description: 'Transcript not found' } } }
+      },
+      '/api/message-mutes/{id}': { delete: { summary: 'Remove a recurring-message mute', responses: { '204': { description: 'Removed' }, '404': { description: 'Not found' } } } },
+      '/api/message-listen': { get: { summary: 'Poll completed audio batches for delayed listening', responses: { '200': { description: 'Session, cursor, gaps and current mute matches' } } } },
+      '/api/message-listen/{id}/status': { get: { summary: 'Recheck a listening batch before playback', responses: { '200': { description: 'Current mute match' }, '404': { description: 'Expired' } } } },
+      '/api/message-listen/{id}.wav': { get: { summary: 'Play an unmuted completed batch', responses: { '200': { description: 'WAV audio' }, '409': { description: 'Muted' }, '404': { description: 'Expired' } } } },
       '/api/transcripts/{id}.wav': { get: { summary: 'Play an archived voice record', responses: { '200': { description: 'WAV audio' }, '404': { description: 'Not found' } } } },
       '/api/transcript-session.wav': { get: { summary: 'Play one stitched archived transcript session', responses: { '200': { description: 'WAV audio' } } } },
       '/api/live.wav': { get: { summary: 'Listen to the live receive-only PCM stream', responses: { '200': { description: 'Streaming WAV audio' } } } },

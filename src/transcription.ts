@@ -10,6 +10,8 @@ import { pcmToWav } from './wav'
 import { WhisperVadProbe } from './whisper-vad'
 import { channelById } from './channels'
 import { DEFAULT_WHISPER_SERVER_COMMAND, WhisperServerCancelledError, WhisperServerPool } from './whisper-server-pool'
+import { MessageMuteStore } from './message-mutes'
+import { MessageListeningBuffer } from './message-listening'
 
 export const DEFAULT_TRANSCRIPTION_COMMAND = '/usr/bin/vhf-whisper'
 export const DEFAULT_TRANSCRIPTION_MODELS_DIR = '/usr/share/vhf-whisper'
@@ -88,6 +90,7 @@ interface TranscriptionBatch {
 }
 
 interface TranscriptionOptions {
+  messageMutes?: MessageMuteStore
   batchSeconds?: number
   overlapSeconds?: number
   idleMs?: number
@@ -230,6 +233,8 @@ function hasLexicalSpeech(text: string): boolean {
 }
 
 export class TranscriptionManager {
+  readonly messageMutes: MessageMuteStore
+  readonly listening: MessageListeningBuffer
   readonly #settingsPath: string
   readonly #command: string
   readonly #server: WhisperServerPool
@@ -271,6 +276,8 @@ export class TranscriptionManager {
   #modelsCache?: { checkedAt: number; models: TranscriptionModel[] }
 
   constructor(settingsPath: string, command = DEFAULT_TRANSCRIPTION_COMMAND, options: TranscriptionOptions = {}) {
+    this.messageMutes = options.messageMutes ?? new MessageMuteStore()
+    this.listening = new MessageListeningBuffer(this.messageMutes)
     this.#settingsPath = settingsPath
     this.#command = command
     this.#server = options.serverPool ?? new WhisperServerPool({
@@ -478,6 +485,10 @@ export class TranscriptionManager {
       const error = `Weather transcription unavailable: install ${model}`
       segment.transcription = { status: 'error', text: '', error }
       this.#error = error
+      if (transcriptionActiveSeconds(segment, squelch) >= MINIMUM_TRANSCRIPTION_SIGNAL_SECONDS) {
+        this.listening.add({ channel: segment.channel, startedAt: segment.startedAt,
+          sampleRate: segment.wav.readUInt32LE(24), transcript: '', pcm: segment.wav.subarray(44) })
+      }
       return
     }
     const activeSeconds = transcriptionActiveSeconds(segment, squelch)
@@ -595,6 +606,7 @@ export class TranscriptionManager {
       for (const segment of dropped?.segments.slice(dropped.overlapSegmentCount) ?? []) {
         segment.transcription = { status: 'error', text: '', error: 'Transcription queue full' }
       }
+      if (dropped) this.#listeningBatch(dropped, '')
     }
     void this.#drain()
   }
@@ -634,6 +646,7 @@ export class TranscriptionManager {
           outputSegments.at(-1)!.transcription = { status: 'complete', text }
           this.#previousTranscript.set(batch.channel, rawText)
           this.#error = undefined
+          this.#listeningBatch(batch, text)
           try {
             this.#archiveBatch(batch, text, rawText)
           } catch (error) {
@@ -642,11 +655,13 @@ export class TranscriptionManager {
         } catch (error) {
           if (error instanceof TranscriptionCancelledError || !this.#enabled || this.#closed) {
             for (const segment of outputSegments) segment.transcription = { status: 'skipped', text: '' }
+            if (this.#enabled && !this.#closed) this.#listeningBatch(batch, '')
             continue
           }
           const message = error instanceof Error ? error.message : String(error)
           for (const segment of outputSegments) segment.transcription = { status: 'error', text: '', error: message }
           this.#error = message
+          this.#listeningBatch(batch, '')
         } finally {
           this.#activeBatch = undefined
         }
@@ -744,6 +759,19 @@ export class TranscriptionManager {
 
   #archiveBatch(batch: TranscriptionBatch, transcript: string, rawTranscript: string): void {
     if (!this.#archive || !hasLexicalSpeech(rawTranscript)) return
+    this.#archive.add(this.#batchRecording(batch, transcript))
+  }
+
+  #listeningBatch(batch: TranscriptionBatch, transcript: string): void {
+    const record = this.#batchRecording(batch, transcript)
+    this.listening.add({
+      channel: record.channel, startedAt: record.startedAt, sampleRate: record.sampleRate, transcript,
+      pcm: record.wav.subarray(44 + (record.activityStartSeconds ?? 0) * record.sampleRate * 2,
+        44 + (record.activityEndSeconds ?? record.durationSeconds) * record.sampleRate * 2)
+    })
+  }
+
+  #batchRecording(batch: TranscriptionBatch, transcript: string) {
     const archivedSegments = batch.segments.slice(batch.overlapSegmentCount)
     const first = archivedSegments[0]!
     const archivedWavs = batch.wavs.slice(batch.overlapSegmentCount)
@@ -776,7 +804,7 @@ export class TranscriptionManager {
     const trimEnd = hasMeasuredActivity ? Math.floor(Math.min(pcm.length, activeEnd + paddingBytes) / 2) * 2 : pcm.length
     const activityStartSeconds = trimStart / bytesPerSecond
     const activityEndSeconds = trimEnd / bytesPerSecond
-    this.#archive.add({
+    return {
       startedAt: first.startedAt,
       endedAt: archivedSegments.at(-1)!.endedAt,
       channel: first.channel,
@@ -786,7 +814,7 @@ export class TranscriptionManager {
       ...(hasMeasuredActivity ? { activityStartSeconds, activityEndSeconds } : {}),
       transcript,
       wav: pcmToWav(pcm, sampleRate)
-    })
+    }
   }
 
   #repairArchivedTranscriptOverlap(): void {

@@ -12,6 +12,7 @@ import { ModifiedPlayback } from './modified-playback'
 import { ReplayHistoryStore } from './replay-history-store'
 import { ReceiverOwnershipController, type ReceiverOwner } from './receiver-ownership'
 import { ReceiverIdentityController } from './receiver-identity'
+import { MessageMuteStore } from './message-mutes'
 
 const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
   let runtime: VhfRuntime | undefined
@@ -43,7 +44,7 @@ const constructor: PluginConstructor = (app: ServerAPI): Plugin => {
     const transcription = new TranscriptionManager(
       path.join(app.getDataDirPath(), 'transcription-settings.json'),
       undefined,
-      { archive }
+      { archive, messageMutes: new MessageMuteStore(path.join(app.getDataDirPath(), 'message-mutes.json')) }
     )
     const replayHistory = new ReplayHistoryStore(
       path.join(app.getDataDirPath(), 'replay-history'), config.replayMinutes, config.maxBufferMiB * 1024 * 1024,

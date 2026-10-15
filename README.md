@@ -59,6 +59,31 @@ retuned. RF-only marks explicitly report that no playable voice was captured. Sl
 means the second voice demodulator is idle—Channel 70 remains an independent continuous decoder
 regardless of either voice-slot selection.
 
+### Mute recurring messages while listening
+
+Open a saved event under **Recent activity** and choose **Mute similar messages** beside a transcript
+line. This saves a channel-specific rule and selects **With message mutes · delayed** in the
+Listening selector. Press **Listen with mutes** to hear new completed captures from both voice slots;
+matching repeats never start playback. If immediate live audio is already playing, adding a mute
+switches that listener to delayed mode. **Muted messages** lists the saved rules, each with an
+**Unmute** action. Rules survive restarts and archive expiration and are shared across browsers.
+
+Delayed listening requires transcription to be enabled in Settings. It waits for each transcription
+batch to finish (up to 60 seconds of capture, quiet-time batching, and recognition/backlog time), then
+plays its original activity audio. It starts with newly completed batches and does not replay earlier
+history. A recognition error or empty result plays the original captured audio without applying a
+mute. The bounded listening queue holds at most 128 batches / 16 MiB; if a listener falls behind or
+Signal K restarts, it stops with a reconnect message instead of silently dropping captures.
+
+Matching compares the complete normalized wording, ignoring case and punctuation. Messages of ten
+or more words require at least 90% word similarity; shorter messages must match exactly. Changed
+numbers, negation or urgency terms, and different channels do not match. A shared opening alone does not mute a longer message.
+Mutes are checked again before playback, and adding a rule stops a currently playing matching batch
+on the next check. Recordings, transcripts, DSC, and manual historical playback are retained.
+**Live · message mutes off** continues to offer immediate Slot A audio; it cannot compare the complete
+message before the words have arrived. Delayed listening uses the original audio; Playback sound
+controls continue to affect immediate live and historical playback.
+
 Each native channelizer mixes its target to baseband, applies two stages of Blackman-windowed FIR
 filtering and controlled decimation, and limits the final RF passband to 9 kHz before FM
 discrimination. A slow residual-carrier tracker removes up to 1.5 kHz of tuner error without chasing
@@ -155,6 +180,16 @@ All endpoints are under `/plugins/signalk-vhf-watch` and use Signal K access con
 - `DELETE /api/replay/:id` — delete one retained replay segment
 - `GET /api/transcripts` — retained transcript/audio metadata
 - `GET /api/transcripts/:id.wav` — play one retained transcript's audio
+- `GET /api/message-mutes` — list saved channel-specific recurring-message mutes
+- `POST /api/message-mutes` — save a mute from `{ "transcriptId": 123 }` (read/write access)
+- `DELETE /api/message-mutes/:id` — remove a saved mute (read/write access)
+- `GET /api/message-listen` — initialize delayed listening at the latest completed batch
+- `GET /api/message-listen?after=N` — new batch metadata and current mute matches since a cursor
+- `GET /api/message-listen/:id/status` — recheck a queued batch's current mute
+- `GET /api/message-listen/:id.wav` — original batch audio; returns 409 if currently muted
+
+The listening status and WAV endpoints require `?session=SESSION` from the feed so an old browser
+queue cannot accidentally play a reused batch ID after a server restart.
 
 Replay slices are checkpointed to the plugin's private `replay-history` directory every three
 seconds and restored after Signal K restarts. An orderly shutdown flushes a final snapshot; an abrupt
